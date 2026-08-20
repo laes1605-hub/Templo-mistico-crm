@@ -7,8 +7,8 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: "Clave admin incorrecta" }, { status: 401 });
     }
 
-    const openaiKey = process.env.OPENAI_API_KEY || "";
-    const fishKey = process.env.FISH_AUDIO_API_KEY || "";
+    const openaiKey = (process.env.OPENAI_API_KEY || "").trim().replace(/^["']|["']$/g, "");
+    let fishKey = (process.env.FISH_AUDIO_API_KEY || "").trim().replace(/^["']|["']$/g, "");
 
     let openai = { ok: false, balance: null as number | null, note: "No consultado" };
     let fish = { ok: false, balance: null as number | null, note: "No consultado" };
@@ -30,7 +30,6 @@ export async function GET(req: Request) {
             note: "Crédito disponible",
           };
         } else {
-          // Verificar si la API key está activa consultando modelos
           const rModels = await fetch("https://api.openai.com/v1/models", {
             headers: { Authorization: `Bearer ${openaiKey}` },
             cache: "no-store",
@@ -39,14 +38,14 @@ export async function GET(req: Request) {
             openai = {
               ok: true,
               balance: null,
-              note: "API Key Activa y lista para usar",
+              note: "API Key activa",
             };
           } else {
             const txt = await rModels.text();
             openai = {
               ok: false,
               balance: null,
-              note: `Error ${rModels.status}: ${txt.substring(0, 50)}`,
+              note: `Error ${rModels.status}`,
             };
           }
         }
@@ -57,22 +56,23 @@ export async function GET(req: Request) {
       openai.note = "Falta OPENAI_API_KEY en Vercel";
     }
 
-    // ---------- FISH AUDIO (Rutas V1) ----------
+    // ---------- FISH AUDIO ----------
     if (fishKey) {
-      const fishEndpoints = [
-        "https://api.fish.audio/v1/user/wallet",
-        "https://api.fish.audio/v1/wallet",
-        "https://api.fish.audio/v1/user/profile",
-        "https://api.fish.audio/wallet",
+      // Probar variaciones de endpoints y headers
+      const testConfigs = [
+        { url: "https://api.fish.audio/v1/user/wallet", authHeader: `Bearer ${fishKey}` },
+        { url: "https://api.fish.audio/v1/user/wallet", authHeader: fishKey },
+        { url: "https://api.fish.audio/v1/wallet", authHeader: `Bearer ${fishKey}` },
+        { url: "https://api.fish.audio/wallet", authHeader: `Bearer ${fishKey}` },
       ];
 
       let success = false;
       let lastErrNote = "";
 
-      for (const ep of fishEndpoints) {
+      for (const config of testConfigs) {
         try {
-          const res = await fetch(ep, {
-            headers: { Authorization: `Bearer ${fishKey}` },
+          const res = await fetch(config.url, {
+            headers: { Authorization: config.authHeader },
             cache: "no-store",
           });
 
@@ -95,7 +95,7 @@ export async function GET(req: Request) {
             break;
           } else {
             const txt = await res.text();
-            lastErrNote = `HTTP ${res.status}: ${txt.substring(0, 40)}`;
+            lastErrNote = `HTTP ${res.status}: ${txt.substring(0, 30)}`;
           }
         } catch (e: any) {
           lastErrNote = `Error: ${e.message}`;
@@ -103,7 +103,7 @@ export async function GET(req: Request) {
       }
 
       if (!success) {
-        fish = { ok: false, balance: null, note: lastErrNote };
+        fish = { ok: false, balance: null, note: `${lastErrNote} (Revisa la API Key en Fish.audio)` };
       }
     } else {
       fish.note = "Falta FISH_AUDIO_API_KEY en Vercel";

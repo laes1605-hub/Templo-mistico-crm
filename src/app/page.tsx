@@ -211,12 +211,24 @@ export default function CRMApp() {
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
-  // ===================== GRABACIÓN DE AUDIO =====================
+   // ==========================================================
+  // GRABACIÓN DE AUDIO DE ALTA CALIDAD (128 kbps Opus / 48kHz HD)
+  // ==========================================================
   const startRecording = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // 1. Configurar entrada de audio HD sin filtros destructivos
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          sampleRate: 48000,   // Calidad estudio 48kHz
+          channelCount: 1       // Mono es ideal para notas de voz WhatsApp
+        }
+      });
 
-      let mimeType = "audio/webm";
+      // 2. Elegir el mejor codec disponible
+      let mimeType = "audio/webm;codecs=opus";
       if (typeof MediaRecorder !== "undefined") {
         if (MediaRecorder.isTypeSupported("audio/ogg;codecs=opus")) {
           mimeType = "audio/ogg;codecs=opus";
@@ -227,7 +239,12 @@ export default function CRMApp() {
         }
       }
 
-      const mediaRecorder = new MediaRecorder(stream, { mimeType });
+      // 3. Crear el grabador forzando 128 kbps (HD)
+      const mediaRecorder = new MediaRecorder(stream, {
+        mimeType,
+        audioBitsPerSecond: 128000 // 128 kbps (Alta fidelidad)
+      });
+
       mediaRecorderRef.current = mediaRecorder;
       audioChunksRef.current = [];
 
@@ -242,26 +259,32 @@ export default function CRMApp() {
         reader.readAsDataURL(audioBlob);
         reader.onloadend = async () => {
           const base64data = reader.result as string;
-          // nombre especial para que la API sepa que es nota de voz
           await sendToApi("", base64data, mimeType, `nota_de_voz.${ext}`);
         };
         stream.getTracks().forEach((track) => track.stop());
       };
 
-      mediaRecorder.start();
+      // Grabar en bloques de 250ms para no perder datos en memoria
+      mediaRecorder.start(250);
       setIsRecording(true);
       setRecordingTime(0);
       timerRef.current = setInterval(() => setRecordingTime((prev) => prev + 1), 1000);
     } catch (err) {
-      alert("Error accediendo al micrófono. Verifica los permisos del navegador.");
+      alert("Error accediendo al micrófono. Verifica los permisos de tu navegador.");
     }
   };
 
   const stopRecording = () => {
     if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.stop();
-      setIsRecording(false);
-      if (timerRef.current) clearInterval(timerRef.current);
+      // Búfer de 300ms antes de detener para capturar la última palabra entera sin cortes
+      setTimeout(() => {
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+          mediaRecorderRef.current.requestData(); // Forzar vuelco del último pedazo de audio
+          mediaRecorderRef.current.stop();
+          setIsRecording(false);
+          if (timerRef.current) clearInterval(timerRef.current);
+        }
+      }, 300);
     }
   };
 

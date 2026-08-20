@@ -30,50 +30,80 @@ export async function GET(req: Request) {
             note: "Crédito disponible",
           };
         } else {
-          openai = {
-            ok: false,
-            balance: null,
-            note: `OpenAI respondió ${r.status}. Revisa el Billing en su panel.`,
-          };
+          // Verificar si la API key está activa consultando modelos
+          const rModels = await fetch("https://api.openai.com/v1/models", {
+            headers: { Authorization: `Bearer ${openaiKey}` },
+            cache: "no-store",
+          });
+          if (rModels.ok) {
+            openai = {
+              ok: true,
+              balance: null,
+              note: "API Key Activa y lista para usar",
+            };
+          } else {
+            const txt = await rModels.text();
+            openai = {
+              ok: false,
+              balance: null,
+              note: `Error ${rModels.status}: ${txt.substring(0, 50)}`,
+            };
+          }
         }
       } catch (e: any) {
-        openai = { ok: false, balance: null, note: e.message || "Error conexión OpenAI" };
+        openai = { ok: false, balance: null, note: e.message || "Error OpenAI" };
       }
     } else {
       openai.note = "Falta OPENAI_API_KEY en Vercel";
     }
 
-    // ---------- FISH AUDIO ----------
+    // ---------- FISH AUDIO (Rutas V1) ----------
     if (fishKey) {
-      try {
-        const r = await fetch("https://api.fish.audio/wallet", {
-          headers: { Authorization: `Bearer ${fishKey}` },
-          cache: "no-store",
-        });
+      const fishEndpoints = [
+        "https://api.fish.audio/v1/user/wallet",
+        "https://api.fish.audio/v1/wallet",
+        "https://api.fish.audio/v1/user/profile",
+        "https://api.fish.audio/wallet",
+      ];
 
-        if (r.ok) {
-          const data = await r.json();
-          const bal = Number(data?.balance ?? data?.credit ?? data?.amount ?? data?.data?.balance ?? 0);
-          fish = {
-            ok: true,
-            balance: isNaN(bal) ? null : bal,
-            note: "Saldo Fish Audio",
-          };
-        } else {
-          const r2 = await fetch("https://api.fish.audio/user", {
+      let success = false;
+      let lastErrNote = "";
+
+      for (const ep of fishEndpoints) {
+        try {
+          const res = await fetch(ep, {
             headers: { Authorization: `Bearer ${fishKey}` },
             cache: "no-store",
           });
-          if (r2.ok) {
-            const data2 = await r2.json();
-            const bal2 = Number(data2?.credit ?? data2?.balance ?? data2?.wallet ?? 0);
-            fish = { ok: true, balance: isNaN(bal2) ? null : bal2, note: "Saldo Fish (user)" };
+
+          if (res.ok) {
+            const data = await res.json();
+            const bal = Number(
+              data?.credit ??
+              data?.balance ??
+              data?.amount ??
+              data?.wallet?.credit ??
+              data?.data?.balance ??
+              0
+            );
+            fish = {
+              ok: true,
+              balance: isNaN(bal) ? 0 : bal,
+              note: "Saldo Fish Audio",
+            };
+            success = true;
+            break;
           } else {
-            fish = { ok: false, balance: null, note: `Fish respondió Error ${r.status}` };
+            const txt = await res.text();
+            lastErrNote = `HTTP ${res.status}: ${txt.substring(0, 40)}`;
           }
+        } catch (e: any) {
+          lastErrNote = `Error: ${e.message}`;
         }
-      } catch (e: any) {
-        fish = { ok: false, balance: null, note: e.message || "Error conexión Fish" };
+      }
+
+      if (!success) {
+        fish = { ok: false, balance: null, note: lastErrNote };
       }
     } else {
       fish.note = "Falta FISH_AUDIO_API_KEY en Vercel";

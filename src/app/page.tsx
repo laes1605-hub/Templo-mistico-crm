@@ -24,7 +24,9 @@ import {
   Target,
   TrendingDown,
   Award,
-  Calendar
+  Calendar,
+  Shield,
+  X
 } from "lucide-react";
 
 export default function CRMApp() {
@@ -38,11 +40,9 @@ export default function CRMApp() {
   const [todosPagos, setTodosPagos] = useState<any[]>([]);
   const [todosClientes, setTodosClientes] = useState<any[]>([]);
   
-  // Pipeline dinámico
   const [pipelineEtapas, setPipelineEtapas] = useState<any[]>([]);
   const [isEditingPipeline, setIsEditingPipeline] = useState(false);
 
-  // Formulario de pago avanzado
   const [tipoPago, setTipoPago] = useState<"unico" | "cuotas">("unico");
   const [montoTotal, setMontoTotal] = useState("");
   const [numeroCuotas, setNumeroCuotas] = useState("2");
@@ -52,10 +52,16 @@ export default function CRMApp() {
 
   const [loadingChats, setLoadingChats] = useState(true);
   const [filtroCanal, setFiltroCanal] = useState<"todos" | "evolution" | "meta_business" | "spam">("todos");
+
+  // PANEL ADMIN
+  const [showAdmin, setShowAdmin] = useState(false);
+  const [adminSecret, setAdminSecret] = useState("");
+  const [balances, setBalances] = useState<any>(null);
+  const [loadingBal, setLoadingBal] = useState(false);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // 1. CARGA INICIAL
+  // CARGA INICIAL
   useEffect(() => {
     fetchConversaciones();
     fetchPipelineEtapas();
@@ -101,10 +107,7 @@ export default function CRMApp() {
   }
 
   async function fetchPipelineEtapas() {
-    const { data } = await supabase
-      .from("pipeline_etapas")
-      .select("*")
-      .order("orden", { ascending: true });
+    const { data } = await supabase.from("pipeline_etapas").select("*").order("orden", { ascending: true });
     if (data) setPipelineEtapas(data);
   }
 
@@ -118,7 +121,6 @@ export default function CRMApp() {
     if (data) setTodosClientes(data);
   }
 
-  // 2. SELECCIONAR CHAT
   async function selectConversation(conv: any) {
     setSelectedConv(conv);
     setClienteActual(conv.clientes);
@@ -127,25 +129,16 @@ export default function CRMApp() {
   }
 
   async function fetchMensajes(convId: string) {
-    const { data } = await supabase
-      .from("mensajes")
-      .select("*")
-      .eq("conversacion_id", convId)
-      .order("creado_en", { ascending: true });
+    const { data } = await supabase.from("mensajes").select("*").eq("conversacion_id", convId).order("creado_en", { ascending: true });
     if (data) setMensajes(data);
   }
 
   async function fetchPagos(clienteId: string) {
     if (!clienteId) return;
-    const { data } = await supabase
-      .from("pagos")
-      .select("*")
-      .eq("cliente_id", clienteId)
-      .order("fecha_vencimiento", { ascending: true });
+    const { data } = await supabase.from("pagos").select("*").eq("cliente_id", clienteId).order("fecha_vencimiento", { ascending: true });
     if (data) setPagosCliente(data);
   }
 
-  // 3. SUSCRIPCIÓN MENSAJES
   useEffect(() => {
     if (!selectedConv) return;
     const msgSub = supabase
@@ -160,7 +153,6 @@ export default function CRMApp() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [mensajes]);
 
-  // 4. ACCIONES DE CHAT
   async function handleSendMessage(e: React.FormEvent) {
     e.preventDefault();
     if (!nuevoMensaje.trim() || !selectedConv) return;
@@ -199,7 +191,6 @@ export default function CRMApp() {
     fetchConversaciones();
   }
 
-  // 5. PIPELINE
   async function actualizarEstadoCliente(clienteId: string, nuevoEstado: string) {
     await supabase.from("clientes").update({ estado: nuevoEstado, actualizado_en: new Date().toISOString() }).eq("id", clienteId);
     if (clienteActual?.id === clienteId) setClienteActual({ ...clienteActual, estado: nuevoEstado });
@@ -207,14 +198,11 @@ export default function CRMApp() {
     fetchTodosClientes();
   }
 
-  // 6. PAGOS - AGREGAR (Único o en Cuotas)
   async function agregarPagos(e: React.FormEvent) {
     e.preventDefault();
     if (!clienteActual || !montoTotal) return;
-
     const total = parseFloat(montoTotal);
     const fechaBase = fechaInicial ? new Date(fechaInicial) : new Date();
-
     const pagosACrear = [];
 
     if (tipoPago === "unico") {
@@ -243,18 +231,11 @@ export default function CRMApp() {
       }
     }
 
-    // Actualizar total_cobro del cliente
     await supabase.from("clientes").update({ total_cobro: total }).eq("id", clienteActual.id);
-    
     const { data } = await supabase.from("pagos").insert(pagosACrear).select();
     if (data) {
       setPagosCliente([...pagosCliente, ...data]);
-      // Reset form
-      setMontoTotal("");
-      setFechaInicial("");
-      setNotaPago("");
-      setNumeroCuotas("2");
-      setTipoPago("unico");
+      setMontoTotal(""); setFechaInicial(""); setNotaPago(""); setNumeroCuotas("2"); setTipoPago("unico");
     }
   }
 
@@ -273,7 +254,6 @@ export default function CRMApp() {
     setPagosCliente(pagosCliente.filter(p => p.id !== pagoId));
   }
 
-  // 7. EDICIÓN PIPELINE
   async function agregarEtapaPipeline() {
     const nuevaClave = `etapa_${Date.now()}`;
     const nuevaEtapa = { clave: nuevaClave, nombre: "Nueva Etapa", orden: pipelineEtapas.length + 1 };
@@ -304,7 +284,30 @@ export default function CRMApp() {
     }
   }
 
-  // 8. FILTROS
+  // CARGAR SALDOS ADMIN
+  async function cargarSaldos() {
+    if (!adminSecret) {
+      setBalances({ error: "Ingresa la clave admin" });
+      return;
+    }
+    setLoadingBal(true);
+    setBalances(null);
+    try {
+      const res = await fetch("/api/admin/balances", {
+        headers: { "x-admin-secret": adminSecret },
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setBalances({ error: data.error || "Error al consultar" });
+      } else {
+        setBalances(data);
+      }
+    } catch (e: any) {
+      setBalances({ error: "No se pudo cargar: " + e.message });
+    }
+    setLoadingBal(false);
+  }
+
   const conversacionesFiltradas = conversaciones.filter((c) => {
     const esSpam = c.clientes?.es_spam === true;
     if (filtroCanal === "spam") return esSpam;
@@ -313,31 +316,16 @@ export default function CRMApp() {
     return c.fuente === filtroCanal;
   });
 
-  // 9. CÁLCULO DE MÉTRICAS DE NEGOCIO
   const ahora = new Date();
   const inicioMes = new Date(ahora.getFullYear(), ahora.getMonth(), 1);
-
   const clientesNoSpam = todosClientes.filter(c => !c.es_spam);
   const totalAtendidos = clientesNoSpam.length;
   const totalConvertidos = clientesNoSpam.filter(c => c.estado === "pago_recibido" || c.estado === "trabajo_proceso" || c.estado === "trabajo_completado").length;
   const efectividad = totalAtendidos > 0 ? ((totalConvertidos / totalAtendidos) * 100).toFixed(1) : "0";
-  
-  const totalCobradoMes = todosPagos
-    .filter(p => p.estado === "pagado" && p.fecha_pago && new Date(p.fecha_pago) >= inicioMes)
-    .reduce((sum, p) => sum + Number(p.monto), 0);
-  
-  const totalCobradoHistorico = todosPagos
-    .filter(p => p.estado === "pagado")
-    .reduce((sum, p) => sum + Number(p.monto), 0);
-  
-  const totalPendiente = todosPagos
-    .filter(p => p.estado === "pendiente")
-    .reduce((sum, p) => sum + Number(p.monto), 0);
-
-  const totalVencido = todosPagos
-    .filter(p => p.estado === "pendiente" && new Date(p.fecha_vencimiento) < ahora)
-    .reduce((sum, p) => sum + Number(p.monto), 0);
-
+  const totalCobradoMes = todosPagos.filter(p => p.estado === "pagado" && p.fecha_pago && new Date(p.fecha_pago) >= inicioMes).reduce((sum, p) => sum + Number(p.monto), 0);
+  const totalCobradoHistorico = todosPagos.filter(p => p.estado === "pagado").reduce((sum, p) => sum + Number(p.monto), 0);
+  const totalPendiente = todosPagos.filter(p => p.estado === "pendiente").reduce((sum, p) => sum + Number(p.monto), 0);
+  const totalVencido = todosPagos.filter(p => p.estado === "pendiente" && new Date(p.fecha_vencimiento) < ahora).reduce((sum, p) => sum + Number(p.monto), 0);
   const leadsEnConsulta = clientesNoSpam.filter(c => c.estado === "en_consulta" || c.estado === "consulta_hecha").length;
   const leadsPerdidos = clientesNoSpam.filter(c => c.estado === "perdido").length;
   const leadsNuevos = clientesNoSpam.filter(c => c.estado === "nuevo_lead" || !c.estado).length;
@@ -359,39 +347,43 @@ export default function CRMApp() {
               { id: "cerebro", icon: Brain, label: "Cerebro" }
             ].map((item) => (
               <button key={item.id} onClick={() => setTab(item.id as any)}
-                className={`p-3.5 rounded-xl flex flex-col items-center gap-1 transition-all ${
-                  tab === item.id ? "bg-purple-600 text-white shadow-md shadow-purple-900/30" : "text-gray-400 hover:bg-surfaceHover hover:text-gray-200"
-                }`}>
+                className={`p-3.5 rounded-xl flex flex-col items-center gap-1 transition-all ${tab === item.id ? "bg-purple-600 text-white shadow-md shadow-purple-900/30" : "text-gray-400 hover:bg-surfaceHover hover:text-gray-200"}`}>
                 <item.icon className="w-5 h-5" />
                 <span className="text-[10px] font-medium">{item.label}</span>
               </button>
             ))}
           </nav>
         </div>
-        <div className="flex flex-col items-center gap-1 text-[10px] text-emerald-400">
-          <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
-          <span>Online</span>
+
+        {/* BOTÓN ADMIN SUTIL + ONLINE */}
+        <div className="flex flex-col items-center gap-3">
+          <button
+            onClick={() => setShowAdmin(true)}
+            className="text-gray-500 hover:text-purple-300 transition-colors p-1"
+            title="Admin"
+          >
+            <Shield className="w-4 h-4" />
+          </button>
+          <div className="flex flex-col items-center gap-1 text-[10px] text-emerald-400">
+            <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
+            <span>Online</span>
+          </div>
         </div>
       </aside>
 
       {/* CHATS */}
       {tab === "chats" && (
         <div className="flex-1 flex overflow-hidden">
-          {/* BANDEJA */}
           <section className="w-80 border-r border-border bg-surface/50 flex flex-col">
             <div className="p-4 border-b border-border flex flex-col gap-3">
               <div className="flex items-center justify-between">
                 <h1 className="text-lg font-bold text-gray-100">Bandeja</h1>
-                <span className="text-xs px-2 py-0.5 rounded-full bg-purple-900/50 text-purple-300 font-medium">
-                  {conversacionesFiltradas.length}
-                </span>
+                <span className="text-xs px-2 py-0.5 rounded-full bg-purple-900/50 text-purple-300 font-medium">{conversacionesFiltradas.length}</span>
               </div>
               <div className="flex bg-background p-1 rounded-lg border border-border text-xs flex-wrap">
                 {["todos", "evolution", "meta_business", "spam"].map((f) => (
                   <button key={f} onClick={() => setFiltroCanal(f as any)}
-                    className={`flex-1 py-1 px-2 rounded-md transition-all capitalize ${
-                      filtroCanal === f ? (f === 'spam' ? "bg-red-900/50 text-red-400" : "bg-surfaceHover text-white font-medium") : "text-gray-400"
-                    }`}>
+                    className={`flex-1 py-1 px-2 rounded-md transition-all capitalize ${filtroCanal === f ? (f === 'spam' ? "bg-red-900/50 text-red-400" : "bg-surfaceHover text-white font-medium") : "text-gray-400"}`}>
                     {f === "evolution" ? "Personal" : f === "meta_business" ? "Business" : f}
                   </button>
                 ))}
@@ -435,7 +427,6 @@ export default function CRMApp() {
             </div>
           </section>
 
-          {/* VENTANA CHAT */}
           <section className="flex-1 flex flex-col bg-background">
             {selectedConv && clienteActual ? (
               <>
@@ -459,7 +450,7 @@ export default function CRMApp() {
                     {!clienteActual.es_spam && (
                       <button onClick={toggleAgenteIA} className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-medium transition-all ${selectedConv.agente_activo ? "bg-purple-950/50 border-purple-700 text-purple-300" : "bg-surfaceHover border-border text-gray-400"}`}>
                         <Bot className="w-4 h-4" />
-                        <span>{selectedConv.agente_activo ? "IA: ON" : "IA: Pausada"}</span>
+                        <span>{selectedConv.agente_activo ? "Agente Luna: ON" : "Agente Pausado"}</span>
                       </button>
                     )}
                   </div>
@@ -503,7 +494,6 @@ export default function CRMApp() {
             )}
           </section>
 
-          {/* FICHA TÉCNICA MEJORADA CON PAGOS */}
           {selectedConv && clienteActual && (
             <aside className="w-96 border-l border-border bg-surface/50 overflow-y-auto p-6 space-y-6">
               <div className="text-center">
@@ -514,7 +504,6 @@ export default function CRMApp() {
                 <p className="text-xs text-gray-400">{clienteActual.telefono_display || clienteActual.telefono}</p>
               </div>
 
-              {/* Estado del Lead */}
               <div className="bg-surface p-4 rounded-xl border border-border space-y-2">
                 <label className="text-xs font-semibold text-gray-400 uppercase block">Estado del Lead</label>
                 <select value={clienteActual.estado || "nuevo_lead"} onChange={(e) => actualizarEstadoCliente(clienteActual.id, e.target.value)}
@@ -525,7 +514,6 @@ export default function CRMApp() {
                 </select>
               </div>
 
-              {/* PLAN DE COBROS MEJORADO */}
               <div className="bg-surface p-4 rounded-xl border border-border space-y-4">
                 <div className="flex items-center justify-between">
                   <h4 className="text-xs font-semibold text-gray-400 uppercase flex items-center gap-1.5">
@@ -536,7 +524,6 @@ export default function CRMApp() {
                   </span>
                 </div>
 
-                {/* Lista de cuotas actuales */}
                 {pagosCliente.length > 0 && (
                   <div className="space-y-2">
                     {pagosCliente.map((pago) => (
@@ -562,26 +549,16 @@ export default function CRMApp() {
                   </div>
                 )}
 
-                {/* Formulario nuevo cobro */}
                 <div className="border-t border-border/50 pt-3 space-y-2">
                   <label className="text-[11px] text-gray-400 font-semibold uppercase">Registrar Cobro</label>
-                  
-                  {/* Toggle Único / Cuotas */}
                   <div className="flex bg-background p-1 rounded-lg border border-border text-xs">
-                    <button type="button" onClick={() => setTipoPago("unico")}
-                      className={`flex-1 py-1.5 rounded-md transition-all ${tipoPago === "unico" ? "bg-purple-600 text-white font-medium" : "text-gray-400"}`}>
-                      Pago Único
-                    </button>
-                    <button type="button" onClick={() => setTipoPago("cuotas")}
-                      className={`flex-1 py-1.5 rounded-md transition-all ${tipoPago === "cuotas" ? "bg-purple-600 text-white font-medium" : "text-gray-400"}`}>
-                      En Cuotas
-                    </button>
+                    <button type="button" onClick={() => setTipoPago("unico")} className={`flex-1 py-1.5 rounded-md transition-all ${tipoPago === "unico" ? "bg-purple-600 text-white font-medium" : "text-gray-400"}`}>Pago Único</button>
+                    <button type="button" onClick={() => setTipoPago("cuotas")} className={`flex-1 py-1.5 rounded-md transition-all ${tipoPago === "cuotas" ? "bg-purple-600 text-white font-medium" : "text-gray-400"}`}>En Cuotas</button>
                   </div>
 
                   <form onSubmit={agregarPagos} className="space-y-2">
                     <input type="number" placeholder="Monto total ($)" value={montoTotal} onChange={(e) => setMontoTotal(e.target.value)}
                       className="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500" required />
-                    
                     {tipoPago === "cuotas" && (
                       <div className="flex gap-2 items-center">
                         <span className="text-xs text-gray-400">Dividir en</span>
@@ -590,7 +567,6 @@ export default function CRMApp() {
                         <span className="text-xs text-gray-400">cuotas mensuales</span>
                       </div>
                     )}
-
                     <div className="flex gap-2">
                       <input type="date" value={fechaInicial} onChange={(e) => setFechaInicial(e.target.value)}
                         className="flex-1 bg-background border border-border rounded-lg px-2 py-1.5 text-xs text-gray-200 focus:outline-none focus:border-purple-500" />
@@ -604,10 +580,8 @@ export default function CRMApp() {
                         <option value="Otro">Otro</option>
                       </select>
                     </div>
-
-                    <input type="text" placeholder="Nota (opcional): amarre, limpieza, etc." value={notaPago} onChange={(e) => setNotaPago(e.target.value)}
+                    <input type="text" placeholder="Nota: amarre, limpieza..." value={notaPago} onChange={(e) => setNotaPago(e.target.value)}
                       className="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500" />
-
                     <button type="submit" className="w-full bg-purple-600 hover:bg-purple-700 text-white text-xs font-medium py-2 rounded-lg flex items-center justify-center gap-2">
                       <Plus className="w-4 h-4" />
                       {tipoPago === "unico" ? "Agregar Cobro" : `Crear ${numeroCuotas} Cuotas`}
@@ -683,7 +657,7 @@ export default function CRMApp() {
         </div>
       )}
 
-      {/* CARTERA CON MÉTRICAS REALES */}
+      {/* CARTERA */}
       {tab === "cartera" && (
         <div className="flex-1 p-8 overflow-y-auto space-y-8 bg-background">
           <header>
@@ -691,7 +665,6 @@ export default function CRMApp() {
             <p className="text-sm text-gray-400">Rendimiento, conversión y estado financiero</p>
           </header>
 
-          {/* MÉTRICAS PRINCIPALES */}
           <div>
             <h2 className="text-sm font-bold text-purple-300 mb-3 uppercase tracking-wider">Rendimiento</h2>
             <div className="grid grid-cols-4 gap-4">
@@ -703,7 +676,6 @@ export default function CRMApp() {
                 <p className="text-3xl font-extrabold text-gray-100">{totalAtendidos}</p>
                 <p className="text-xs text-gray-400 mt-1">Clientes atendidos</p>
               </div>
-
               <div className="p-5 bg-surface border border-border rounded-2xl">
                 <div className="flex items-center justify-between mb-2">
                   <Award className="w-5 h-5 text-emerald-400" />
@@ -712,7 +684,6 @@ export default function CRMApp() {
                 <p className="text-3xl font-extrabold text-emerald-400">{totalConvertidos}</p>
                 <p className="text-xs text-gray-400 mt-1">Clientes convertidos</p>
               </div>
-
               <div className="p-5 bg-surface border border-border rounded-2xl">
                 <div className="flex items-center justify-between mb-2">
                   <Target className="w-5 h-5 text-purple-400" />
@@ -721,7 +692,6 @@ export default function CRMApp() {
                 <p className="text-3xl font-extrabold text-purple-400">{efectividad}%</p>
                 <p className="text-xs text-gray-400 mt-1">Efectividad de cierre</p>
               </div>
-
               <div className="p-5 bg-surface border border-border rounded-2xl">
                 <div className="flex items-center justify-between mb-2">
                   <TrendingDown className="w-5 h-5 text-red-400" />
@@ -733,7 +703,6 @@ export default function CRMApp() {
             </div>
           </div>
 
-          {/* MÉTRICAS FINANCIERAS */}
           <div>
             <h2 className="text-sm font-bold text-emerald-300 mb-3 uppercase tracking-wider">Finanzas</h2>
             <div className="grid grid-cols-4 gap-4">
@@ -745,7 +714,6 @@ export default function CRMApp() {
                 <p className="text-2xl font-extrabold text-emerald-400">${totalCobradoMes.toLocaleString()}</p>
                 <p className="text-xs text-gray-400 mt-1">Cobrado en {ahora.toLocaleString('es', { month: 'long' })}</p>
               </div>
-
               <div className="p-5 bg-surface border border-border rounded-2xl">
                 <div className="flex items-center justify-between mb-2">
                   <DollarSign className="w-5 h-5 text-green-400" />
@@ -754,7 +722,6 @@ export default function CRMApp() {
                 <p className="text-2xl font-extrabold text-green-400">${totalCobradoHistorico.toLocaleString()}</p>
                 <p className="text-xs text-gray-400 mt-1">Total cobrado</p>
               </div>
-
               <div className="p-5 bg-surface border border-border rounded-2xl">
                 <div className="flex items-center justify-between mb-2">
                   <Clock className="w-5 h-5 text-amber-400" />
@@ -763,7 +730,6 @@ export default function CRMApp() {
                 <p className="text-2xl font-extrabold text-amber-400">${totalPendiente.toLocaleString()}</p>
                 <p className="text-xs text-gray-400 mt-1">Por cobrar</p>
               </div>
-
               <div className="p-5 bg-surface border border-border rounded-2xl">
                 <div className="flex items-center justify-between mb-2">
                   <TrendingDown className="w-5 h-5 text-red-400" />
@@ -775,7 +741,6 @@ export default function CRMApp() {
             </div>
           </div>
 
-          {/* EMBUDO DE CONVERSIÓN */}
           <div>
             <h2 className="text-sm font-bold text-purple-300 mb-3 uppercase tracking-wider">Embudo de Conversión</h2>
             <div className="bg-surface border border-border rounded-2xl p-6 space-y-3">
@@ -800,7 +765,6 @@ export default function CRMApp() {
             </div>
           </div>
 
-          {/* PAGOS VENCIDOS (LISTA) */}
           {todosPagos.filter(p => p.estado === "pendiente" && new Date(p.fecha_vencimiento) < ahora).length > 0 && (
             <div>
               <h2 className="text-sm font-bold text-red-300 mb-3 uppercase tracking-wider">⚠️ Pagos Vencidos</h2>
@@ -825,6 +789,87 @@ export default function CRMApp() {
 
       {tab === "ads" && (<div className="flex-1 p-8 flex items-center justify-center text-center"><TrendingUp className="w-16 h-16 text-purple-500 mb-4" /></div>)}
       {tab === "cerebro" && (<div className="flex-1 p-8 flex items-center justify-center text-center"><Brain className="w-16 h-16 text-purple-500 mb-4" /></div>)}
+
+      {/* MODAL ADMIN */}
+      {showAdmin && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="w-full max-w-sm bg-surface border border-border rounded-2xl p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Shield className="w-5 h-5 text-purple-400" />
+                <h3 className="text-base font-bold text-gray-100">Panel Admin</h3>
+              </div>
+              <button onClick={() => { setShowAdmin(false); setBalances(null); setAdminSecret(""); }} className="text-gray-400 hover:text-white">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-xs text-gray-400">Clave admin</label>
+              <input
+                type="password"
+                placeholder="Ingresa tu clave admin"
+                value={adminSecret}
+                onChange={(e) => setAdminSecret(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") cargarSaldos(); }}
+                className="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500"
+              />
+            </div>
+
+            <button
+              onClick={cargarSaldos}
+              disabled={loadingBal}
+              className="w-full bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-xs font-medium py-2.5 rounded-lg"
+            >
+              {loadingBal ? "Consultando..." : "Ver saldos APIs"}
+            </button>
+
+            {balances?.error && (
+              <div className="text-xs text-red-400 bg-red-950/30 border border-red-800/40 p-3 rounded-lg">
+                {balances.error}
+              </div>
+            )}
+
+            {balances && !balances.error && (
+              <div className="space-y-3 text-xs">
+                <div className="p-3 rounded-xl bg-background border border-border">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-gray-400 font-medium">OpenAI</span>
+                    {balances.openai?.ok ? (
+                      <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                    ) : (
+                      <span className="w-2 h-2 rounded-full bg-red-500"></span>
+                    )}
+                  </div>
+                  <div className="text-xl font-bold text-gray-100">
+                    {balances.openai?.balance != null ? `$${Number(balances.openai.balance).toFixed(2)}` : "—"}
+                  </div>
+                  <div className="text-[10px] text-gray-500 mt-1">{balances.openai?.note}</div>
+                </div>
+
+                <div className="p-3 rounded-xl bg-background border border-border">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-gray-400 font-medium">Fish Audio</span>
+                    {balances.fish?.ok ? (
+                      <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                    ) : (
+                      <span className="w-2 h-2 rounded-full bg-red-500"></span>
+                    )}
+                  </div>
+                  <div className="text-xl font-bold text-gray-100">
+                    {balances.fish?.balance != null ? `$${Number(balances.fish.balance).toFixed(2)}` : "—"}
+                  </div>
+                  <div className="text-[10px] text-gray-500 mt-1">{balances.fish?.note}</div>
+                </div>
+
+                <div className="text-[10px] text-gray-500 text-center pt-2">
+                  Actualizado: {balances.updatedAt ? new Date(balances.updatedAt).toLocaleString() : "—"}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

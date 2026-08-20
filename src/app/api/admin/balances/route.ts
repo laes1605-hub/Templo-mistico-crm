@@ -7,8 +7,17 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: "Clave admin incorrecta" }, { status: 401 });
     }
 
-    const openaiKey = (process.env.OPENAI_API_KEY || "").trim().replace(/^["']|["']$/g, "");
-    let fishKey = (process.env.FISH_AUDIO_API_KEY || "").trim().replace(/^["']|["']$/g, "");
+    const openaiKey = (process.env.OPENAI_API_KEY || "")
+      .replace(/[\r\n\t "']/g, "")
+      .replace(/^Bearer\s+/i, "")
+      .trim();
+
+    let rawFishKey = (process.env.FISH_AUDIO_API_KEY || "")
+      .replace(/[\r\n\t "']/g, "")
+      .trim();
+
+    // Limpiar si la variable ya incluye la palabra "Bearer"
+    const fishKey = rawFishKey.replace(/^Bearer\s*/i, "").trim();
 
     let openai = { ok: false, balance: null as number | null, note: "No consultado" };
     let fish = { ok: false, balance: null as number | null, note: "No consultado" };
@@ -35,18 +44,9 @@ export async function GET(req: Request) {
             cache: "no-store",
           });
           if (rModels.ok) {
-            openai = {
-              ok: true,
-              balance: null,
-              note: "API Key activa",
-            };
+            openai = { ok: true, balance: null, note: "API Key activa" };
           } else {
-            const txt = await rModels.text();
-            openai = {
-              ok: false,
-              balance: null,
-              note: `Error ${rModels.status}`,
-            };
+            openai = { ok: false, balance: null, note: `Error ${rModels.status}` };
           }
         }
       } catch (e: any) {
@@ -58,52 +58,49 @@ export async function GET(req: Request) {
 
     // ---------- FISH AUDIO ----------
     if (fishKey) {
-      // Probar variaciones de endpoints y headers
-      const testConfigs = [
-        { url: "https://api.fish.audio/v1/user/wallet", authHeader: `Bearer ${fishKey}` },
-        { url: "https://api.fish.audio/v1/user/wallet", authHeader: fishKey },
-        { url: "https://api.fish.audio/v1/wallet", authHeader: `Bearer ${fishKey}` },
-        { url: "https://api.fish.audio/wallet", authHeader: `Bearer ${fishKey}` },
-      ];
+      const keyMasked = fishKey.length > 10
+        ? `${fishKey.substring(0, 8)}...${fishKey.substring(fishKey.length - 4)}`
+        : "Clave corta";
 
-      let success = false;
-      let lastErrNote = "";
+      try {
+        const res = await fetch("https://api.fish.audio/v1/user/wallet", {
+          method: "GET",
+          headers: {
+            "Authorization": `Bearer ${fishKey}`,
+            "Content-Type": "application/json",
+          },
+          cache: "no-store",
+        });
 
-      for (const config of testConfigs) {
-        try {
-          const res = await fetch(config.url, {
-            headers: { Authorization: config.authHeader },
-            cache: "no-store",
-          });
-
-          if (res.ok) {
-            const data = await res.json();
-            const bal = Number(
-              data?.credit ??
-              data?.balance ??
-              data?.amount ??
-              data?.wallet?.credit ??
-              data?.data?.balance ??
-              0
-            );
-            fish = {
-              ok: true,
-              balance: isNaN(bal) ? 0 : bal,
-              note: "Saldo Fish Audio",
-            };
-            success = true;
-            break;
-          } else {
-            const txt = await res.text();
-            lastErrNote = `HTTP ${res.status}: ${txt.substring(0, 30)}`;
-          }
-        } catch (e: any) {
-          lastErrNote = `Error: ${e.message}`;
+        if (res.ok) {
+          const data = await res.json();
+          const bal = Number(
+            data?.credit ??
+            data?.balance ??
+            data?.amount ??
+            data?.wallet?.credit ??
+            data?.data?.credit ??
+            0
+          );
+          fish = {
+            ok: true,
+            balance: isNaN(bal) ? 0 : bal,
+            note: `Saldo activo (${keyMasked})`,
+          };
+        } else {
+          const txt = await res.text();
+          fish = {
+            ok: false,
+            balance: null,
+            note: `HTTP ${res.status}: ${txt.substring(0, 30)} | Key: ${keyMasked}`,
+          };
         }
-      }
-
-      if (!success) {
-        fish = { ok: false, balance: null, note: `${lastErrNote} (Revisa la API Key en Fish.audio)` };
+      } catch (e: any) {
+        fish = {
+          ok: false,
+          balance: null,
+          note: `Error red: ${e.message}`,
+        };
       }
     } else {
       fish.note = "Falta FISH_AUDIO_API_KEY en Vercel";

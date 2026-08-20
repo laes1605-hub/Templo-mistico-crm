@@ -211,23 +211,30 @@ export default function CRMApp() {
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
-   // ==========================================================
-  // GRABACIÓN DE AUDIO DE ALTA CALIDAD (128 kbps Opus / 48kHz HD)
+     // ==========================================================
+  // GRABACIÓN DE AUDIO EN VIVO (AMPLIFICADO Y SIN CORTE INICIAL)
   // ==========================================================
   const startRecording = async () => {
     try {
-      // 1. Configurar entrada de audio HD sin filtros destructivos
+      // 1. Desactivar noiseSuppression para ELIMINAR el corte del primer segundo
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-          sampleRate: 48000,   // Calidad estudio 48kHz
-          channelCount: 1       // Mono es ideal para notas de voz WhatsApp
+          noiseSuppression: false, // ¡CLAVE! Elimina el retraso/corte del primer segundo
+          autoGainControl: true
         }
       });
 
-      // 2. Elegir el mejor codec disponible
+      // 2. AMPLIFICADOR DE VOLUMEN (Aumenta el volumen un 80%)
+      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const source = audioCtx.createMediaStreamSource(stream);
+      const gainNode = audioCtx.createGain();
+      gainNode.gain.value = 1.8; // Amplifica la voz x1.8 para que no se escuche bajo
+      
+      const destination = audioCtx.createMediaStreamDestination();
+      source.connect(gainNode);
+
+      // 3. Seleccionar codec
       let mimeType = "audio/webm;codecs=opus";
       if (typeof MediaRecorder !== "undefined") {
         if (MediaRecorder.isTypeSupported("audio/ogg;codecs=opus")) {
@@ -239,10 +246,10 @@ export default function CRMApp() {
         }
       }
 
-      // 3. Crear el grabador forzando 128 kbps (HD)
-      const mediaRecorder = new MediaRecorder(stream, {
+      // 4. Grabar desde el stream amplificado
+      const mediaRecorder = new MediaRecorder(destination.stream, {
         mimeType,
-        audioBitsPerSecond: 128000 // 128 kbps (Alta fidelidad)
+        audioBitsPerSecond: 128000
       });
 
       mediaRecorderRef.current = mediaRecorder;
@@ -262,15 +269,15 @@ export default function CRMApp() {
           await sendToApi("", base64data, mimeType, `nota_de_voz.${ext}`);
         };
         stream.getTracks().forEach((track) => track.stop());
+        audioCtx.close(); // Cerrar contexto de audio
       };
 
-      // Grabar en bloques de 250ms para no perder datos en memoria
-      mediaRecorder.start(250);
+      mediaRecorder.start(100);
       setIsRecording(true);
       setRecordingTime(0);
       timerRef.current = setInterval(() => setRecordingTime((prev) => prev + 1), 1000);
     } catch (err) {
-      alert("Error accediendo al micrófono. Verifica los permisos de tu navegador.");
+      alert("Error accediendo al micrófono. Verifica los permisos del navegador.");
     }
   };
 

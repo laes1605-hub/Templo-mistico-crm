@@ -23,7 +23,7 @@ export async function GET(req: Request) {
     let openai = { ok: false, balance: null as number | null, note: "No consultado" };
     let fish = { ok: false, balance: null as number | null, note: "No consultado" };
 
-    // ---------- 1. OPENAI ----------
+    // ---------- OPENAI ----------
     if (rawOpenAI) {
       try {
         const r = await fetch("https://api.openai.com/v1/dashboard/billing/credit_grants", {
@@ -57,7 +57,7 @@ export async function GET(req: Request) {
       openai.note = "Falta OPENAI_API_KEY en Vercel";
     }
 
-    // ---------- 2. FISH AUDIO (Endpoint Oficial Confirmado) ----------
+    // ---------- FISH AUDIO ----------
     if (rawFish) {
       const keyMasked = rawFish.length > 8
         ? `${rawFish.substring(0, 8)}...${rawFish.substring(rawFish.length - 4)}`

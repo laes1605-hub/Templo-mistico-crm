@@ -1,5 +1,5 @@
 {
   "/_not-found/page": "app/_not-found/page.js",
-  "/api/send-message/route": "app/api/send-message/route.js",
-  "/page": "app/page.js"
+  "/page": "app/page.js",
+  "/api/send-message/route": "app/api/send-message/route.js"
 }

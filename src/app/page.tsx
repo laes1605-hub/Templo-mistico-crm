@@ -124,11 +124,49 @@ export default function CRMApp() {
 
   useEffect(() => {
     if (!selectedConv) return;
-    const msgSub = supabase.channel(`r-msg-${selectedConv.id}`)
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "mensajes", filter: `conversacion_id=eq.${selectedConv.id}` },
-        (payload) => setMensajes((prev) => [...prev, payload.new])
-      ).subscribe();
-    return () => { supabase.removeChannel(msgSub); };
+
+    const msgSub = supabase
+      .channel(`r-msg-${selectedConv.id}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "mensajes",
+          filter: `conversacion_id=eq.${selectedConv.id}`,
+        },
+        (payload) => {
+          setMensajes((prev) => {
+            const nuevo = payload.new as any;
+
+            // 1) mismo id
+            if (prev.some((m) => m.id === nuevo.id)) return prev;
+
+            // 2) duplicado por contenido/tipo en ventana de 20s
+            const tNuevo = new Date(nuevo.creado_en).getTime();
+            const dup = prev.some((m) => {
+              const t = new Date(m.creado_en).getTime();
+              const near = Math.abs(tNuevo - t) < 20000;
+              const sameTipo = (m.tipo || "") === (nuevo.tipo || "");
+              const sameKind = (m.tipo_contenido || "texto") === (nuevo.tipo_contenido || "texto");
+              const c1 = (m.contenido || "").trim();
+              const c2 = (nuevo.contenido || "").trim();
+              const sameContent =
+                c1 === c2 ||
+                (sameKind && (c1 === `[${m.tipo_contenido}]` || c2 === `[${nuevo.tipo_contenido}]`));
+              return near && sameTipo && sameKind && sameContent;
+            });
+
+            if (dup) return prev;
+            return [...prev, nuevo];
+          });
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(msgSub);
+    };
   }, [selectedConv]);
 
   useEffect(() => {
@@ -177,7 +215,19 @@ export default function CRMApp() {
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mediaRecorder = new MediaRecorder(stream);
+
+      let mimeType = "audio/webm";
+      if (typeof MediaRecorder !== "undefined") {
+        if (MediaRecorder.isTypeSupported("audio/ogg;codecs=opus")) {
+          mimeType = "audio/ogg;codecs=opus";
+        } else if (MediaRecorder.isTypeSupported("audio/webm;codecs=opus")) {
+          mimeType = "audio/webm;codecs=opus";
+        } else if (MediaRecorder.isTypeSupported("audio/mp4")) {
+          mimeType = "audio/mp4";
+        }
+      }
+
+      const mediaRecorder = new MediaRecorder(stream, { mimeType });
       mediaRecorderRef.current = mediaRecorder;
       audioChunksRef.current = [];
 
@@ -186,12 +236,14 @@ export default function CRMApp() {
       };
 
       mediaRecorder.onstop = async () => {
-        const audioBlob = new Blob(audioChunksRef.current, { type: "audio/mp3" });
+        const ext = mimeType.includes("ogg") ? "ogg" : mimeType.includes("mp4") ? "mp4" : "webm";
+        const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
         const reader = new FileReader();
         reader.readAsDataURL(audioBlob);
         reader.onloadend = async () => {
           const base64data = reader.result as string;
-          await sendToApi("", base64data, "audio/mp3", "nota_de_voz.mp3");
+          // nombre especial para que la API sepa que es nota de voz
+          await sendToApi("", base64data, mimeType, `nota_de_voz.${ext}`);
         };
         stream.getTracks().forEach((track) => track.stop());
       };

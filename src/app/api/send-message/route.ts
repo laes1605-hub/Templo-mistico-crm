@@ -17,8 +17,8 @@ export async function POST(req: Request) {
 
     const cleanNumber = String(numeroWhatsApp).replace(/[^\d]/g, "");
 
-    // 1. Obtener la conversación desde Supabase para saber si es de Evolution o Meta
-    let fuente = "evolution";
+    // 1. Obtener la fuente de la conversación desde Supabase
+    let fuente = "meta_business";
     let chatwootConvId = null;
 
     if (conversacionId) {
@@ -29,15 +29,15 @@ export async function POST(req: Request) {
         .single();
 
       if (convData) {
-        fuente = convData.fuente || "evolution";
+        fuente = convData.fuente || "meta_business";
         chatwootConvId = convData.chatwoot_conversation_id;
       }
     }
 
     let tipoGuardado = "texto";
 
-    // 2. ENVIAR MENSAJE
-    // Si la conversación es de Meta Cloud API o no tiene Evolution, enviamos vía Chatwoot API
+    // 2. ENVIAR MENSAJE SEGÚN EL CANAL
+    // Si el chat es de Meta WhatsApp API (Inbox 5), enviamos por Chatwoot API
     if (fuente === "meta_business" && chatwootConvId) {
       const cwRes = await fetch(`${chatwootUrl}/api/v1/accounts/1/conversations/${chatwootConvId}/messages`, {
         method: "POST",
@@ -52,10 +52,10 @@ export async function POST(req: Request) {
       });
 
       if (!cwRes.ok) {
-        console.error("Error enviando a Chatwoot/Meta API:", await cwRes.text());
+        console.error("Error enviando mensaje a Chatwoot Meta API:", await cwRes.text());
       }
     } else {
-      // Si es WhatsApp Personal, enviamos directo vía Evolution API
+      // Si es chat del WhatsApp Personal, enviamos por Evolution API
       const pureBase64 = fileBase64
         ? (String(fileBase64).includes(",") ? String(fileBase64).split(",")[1] : String(fileBase64))
         : null;
@@ -89,7 +89,7 @@ export async function POST(req: Request) {
       });
     }
 
-    // 3. Guardar en Supabase
+    // 3. Guardar mensaje saliente en Supabase
     if (conversacionId) {
       const contenidoFinal = texto || (fileBase64 ? `[${tipoGuardado}]` : "");
 

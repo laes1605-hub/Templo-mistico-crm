@@ -4,20 +4,19 @@ import { supabase } from "../../../lib/supabase";
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const { conversacionId, clienteId, numeroWhatsApp, texto, fileBase64, fileMime, fileName } = body;
+    const { conversacionId, numeroWhatsApp, texto, fileBase64, fileMime, fileName } = body;
 
     if (!numeroWhatsApp || (!texto && !fileBase64)) {
       return NextResponse.json({ error: "Faltan parámetros requeridos" }, { status: 400 });
     }
 
     const evoUrl = process.env.EVOLUTION_API_URL || "https://evo.crmesteban.duckdns.org";
-    const evoKey = process.env.EVOLUTION_API_KEY || "25bbc50b8bfeb365633899951d2b9a6c4110f94e08535133d0953da151b4a1d3";
-    const chatwootToken = "KKaF2gF4bJZvnSkqKnR42zD8";
-    const chatwootUrl = "https://crmesteban.duckdns.org";
+    const evoKey = process.env.EVOLUTION_API_KEY || "";
+    const chatwootToken = process.env.CHATWOOT_API_TOKEN || "";
+    const chatwootUrl = process.env.CHATWOOT_URL || "https://crmesteban.duckdns.org";
 
     const cleanNumber = String(numeroWhatsApp).replace(/[^\d]/g, "");
 
-    // 1. Obtener la fuente de la conversación desde Supabase
     let fuente = "meta_business";
     let chatwootConvId = null;
 
@@ -36,8 +35,7 @@ export async function POST(req: Request) {
 
     let tipoGuardado = "texto";
 
-    // 2. ENVIAR MENSAJE SEGÚN EL CANAL
-    // Si el chat es de Meta WhatsApp API (Inbox 5), enviamos por Chatwoot API
+    // Enviar a Meta Cloud API vía Chatwoot
     if (fuente === "meta_business" && chatwootConvId) {
       const cwRes = await fetch(`${chatwootUrl}/api/v1/accounts/1/conversations/${chatwootConvId}/messages`, {
         method: "POST",
@@ -52,10 +50,10 @@ export async function POST(req: Request) {
       });
 
       if (!cwRes.ok) {
-        console.error("Error enviando mensaje a Chatwoot Meta API:", await cwRes.text());
+        console.error("Error enviando mensaje a Chatwoot API:", await cwRes.text());
       }
     } else {
-      // Si es chat del WhatsApp Personal, enviamos por Evolution API
+      // Enviar a WhatsApp Personal vía Evolution API
       const pureBase64 = fileBase64
         ? (String(fileBase64).includes(",") ? String(fileBase64).split(",")[1] : String(fileBase64))
         : null;
@@ -89,7 +87,7 @@ export async function POST(req: Request) {
       });
     }
 
-    // 3. Guardar mensaje saliente en Supabase
+    // Guardar en Supabase
     if (conversacionId) {
       const contenidoFinal = texto || (fileBase64 ? `[${tipoGuardado}]` : "");
 

@@ -26,6 +26,10 @@ export default function CRMApp() {
   const [pipelineEtapas, setPipelineEtapas] = useState<any[]>([]);
   const [isEditingPipeline, setIsEditingPipeline] = useState(false);
 
+  // Edición de Nombre de Cliente
+  const [isEditingNombre, setIsEditingNombre] = useState(false);
+  const [tempNombre, setTempNombre] = useState("");
+
   const [nuevoMensaje, setNuevoMensaje] = useState("");
   const [loadingChats, setLoadingChats] = useState(true);
   const [filtroCanal, setFiltroCanal] = useState<"todos" | "evolution" | "meta_business" | "spam">("todos");
@@ -101,6 +105,7 @@ export default function CRMApp() {
   async function selectConversation(conv: any) {
     setSelectedConv(conv);
     setClienteActual(conv.clientes);
+    setIsEditingNombre(false);
     setShowMobileDetails(false);
     fetchMensajes(conv.id);
     fetchPagos(conv.cliente_id);
@@ -124,54 +129,34 @@ export default function CRMApp() {
 
   useEffect(() => {
     if (!selectedConv) return;
-
-    const msgSub = supabase
-      .channel(`r-msg-${selectedConv.id}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "INSERT",
-          schema: "public",
-          table: "mensajes",
-          filter: `conversacion_id=eq.${selectedConv.id}`,
-        },
-        (payload) => {
-          setMensajes((prev) => {
-            const nuevo = payload.new as any;
-
-            // 1) mismo id
-            if (prev.some((m) => m.id === nuevo.id)) return prev;
-
-            // 2) duplicado por contenido/tipo en ventana de 20s
-            const tNuevo = new Date(nuevo.creado_en).getTime();
-            const dup = prev.some((m) => {
-              const t = new Date(m.creado_en).getTime();
-              const near = Math.abs(tNuevo - t) < 20000;
-              const sameTipo = (m.tipo || "") === (nuevo.tipo || "");
-              const sameKind = (m.tipo_contenido || "texto") === (nuevo.tipo_contenido || "texto");
-              const c1 = (m.contenido || "").trim();
-              const c2 = (nuevo.contenido || "").trim();
-              const sameContent =
-                c1 === c2 ||
-                (sameKind && (c1 === `[${m.tipo_contenido}]` || c2 === `[${nuevo.tipo_contenido}]`));
-              return near && sameTipo && sameKind && sameContent;
-            });
-
-            if (dup) return prev;
-            return [...prev, nuevo];
-          });
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(msgSub);
-    };
+    const msgSub = supabase.channel(`r-msg-${selectedConv.id}`)
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "mensajes", filter: `conversacion_id=eq.${selectedConv.id}` },
+        (payload) => setMensajes((prev) => [...prev, payload.new])
+      ).subscribe();
+    return () => { supabase.removeChannel(msgSub); };
   }, [selectedConv]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [mensajes]);
+
+  // ===================== EDITAR NOMBRE DE CLIENTE =====================
+  async function guardarNuevoNombre() {
+    if (!clienteActual || !tempNombre.trim()) return;
+    const nuevoNombre = tempNombre.trim();
+
+    const { error } = await supabase
+      .from("clientes")
+      .update({ nombre: nuevoNombre, actualizado_en: new Date().toISOString() })
+      .eq("id", clienteActual.id);
+
+    if (!error) {
+      setClienteActual({ ...clienteActual, nombre: nuevoNombre });
+      setConversaciones(prev => prev.map(c => c.cliente_id === clienteActual.id ? { ...c, clientes: { ...c.clientes, nombre: nuevoNombre } } : c));
+      setTodosClientes(prev => prev.map(c => c.id === clienteActual.id ? { ...c, nombre: nuevoNombre } : c));
+      setIsEditingNombre(false);
+    }
+  }
 
   // ===================== ENVIAR MENSAJES / ARCHIVOS =====================
   async function sendToApi(texto: string, fileBase64: string | null = null, fileMime: string | null = null, fileName: string | null = null) {
@@ -211,46 +196,27 @@ export default function CRMApp() {
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
-     // ==========================================================
-   // ==========================================================
-  // GRABACIÓN DE AUDIO EN VIVO (DIRECTA, SIN CORTE INICIAL)
-  // ==========================================================
+  // ===================== GRABACIÓN DE AUDIO =====================
   const startRecording = async () => {
     try {
-      // 1. Pedir stream directo del micrófono sin el filtro agresivo de ruido
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: false, // ¡Elimina el corte del primer segundo!
-          autoGainControl: true
-        }
+        audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: true }
       });
 
-      // 2. Determinar el mejor formato soportado por el dispositivo
-      let mimeType = "";
+      let mimeType = "audio/webm";
       if (typeof MediaRecorder !== "undefined") {
-        if (MediaRecorder.isTypeSupported("audio/webm;codecs=opus")) {
-          mimeType = "audio/webm;codecs=opus";
-        } else if (MediaRecorder.isTypeSupported("audio/ogg;codecs=opus")) {
-          mimeType = "audio/ogg;codecs=opus";
-        } else if (MediaRecorder.isTypeSupported("audio/mp4")) {
-          mimeType = "audio/mp4";
-        } else if (MediaRecorder.isTypeSupported("audio/webm")) {
-          mimeType = "audio/webm";
-        }
+        if (MediaRecorder.isTypeSupported("audio/webm;codecs=opus")) mimeType = "audio/webm;codecs=opus";
+        else if (MediaRecorder.isTypeSupported("audio/ogg;codecs=opus")) mimeType = "audio/ogg;codecs=opus";
+        else if (MediaRecorder.isTypeSupported("audio/mp4")) mimeType = "audio/mp4";
       }
 
-      // 3. Crear el grabador directo desde el stream del micrófono
       const options = mimeType ? { mimeType } : undefined;
       const mediaRecorder = new MediaRecorder(stream, options);
-
       mediaRecorderRef.current = mediaRecorder;
       audioChunksRef.current = [];
 
       mediaRecorder.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) {
-          audioChunksRef.current.push(e.data);
-        }
+        if (e.data && e.data.size > 0) audioChunksRef.current.push(e.data);
       };
 
       mediaRecorder.onstop = async () => {
@@ -258,10 +224,7 @@ export default function CRMApp() {
         const ext = usedMime.includes("ogg") ? "ogg" : usedMime.includes("mp4") ? "mp4" : "webm";
         const audioBlob = new Blob(audioChunksRef.current, { type: usedMime });
 
-        if (audioBlob.size === 0) {
-          console.error("El audio grabado quedó vacío");
-          return;
-        }
+        if (audioBlob.size === 0) return;
 
         const reader = new FileReader();
         reader.readAsDataURL(audioBlob);
@@ -269,33 +232,23 @@ export default function CRMApp() {
           const base64data = reader.result as string;
           await sendToApi("", base64data, usedMime, `nota_de_voz.${ext}`);
         };
-
-        // Apagar micrófono del celular al terminar
         stream.getTracks().forEach((track) => track.stop());
       };
 
-      // Grabar acumulando fragmentos de audio cada 200ms
       mediaRecorder.start(200);
       setIsRecording(true);
       setRecordingTime(0);
       timerRef.current = setInterval(() => setRecordingTime((prev) => prev + 1), 1000);
     } catch (err: any) {
-      console.error("Error al iniciar grabación:", err);
       alert("Error accediendo al micrófono. Verifica los permisos de tu navegador.");
     }
   };
 
   const stopRecording = () => {
     if (mediaRecorderRef.current && isRecording) {
-      // Búfer de 300ms antes de detener para capturar la última palabra entera sin cortes
-      setTimeout(() => {
-        if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-          mediaRecorderRef.current.requestData(); // Forzar vuelco del último pedazo de audio
-          mediaRecorderRef.current.stop();
-          setIsRecording(false);
-          if (timerRef.current) clearInterval(timerRef.current);
-        }
-      }, 300);
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+      if (timerRef.current) clearInterval(timerRef.current);
     }
   };
 
@@ -423,13 +376,10 @@ export default function CRMApp() {
 
   async function marcarPago(id: string, est: string) {
     const nest = est === "pagado" ? "pendiente" : "pagado";
-    await supabase
-      .from("pagos")
-      .update({
-        estado: nest,
-        fecha_pago: nest === "pagado" ? new Date().toISOString().split("T")[0] : null,
-      })
-      .eq("id", id);
+    await supabase.from("pagos").update({
+      estado: nest,
+      fecha_pago: nest === "pagado" ? new Date().toISOString().split("T")[0] : null,
+    }).eq("id", id);
     setPagosCliente(pagosCliente.map((p) => (p.id === id ? { ...p, estado: nest } : p)));
     fetchTodosPagos();
   }
@@ -537,7 +487,6 @@ export default function CRMApp() {
     <div className="flex flex-col md:flex-row h-[100dvh] w-screen bg-background text-gray-200 overflow-hidden font-sans">
       
       {/* ========== BARRA NAVEGACIÓN ========== */}
-      {/* Móvil: abajo | PC: izquierda */}
       <aside className="fixed bottom-0 w-full h-16 bg-surface border-t border-border flex flex-row items-center justify-around z-40 md:relative md:w-20 md:h-full md:border-r md:border-t-0 md:flex-col md:py-6 md:justify-between">
         <div className="hidden md:flex w-12 h-12 rounded-2xl bg-gradient-to-tr from-purple-600 to-indigo-500 items-center justify-center shadow-lg shadow-purple-900/40">
           <span className="text-xl font-bold text-white">🔮</span>
@@ -667,7 +616,6 @@ export default function CRMApp() {
                 
                 {/* VENTANA DE CHAT */}
                 <section className={`flex-1 flex flex-col h-full ${showMobileDetails ? "hidden md:flex" : "flex"}`}>
-                  {/* Header chat */}
                   <header className="h-16 px-4 md:px-6 border-b border-border bg-surface/80 backdrop-blur-md flex items-center justify-between flex-shrink-0">
                     <div className="flex items-center gap-3">
                       <button onClick={() => setSelectedConv(null)} className="md:hidden p-2 -ml-2 text-gray-400 hover:text-white">
@@ -813,7 +761,7 @@ export default function CRMApp() {
                   </header>
 
                   <div className="p-5 space-y-5">
-                    {/* Avatar y nombre */}
+                    {/* Avatar y Nombre Editable */}
                     <div className="text-center">
                       <div className="w-20 h-20 mx-auto rounded-full bg-surface border-2 border-purple-500 flex items-center justify-center text-2xl font-bold text-purple-300 mb-3 overflow-hidden shadow-lg shadow-purple-900/20">
                         {clienteActual.foto_url ? (
@@ -822,8 +770,39 @@ export default function CRMApp() {
                           <span>{clienteActual.nombre?.charAt(0) || "W"}</span>
                         )}
                       </div>
-                      <h3 className="text-base font-bold text-gray-100">{clienteActual.nombre || "Sin Nombre"}</h3>
-                      <p className="text-xs text-gray-400">{clienteActual.telefono_display || clienteActual.telefono}</p>
+
+                      {/* EDICIÓN RÁPIDA DE NOMBRE DE CLIENTE */}
+                      {isEditingNombre ? (
+                        <div className="flex items-center justify-center gap-1.5 px-2">
+                          <input
+                            type="text"
+                            value={tempNombre}
+                            onChange={(e) => setTempNombre(e.target.value)}
+                            className="bg-background border border-purple-500 rounded-lg px-2.5 py-1 text-sm text-gray-100 focus:outline-none w-full text-center"
+                            autoFocus
+                            onKeyDown={(e) => { if (e.key === "Enter") guardarNuevoNombre(); }}
+                          />
+                          <button onClick={guardarNuevoNombre} className="p-1.5 text-emerald-400 hover:text-emerald-300">
+                            <CheckCircle2 className="w-4 h-4" />
+                          </button>
+                          <button onClick={() => setIsEditingNombre(false)} className="p-1.5 text-gray-400 hover:text-red-400">
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-center gap-2 group">
+                          <h3 className="text-base font-bold text-gray-100">{clienteActual.nombre || "Sin Nombre"}</h3>
+                          <button 
+                            onClick={() => { setTempNombre(clienteActual.nombre || ""); setIsEditingNombre(true); }}
+                            className="text-gray-500 hover:text-purple-300 transition-colors"
+                            title="Editar nombre"
+                          >
+                            <Edit2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      )}
+
+                      <p className="text-xs text-gray-400 mt-0.5">{clienteActual.telefono_display || clienteActual.telefono}</p>
                     </div>
 
                     {/* Botones Spam / IA */}
@@ -1060,7 +1039,6 @@ export default function CRMApp() {
                 </aside>
               </div>
             ) : (
-              /* Empty state cuando no hay chat seleccionado en desktop */
               <div className="hidden md:flex flex-1 flex-col items-center justify-center text-gray-500 bg-background">
                 <MessageSquare className="w-12 h-12 mb-2 stroke-[1.5]" />
                 <p className="text-sm">Selecciona una conversación</p>

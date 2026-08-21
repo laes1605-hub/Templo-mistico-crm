@@ -4,7 +4,7 @@ import { supabase } from "../../../lib/supabase";
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const { conversacionId, numeroWhatsApp, texto, fileBase64, fileMime, fileName } = body;
+    const { conversacionId, clienteId, numeroWhatsApp, texto, fileBase64, fileMime, fileName } = body;
 
     if (!numeroWhatsApp || (!texto && !fileBase64)) {
       return NextResponse.json({ error: "Faltan parámetros requeridos" }, { status: 400 });
@@ -12,97 +12,84 @@ export async function POST(req: Request) {
 
     const evoUrl = process.env.EVOLUTION_API_URL || "https://evo.crmesteban.duckdns.org";
     const evoKey = process.env.EVOLUTION_API_KEY || "25bbc50b8bfeb365633899951d2b9a6c4110f94e08535133d0953da151b4a1d3";
+    const chatwootToken = "KKaF2gF4bJZvnSkqKnR42zD8";
+    const chatwootUrl = "https://crmesteban.duckdns.org";
+
     const cleanNumber = String(numeroWhatsApp).replace(/[^\d]/g, "");
 
-    const pureBase64 = fileBase64
-      ? (String(fileBase64).includes(",") ? String(fileBase64).split(",")[1] : String(fileBase64))
-      : null;
+    // 1. Obtener la conversación desde Supabase para saber si es de Evolution o Meta
+    let fuente = "evolution";
+    let chatwootConvId = null;
+
+    if (conversacionId) {
+      const { data: convData } = await supabase
+        .from("conversaciones")
+        .select("fuente, chatwoot_conversation_id")
+        .eq("id", conversacionId)
+        .single();
+
+      if (convData) {
+        fuente = convData.fuente || "evolution";
+        chatwootConvId = convData.chatwoot_conversation_id;
+      }
+    }
 
     let tipoGuardado = "texto";
-    let endpoint = "";
-    let payload: any = {};
 
-    // ========== AUDIO = NOTA DE VOZ (PTT) ==========
-    if (fileBase64 && (fileMime?.startsWith("audio/") || fileName?.includes("nota_de_voz") || fileName?.endsWith(".webm") || fileName?.endsWith(".ogg") || fileName?.endsWith(".mp3"))) {
-      tipoGuardado = "audio";
-      endpoint = `${evoUrl}/message/sendWhatsAppAudio/personal`;
-      payload = {
-        number: cleanNumber,
-        audio: pureBase64,
-        // encoding opcional según versión Evolution
-        // encoding: "base64",
-      };
-    }
-    // ========== IMAGEN / VIDEO / DOCUMENTO ==========
-    else if (fileBase64) {
-      endpoint = `${evoUrl}/message/sendMedia/personal`;
+    // 2. ENVIAR MENSAJE
+    // Si la conversación es de Meta Cloud API o no tiene Evolution, enviamos vía Chatwoot API
+    if (fuente === "meta_business" && chatwootConvId) {
+      const cwRes = await fetch(`${chatwootUrl}/api/v1/accounts/1/conversations/${chatwootConvId}/messages`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          api_access_token: chatwootToken,
+        },
+        body: JSON.stringify({
+          content: texto || (fileBase64 ? `[Archivo enviado]` : ""),
+          message_type: "outgoing",
+        }),
+      });
 
-      let mediatype = "document";
-      if (fileMime?.startsWith("image/")) {
-        mediatype = "image";
-        tipoGuardado = "imagen";
-      } else if (fileMime?.startsWith("video/")) {
-        mediatype = "video";
-        tipoGuardado = "video";
-      } else {
-        tipoGuardado = "archivo";
+      if (!cwRes.ok) {
+        console.error("Error enviando a Chatwoot/Meta API:", await cwRes.text());
+      }
+    } else {
+      // Si es WhatsApp Personal, enviamos directo vía Evolution API
+      const pureBase64 = fileBase64
+        ? (String(fileBase64).includes(",") ? String(fileBase64).split(",")[1] : String(fileBase64))
+        : null;
+
+      let endpoint = `${evoUrl}/message/sendText/personal`;
+      let payload: any = { number: cleanNumber, text: texto || "" };
+
+      if (fileBase64 && (fileMime?.startsWith("audio/") || fileName?.includes("nota_de_voz"))) {
+        tipoGuardado = "audio";
+        endpoint = `${evoUrl}/message/sendWhatsAppAudio/personal`;
+        payload = { number: cleanNumber, audio: pureBase64 };
+      } else if (fileBase64) {
+        endpoint = `${evoUrl}/message/sendMedia/personal`;
+        let mediatype = "document";
+        if (fileMime?.startsWith("image/")) { mediatype = "image"; tipoGuardado = "imagen"; }
+        else if (fileMime?.startsWith("video/")) { mediatype = "video"; tipoGuardado = "video"; }
+        payload = {
+          number: cleanNumber,
+          mediatype,
+          mimetype: fileMime || "application/octet-stream",
+          fileName: fileName || "archivo",
+          caption: texto || "",
+          media: pureBase64,
+        };
       }
 
-      payload = {
-        number: cleanNumber,
-        mediatype,
-        mimetype: fileMime || "application/octet-stream",
-        fileName: fileName || "archivo",
-        caption: texto || "",
-        media: pureBase64,
-      };
-    }
-    // ========== TEXTO ==========
-    else {
-      endpoint = `${evoUrl}/message/sendText/personal`;
-      payload = {
-        number: cleanNumber,
-        text: texto || "",
-      };
-      tipoGuardado = "texto";
+      await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", apikey: evoKey },
+        body: JSON.stringify(payload),
+      });
     }
 
-    const evoRes = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        apikey: evoKey,
-      },
-      body: JSON.stringify(payload),
-    });
-
-    if (!evoRes.ok) {
-      const errText = await evoRes.text();
-      console.error("Error Evolution API:", errText);
-      // fallback: si sendWhatsAppAudio falla, intentar sendMedia audio
-      if (tipoGuardado === "audio" && pureBase64) {
-        const fallbackRes = await fetch(`${evoUrl}/message/sendMedia/personal`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            apikey: evoKey,
-          },
-          body: JSON.stringify({
-            number: cleanNumber,
-            mediatype: "audio",
-            mimetype: fileMime || "audio/ogg; codecs=opus",
-            fileName: fileName || "audio.ogg",
-            media: pureBase64,
-          }),
-        });
-        if (!fallbackRes.ok) {
-          const t2 = await fallbackRes.text();
-          console.error("Fallback audio error:", t2);
-        }
-      }
-    }
-
-    // Guardar en Supabase (1 sola vez desde CRM)
+    // 3. Guardar en Supabase
     if (conversacionId) {
       const contenidoFinal = texto || (fileBase64 ? `[${tipoGuardado}]` : "");
 
@@ -126,7 +113,7 @@ export async function POST(req: Request) {
         .eq("id", conversacionId);
     }
 
-    return NextResponse.json({ success: true, tipo: tipoGuardado });
+    return NextResponse.json({ success: true });
   } catch (error: any) {
     console.error("Error en send-message:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });

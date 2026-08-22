@@ -7,7 +7,7 @@ import {
   CheckCircle2, Clock, Plus, Ban, Settings, Edit2, Trash2, ArrowUp, ArrowDown,
   Wallet, Target, TrendingDown, Award, Calendar, Shield, X,
   Mic, Paperclip, ArrowLeft, Info, ListTodo, CheckSquare, Square,
-  Sparkles, Play, Pause, RefreshCw, ImageIcon
+  Sparkles, Play, Pause, RefreshCw, Image as ImageIcon, ChevronDown, ChevronRight
 } from "lucide-react";
 
 export default function CRMApp() {
@@ -35,8 +35,8 @@ export default function CRMApp() {
   const [loadingAiAds, setLoadingAiAds] = useState(false);
   const [showAiModal, setShowAiModal] = useState(false);
   const [adsNote, setAdsNote] = useState("");
+  const [expandedCamp, setExpandedCamp] = useState<string | null>(null);
 
-  // EDICIÓN NOMBRE
   const [isEditingNombre, setIsEditingNombre] = useState(false);
   const [tempNombre, setTempNombre] = useState("");
 
@@ -469,10 +469,6 @@ export default function CRMApp() {
   const leadsPerdidos = clientesNoSpam.filter((c) => c.estado === "perdido").length;
   const leadsNuevos = clientesNoSpam.filter((c) => c.estado === "nuevo_lead" || !c.estado).length;
 
-  const totalSpendAds = campanas.reduce((acc, c) => acc + Number(c.spend || 0), 0);
-  const totalLeadsAds = campanas.reduce((acc, c) => acc + Number(c.leads || 0), 0);
-  const activeCampaignsCount = campanas.filter(c => c.status === "ACTIVE").length;
-
   const menuItems = [
     { id: "chats", icon: MessageSquare, label: "Chats" },
     { id: "pipeline", icon: Users, label: "Pipeline" },
@@ -617,7 +613,6 @@ export default function CRMApp() {
                   </div>
                 </section>
 
-                {/* FICHA TÉCNICA DEL CLIENTE */}
                 <aside className={`w-full md:w-80 lg:w-96 border-l border-border bg-surface/95 overflow-y-auto absolute inset-0 z-30 md:relative flex flex-col ${!showMobileDetails ? "hidden md:flex" : "flex"}`}>
                   <header className="md:hidden flex items-center p-4 border-b border-border bg-background sticky top-0 z-10">
                     <button onClick={() => setShowMobileDetails(false)} className="p-2 -ml-2 text-gray-400"><ArrowLeft className="w-5 h-5" /></button>
@@ -659,14 +654,13 @@ export default function CRMApp() {
                       </select>
                     </div>
 
-                    {/* GALERÍA DE FOTOS RECIBIDAS (RESTAURADA COMPLETA) */}
                     <div className="bg-background p-4 rounded-xl border border-border space-y-3">
                       <h4 className="text-[10px] font-bold text-gray-500 uppercase tracking-wider flex items-center gap-1.5">
                         <ImageIcon className="w-3.5 h-3.5" /> Fotos Recibidas (Checklist)
                       </h4>
                       <div className="grid grid-cols-3 gap-2">
                         {clienteActual.foto_url ? (
-                          <a href={clienteActual.foto_url} target="_blank" rel="noreferrer" className="aspect-square rounded-lg bg-surface border border-border overflow-hidden group relative flex items-center justify-center">
+                          <a href={clienteActual.foto_url} target="_blank" rel="noreferrer" className="aspect-square rounded-lg bg-surface border border-border overflow-hidden group relative">
                             <img src={clienteActual.foto_url} alt="Cliente" className="w-full h-full object-cover" />
                             <span className="absolute inset-0 bg-black/70 opacity-0 group-hover:opacity-100 flex items-center justify-center text-[10px] text-white font-semibold transition-opacity">Cliente</span>
                           </a>
@@ -675,9 +669,8 @@ export default function CRMApp() {
                             <span>Foto</span><span>Cliente</span>
                           </div>
                         )}
-
                         {clienteActual.foto_otra_persona ? (
-                          <a href={clienteActual.foto_otra_persona} target="_blank" rel="noreferrer" className="aspect-square rounded-lg bg-surface border border-border overflow-hidden group relative flex items-center justify-center">
+                          <a href={clienteActual.foto_otra_persona} target="_blank" rel="noreferrer" className="aspect-square rounded-lg bg-surface border border-border overflow-hidden group relative">
                             <img src={clienteActual.foto_otra_persona} alt="Pareja" className="w-full h-full object-cover" />
                             <span className="absolute inset-0 bg-black/70 opacity-0 group-hover:opacity-100 flex items-center justify-center text-[10px] text-white font-semibold transition-opacity">Pareja</span>
                           </a>
@@ -686,9 +679,8 @@ export default function CRMApp() {
                             <span>Foto</span><span>Pareja</span>
                           </div>
                         )}
-
                         {clienteActual.foto_mano ? (
-                          <a href={clienteActual.foto_mano} target="_blank" rel="noreferrer" className="aspect-square rounded-lg bg-surface border border-border overflow-hidden group relative flex items-center justify-center">
+                          <a href={clienteActual.foto_mano} target="_blank" rel="noreferrer" className="aspect-square rounded-lg bg-surface border border-border overflow-hidden group relative">
                             <img src={clienteActual.foto_mano} alt="Palma Mano" className="w-full h-full object-cover" />
                             <span className="absolute inset-0 bg-black/70 opacity-0 group-hover:opacity-100 flex items-center justify-center text-[10px] text-white font-semibold transition-opacity">Palma</span>
                           </a>
@@ -733,7 +725,7 @@ export default function CRMApp() {
                         <div className="space-y-1.5">
                           {pagosCliente.map((pago) => (
                             <div key={pago.id} className={`flex items-center justify-between p-2 rounded-lg border text-xs ${pago.estado === "pagado" ? "bg-emerald-950/20 border-emerald-900/40" : "bg-surface border-border"}`}>
-                              <button onClick={() => marcarPago(pago.id, pago.estado)} className="mr-2 flex-shrink-0">{pago.estado === "pagado" ? <CheckCircle2 className="w-4 h-4 text-emerald-500" /> : <Clock className="w-4 h-4 text-amber-500" opacity-80 />}</button>
+                              <button onClick={() => marcarPago(pago.id, pago.estado)} className="mr-2 flex-shrink-0">{pago.estado === "pagado" ? <CheckCircle2 className="w-4 h-4 text-emerald-500" /> : <Clock className="w-4 h-4 text-amber-500" />}</button>
                               <div className="flex-1 min-w-0">
                                 <span className={pago.estado === "pagado" ? "line-through text-gray-500" : "text-gray-200"}>${Number(pago.monto).toLocaleString()}</span>
                                 <div className="text-[9px] text-gray-500 truncate">{pago.notas} • {pago.fecha_vencimiento}</div>
@@ -941,7 +933,10 @@ export default function CRMApp() {
                 <div className="p-4 md:p-5 bg-surface border border-border rounded-2xl">
                   <p className="text-xl md:text-2xl font-extrabold text-red-400">${totalVencido.toLocaleString()}</p>
                   <p className="text-[11px] text-gray-400 mt-1">Vencido</p>
-                              <div>
+                </div>
+              </div>
+            </div>
+            <div>
               <h2 className="text-sm font-bold text-purple-300 mb-3 uppercase tracking-wider">Embudo</h2>
               <div className="bg-surface border border-border rounded-2xl p-5 space-y-3">
                 {[
@@ -954,9 +949,7 @@ export default function CRMApp() {
                     <div key={step.label}>
                       <div className="flex justify-between text-xs mb-1">
                         <span className="text-gray-300 font-medium">{step.label}</span>
-                        <span className="text-gray-400">
-                          {step.valor} ({pct.toFixed(1)}%)
-                        </span>
+                        <span className="text-gray-400">{step.valor} ({pct.toFixed(1)}%)</span>
                       </div>
                       <div className="h-3 bg-background rounded-full overflow-hidden">
                         <div className={`h-full ${step.color} transition-all`} style={{ width: `${pct}%` }} />
@@ -964,9 +957,6 @@ export default function CRMApp() {
                     </div>
                   );
                 })}
-              </div>
-            </div>
-                </div>
               </div>
             </div>
             {todosPagos.filter((p) => p.estado === "pendiente" && new Date(p.fecha_vencimiento) < ahora).length > 0 && (
@@ -1000,22 +990,20 @@ export default function CRMApp() {
                   <h1 className="text-xl md:text-2xl font-bold text-gray-100 flex items-center gap-2"><TrendingUp className="text-purple-400 w-6 h-6" /> Gestor de Meta Ads (COP)</h1>
                   <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold border ${isLiveAds ? 'bg-emerald-950/60 text-emerald-400 border-emerald-800' : 'bg-amber-950/60 text-amber-400 border-amber-800'}`}>{isLiveAds ? 'Meta Live API' : 'Modo Demo'}</span>
                 </div>
-                <p className="text-xs md:text-sm text-gray-400">Control de campañas y costo por lead</p>
+                <p className="text-xs md:text-sm text-gray-400">Control de campañas y costo por lead. Haz clic en una campaña para ver detalles.</p>
               </div>
               <div className="flex items-center gap-2">
                 <button onClick={fetchCampanasAds} disabled={loadingAds} className="bg-surface hover:bg-surfaceHover border border-border text-gray-300 px-3 py-2 rounded-xl text-xs font-medium flex items-center gap-1.5 transition-all">
                   <RefreshCw className={`w-3.5 h-3.5 ${loadingAds ? 'animate-spin' : ''}`} /> Actualizar
                 </button>
                 <button onClick={consultarAsesorIAAds} className="bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white px-4 py-2 rounded-xl text-xs font-bold shadow-lg shadow-purple-900/30 flex items-center gap-2 transition-all">
-                  <Sparkles className="w-4 h-4" /> Analizar Anuncios con IA
+                  <Sparkles className="w-4 h-4" /> Analizar con IA
                 </button>
               </div>
             </header>
 
-            {!loadingAds && campanas.length === 0 && (
-              <div className="p-4 rounded-xl border border-amber-800/50 bg-amber-950/30 text-amber-200 text-xs">
-                No se encontraron campañas. Verifica el token y el ID de la cuenta en Vercel.
-              </div>
+            {adsNote && !loadingAds && (
+              <div className="p-3 rounded-xl border border-purple-800/40 bg-purple-950/20 text-purple-200 text-xs">{adsNote}</div>
             )}
 
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
@@ -1040,32 +1028,73 @@ export default function CRMApp() {
             <div className="bg-surface/50 border border-border rounded-2xl overflow-hidden shadow-sm">
               <div className="p-4 border-b border-border bg-surface/80 flex justify-between items-center">
                 <h3 className="text-sm font-bold text-gray-200 uppercase tracking-wider">Campañas</h3>
-                <span className="text-xs text-gray-400">{campanas.length} campañas</span>
+                <span className="text-xs text-gray-400">{campanas.length} en lista</span>
               </div>
-              <div className="divide-y divide-border">
+              <div className="divide-y divide-border/40">
                 {campanas.map((c) => {
                   const isActive = c.status === "ACTIVE";
+                  const isExpanded = expandedCamp === c.id;
                   return (
-                    <div key={c.id} className="p-4 md:p-5 flex flex-col md:flex-row md:items-center justify-between gap-4 hover:bg-surface/80 transition-colors">
-                      <div className="flex items-start gap-3 min-w-0">
-                        <button onClick={() => toggleEstadoCampana(c.id, c.status)} className={`mt-1 p-2 rounded-xl border transition-all ${isActive ? "bg-emerald-950/60 border-emerald-800 text-emerald-400" : "bg-surfaceHover border-border text-gray-500"}`} title={isActive ? "Pausar" : "Activar"}>
-                          {isActive ? <Pause className="w-4 h-4 fill-emerald-400" /> : <Play className="w-4 h-4 fill-gray-400 ml-0.5" />}
-                        </button>
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <h4 className="text-sm font-bold text-gray-100">{c.name}</h4>
-                            <span className={`text-[9px] px-2 py-0.5 rounded-full font-bold ${isActive ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-gray-800 text-gray-400'}`}>
-                              {isActive ? 'ACTIVA' : c.status === 'ARCHIVED' ? 'ARCHIVADA' : 'PAUSADA'}
-                            </span>
+                    <div key={c.id} className="hover:bg-surface/40 transition-colors">
+                      <div className="p-4 md:p-5 flex flex-col md:flex-row md:items-center justify-between gap-4 cursor-pointer" onClick={() => setExpandedCamp(isExpanded ? null : c.id)}>
+                        <div className="flex items-start gap-3 min-w-0">
+                          <button onClick={(e) => { e.stopPropagation(); toggleEstadoCampana(c.id, c.status); }} className={`mt-1 p-2 rounded-xl border transition-all ${isActive ? "bg-emerald-950/60 border-emerald-800 text-emerald-400" : "bg-surfaceHover border-border text-gray-500"}`} title={isActive ? "Pausar" : "Activar"}>
+                            {isActive ? <Pause className="w-4 h-4 fill-emerald-400" /> : <Play className="w-4 h-4 fill-gray-400 ml-0.5" />}
+                          </button>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h4 className="text-sm font-bold text-gray-100">{c.name}</h4>
+                              <span className={`text-[9px] px-2 py-0.5 rounded-full font-bold ${isActive ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-gray-800 text-gray-400'}`}>
+                                {isActive ? 'ACTIVA' : c.status === 'ARCHIVED' ? 'ARCHIVADA' : 'PAUSADA'}
+                              </span>
+                              {isExpanded ? <ChevronDown className="w-3.5 h-3.5 text-gray-400" /> : <ChevronRight className="w-3.5 h-3.5 text-gray-400" />}
+                            </div>
+                            <p className="text-xs text-gray-400 mt-1">Presupuesto: <span className="text-gray-200 font-medium">${Number(c.dailyBudget).toLocaleString("es-CO")} COP/día</span></p>
                           </div>
-                          <p className="text-xs text-gray-400 mt-1">Presupuesto: ${Number(c.dailyBudget).toLocaleString("es-CO")} COP/día • Clics: {c.clicks}</p>
+                        </div>
+                        <div className="flex items-center gap-6 justify-between md:justify-end border-t md:border-t-0 pt-3 md:pt-0 border-border">
+                          <div className="text-left md:text-right"><span className="text-[10px] text-gray-500 block uppercase font-bold">Invertido</span><span className="text-sm font-bold text-gray-200">${Number(c.spend).toLocaleString("es-CO")}</span></div>
+                          <div className="text-left md:text-right"><span className="text-[10px] text-gray-500 block uppercase font-bold">Leads</span><span className="text-sm font-bold text-purple-400">{c.leads}</span></div>
+                          <div className="text-left md:text-right"><span className="text-[10px] text-gray-500 block uppercase font-bold">CPL</span><span className={`text-xs font-extrabold px-2 py-0.5 rounded ${c.cpl < 10000 ? 'bg-emerald-950/80 text-emerald-400' : c.cpl < 18000 ? 'bg-amber-950/80 text-amber-400' : 'bg-red-950/80 text-red-400'}`}>${Number(c.cpl).toLocaleString("es-CO")} COP</span></div>
                         </div>
                       </div>
-                      <div className="flex items-center gap-6 justify-between md:justify-end border-t md:border-t-0 pt-3 md:pt-0 border-border">
-                        <div className="text-left md:text-right"><span className="text-[10px] text-gray-500 block uppercase font-bold">Invertido</span><span className="text-sm font-bold text-gray-200">${Number(c.spend).toLocaleString("es-CO")}</span></div>
-                        <div className="text-left md:text-right"><span className="text-[10px] text-gray-500 block uppercase font-bold">Leads</span><span className="text-sm font-bold text-purple-400">{c.leads}</span></div>
-                        <div className="text-left md:text-right"><span className="text-[10px] text-gray-500 block uppercase font-bold">CPL</span><span className={`text-xs font-extrabold px-2 py-0.5 rounded ${c.cpl < 10000 ? 'bg-emerald-950/80 text-emerald-400' : c.cpl < 18000 ? 'bg-amber-950/80 text-amber-400' : 'bg-red-950/80 text-red-400'}`}>${Number(c.cpl).toLocaleString("es-CO")} COP</span></div>
-                      </div>
+
+                      {/* PANEL EXPANDIDO DE DETALLES */}
+                      {isExpanded && (
+                        <div className="px-5 pb-5 pt-2 bg-surface/30 border-t border-border/50">
+                          <h5 className="text-[10px] font-bold text-purple-400 uppercase tracking-wider mb-3">Detalles de Rendimiento</h5>
+                          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                            <div>
+                              <span className="text-[10px] text-gray-500 uppercase">Impresiones</span>
+                              <p className="text-sm text-gray-200 font-medium">{Number(c.impressions).toLocaleString()}</p>
+                            </div>
+                            <div>
+                              <span className="text-[10px] text-gray-500 uppercase">Clics</span>
+                              <p className="text-sm text-gray-200 font-medium">{Number(c.clicks).toLocaleString()}</p>
+                            </div>
+                            <div>
+                              <span className="text-[10px] text-gray-500 uppercase">CTR</span>
+                              <p className="text-sm text-gray-200 font-medium">{c.impressions > 0 ? ((c.clicks / c.impressions) * 100).toFixed(2) : 0}%</p>
+                            </div>
+                            <div>
+                              <span className="text-[10px] text-gray-500 uppercase">CPC</span>
+                              <p className="text-sm text-gray-200 font-medium">${c.clicks > 0 ? Math.round(c.spend / c.clicks).toLocaleString("es-CO") : 0} COP</p>
+                            </div>
+                            <div>
+                              <span className="text-[10px] text-gray-500 uppercase">Presupuesto Total</span>
+                              <p className="text-sm text-gray-200 font-medium">{c.lifetimeBudget > 0 ? `$${Number(c.lifetimeBudget).toLocaleString("es-CO")} COP` : "Diario continuo"}</p>
+                            </div>
+                            <div>
+                              <span className="text-[10px] text-gray-500 uppercase">Estado Real</span>
+                              <p className="text-sm text-gray-200 font-medium">{c.status}</p>
+                            </div>
+                            <div className="col-span-2 md:col-span-2">
+                              <span className="text-[10px] text-gray-500 uppercase">ID Campaña</span>
+                              <p className="text-[10px] text-gray-500 font-mono mt-1">{c.id}</p>
+                            </div>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   );
                 })}

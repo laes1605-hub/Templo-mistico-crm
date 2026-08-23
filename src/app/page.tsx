@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { flushSync } from "react-dom";
 import { supabase } from "../lib/supabase";
+import VoiceNotePlayer from "../components/VoiceNotePlayer";
 import {
   MessageSquare, Users, DollarSign, TrendingUp, Brain, Send, Bot, Phone,
   CheckCircle2, Clock, Plus, Ban, Settings, Edit2, Trash2, ArrowUp, ArrowDown,
@@ -67,6 +68,10 @@ export default function CRMApp() {
   const autoStopRef = useRef<any>(null);
   const recordingStartRef = useRef<number>(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [recordingBars, setRecordingBars] = useState<number[]>([]);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const liveAudioCtxRef = useRef<AudioContext | null>(null);
+  const liveBarsIntervalRef = useRef<any>(null);
 
   const [showAdmin, setShowAdmin] = useState(false);
   const [adminSecret, setAdminSecret] = useState("");
@@ -328,6 +333,46 @@ export default function CRMApp() {
     stream?.getTracks().forEach((track) => track.stop());
   };
 
+  // Onda en vivo mientras se graba: niveles reales del micrófono con
+  // AnalyserNode (funciona igual en laptop y celular). No se conecta al
+  // destino de salida, así que no genera retroalimentación.
+  const setupLiveWaveform = (stream: MediaStream) => {
+    try {
+      const Ctx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!Ctx || analyserRef.current) return;
+      const ctx: AudioContext = new Ctx();
+      const source = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 64;
+      analyser.smoothingTimeConstant = 0.55;
+      source.connect(analyser);
+      liveAudioCtxRef.current = ctx;
+      analyserRef.current = analyser;
+      const spectrum = new Uint8Array(analyser.frequencyBinCount);
+      liveBarsIntervalRef.current = setInterval(() => {
+        analyser.getByteFrequencyData(spectrum);
+        const bars: number[] = [];
+        const COUNT = 16;
+        for (let i = 0; i < COUNT; i++) {
+          // La voz vive en las frecuencias bajas/medias; saltamos el bin de DC.
+          const idx = 1 + Math.floor(((i / COUNT) * spectrum.length) / 1.6);
+          bars.push(Math.max(0.08, (spectrum[Math.min(idx, spectrum.length - 1)] || 0) / 255));
+        }
+        setRecordingBars(bars);
+      }, 90);
+    } catch {
+      // La onda en vivo es sólo visual; si falla, la grabación continúa igual.
+    }
+  };
+
+  const teardownLiveWaveform = () => {
+    if (liveBarsIntervalRef.current) { clearInterval(liveBarsIntervalRef.current); liveBarsIntervalRef.current = null; }
+    analyserRef.current = null;
+    liveAudioCtxRef.current?.close().catch(() => {});
+    liveAudioCtxRef.current = null;
+    setRecordingBars([]);
+  };
+
   const startRecording = async () => {
     if (mediaRecorderRef.current?.state === "recording" || isSending || isPreparingRecording) return;
     let stream: MediaStream | null = null;
@@ -364,6 +409,8 @@ export default function CRMApp() {
         stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       }
 
+      setupLiveWaveform(stream);
+
       const mimeType = getPreferredAudioMime();
       const options: MediaRecorderOptions = { audioBitsPerSecond: 96000, ...(mimeType ? { mimeType } : {}) };
       const mediaRecorder = new MediaRecorder(stream, options);
@@ -375,6 +422,7 @@ export default function CRMApp() {
       };
       mediaRecorder.onerror = () => {
         cleanupRecordingTimers();
+        teardownLiveWaveform();
         stopStreamTracks(stream);
         mediaRecorderRef.current = null;
         setIsRecording(false);
@@ -383,6 +431,7 @@ export default function CRMApp() {
       };
       mediaRecorder.onstop = async () => {
         cleanupRecordingTimers();
+        teardownLiveWaveform();
         const duracionMs = Date.now() - recordingStartRef.current;
         const usedMime = mediaRecorder.mimeType || mimeType || "audio/webm";
         const ext = usedMime.includes("ogg") ? "ogg" : usedMime.includes("mp4") ? "m4a" : usedMime.includes("aac") ? "aac" : "webm";
@@ -421,6 +470,7 @@ export default function CRMApp() {
       autoStopRef.current = setTimeout(() => stopRecording(), MAX_GRABACION_SEG * 1000);
     } catch (err: any) {
       cleanupRecordingTimers();
+      teardownLiveWaveform();
       stopStreamTracks(stream || mediaRecorderRef.current?.stream);
       mediaRecorderRef.current = null;
       setIsRecording(false);
@@ -442,7 +492,9 @@ export default function CRMApp() {
     const recorder = mediaRecorderRef.current;
     if (recorder && recorder.state === "recording") {
       cleanupRecordingTimers();
+      teardownLiveWaveform();
       recorder.onstop = () => {
+        teardownLiveWaveform();
         stopStreamTracks(recorder.stream);
         mediaRecorderRef.current = null;
       };
@@ -659,7 +711,7 @@ export default function CRMApp() {
                         </div>
                         <div className="flex-1 min-w-0">
                           <div className="flex justify-between mb-1"><h2 className="text-sm font-semibold text-gray-200 truncate">{displayName}</h2><span className="text-[10px] text-gray-500">{new Date(conv.ultimo_mensaje_en).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span></div>
-                          <p className="text-xs text-gray-400 truncate">{conv.ultimo_mensaje || "Sin mensajes"}</p>
+                          <p className="text-xs text-gray-400 truncate flex items-center gap-1">{conv.ultimo_mensaje === "[audio]" ? (<><Mic className="w-3.5 h-3.5 text-purple-400 flex-shrink-0" /><span>Nota de voz</span></>) : (conv.ultimo_mensaje || "Sin mensajes")}</p>
                         </div>
                       </button>
                     );
@@ -698,7 +750,7 @@ export default function CRMApp() {
                       return (
                         <div key={msg.id} className={`flex ${isMe ? "justify-end" : "justify-start"}`}>
                           <div className={`max-w-[85%] md:max-w-[70%] rounded-2xl px-3 py-2 shadow-sm ${isMe ? "bg-purple-600 text-white rounded-br-none" : "bg-surface border border-border text-gray-200 rounded-bl-none"}`}>
-                            {msg.tipo_contenido === "audio" && msg.url_archivo ? <audio controls src={msg.url_archivo} className="max-w-[220px] h-10" /> : msg.tipo_contenido === "imagen" && msg.url_archivo ? <img src={msg.url_archivo} alt="" className="rounded-lg max-h-60 object-cover" /> : <p className="text-sm whitespace-pre-wrap leading-relaxed">{msg.contenido}</p>}
+                            {msg.tipo_contenido === "audio" && msg.url_archivo ? <VoiceNotePlayer src={msg.url_archivo} isMe={isMe} /> : msg.tipo_contenido === "imagen" && msg.url_archivo ? <img src={msg.url_archivo} alt="" className="rounded-lg max-h-60 object-cover" /> : <p className="text-sm whitespace-pre-wrap leading-relaxed">{msg.contenido}</p>}
                             <span className={`block text-[9px] mt-1 ${isMe ? "text-purple-200 text-right" : "text-gray-500"}`}>{new Date(msg.creado_en).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
                           </div>
                         </div>
@@ -711,9 +763,16 @@ export default function CRMApp() {
                     <input type="file" ref={fileInputRef} className="hidden" onChange={handleFileUpload} accept="image/*,audio/*,video/*,.pdf,.doc,.docx,.xls,.xlsx" />
                     <button type="button" onClick={() => fileInputRef.current?.click()} disabled={clienteActual.es_spam || isRecording} className="p-2.5 text-gray-400 hover:text-purple-400 hover:bg-surfaceHover rounded-full transition-colors disabled:opacity-40"><Paperclip className="w-5 h-5" /></button>
                     {(isRecording || isPreparingRecording) ? (
-                      <div className="flex-1 bg-red-950/30 border border-red-900/50 rounded-full px-4 py-2 flex items-center justify-between">
-                        <div className="flex items-center gap-2 text-red-400 text-sm font-medium"><span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" /><Mic className="w-4 h-4" /> {isPreparingRecording ? "Preparando micrófono..." : formatTime(recordingTime)}</div>
-                        <div className="flex items-center gap-1">
+                      <div className="flex-1 bg-red-950/30 border border-red-900/50 rounded-full px-4 py-2 flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 text-red-400 text-sm font-medium flex-shrink-0"><span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" /><Mic className="w-4 h-4" /> {isPreparingRecording ? "Preparando micrófono..." : formatTime(recordingTime)}</div>
+                        {!isPreparingRecording && (
+                          <div className="flex-1 flex items-center justify-center gap-[3px] h-6 px-1 overflow-hidden" aria-hidden="true">
+                            {(recordingBars.length ? recordingBars : [0.1, 0.14, 0.2, 0.16, 0.12, 0.18, 0.22, 0.15, 0.1, 0.16, 0.2, 0.14, 0.12, 0.18, 0.16, 0.1]).map((v, i) => (
+                              <span key={i} style={{ height: `${Math.max(2, Math.min(1, v) * 22)}px` }} className="w-[3px] rounded-full bg-red-400/90 transition-[height] duration-100" />
+                            ))}
+                          </div>
+                        )}
+                        <div className="flex items-center gap-1 flex-shrink-0">
                           <button onClick={cancelRecording} disabled={!isRecording} className="p-1.5 text-gray-400 hover:text-white rounded-full disabled:opacity-40"><Trash2 className="w-4 h-4" /></button>
                           <button onClick={stopRecording} disabled={isPreparingRecording || !isRecording} className="p-1.5 text-white bg-red-600 hover:bg-red-500 rounded-full shadow-lg disabled:opacity-40"><Send className="w-4 h-4 ml-0.5" /></button>
                         </div>

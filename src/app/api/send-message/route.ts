@@ -101,7 +101,10 @@ export async function POST(req: Request) {
       if (pureBase64 && isAudio) {
         tipoGuardado = "audio";
         endpoint = `${evoUrl}/message/sendWhatsAppAudio/personal`;
-        payload = { number: cleanNumber, audio: pureBase64 };
+        const audioDataUri = String(fileBase64).includes(",")
+          ? String(fileBase64)
+          : `data:${mime};base64,${pureBase64}`;
+        payload = { number: cleanNumber, audio: audioDataUri, encoding: true };
       } else if (pureBase64) {
         let mediatype = "document";
         if (mime.startsWith("image/")) { mediatype = "image"; tipoGuardado = "imagen"; }

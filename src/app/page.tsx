@@ -61,6 +61,8 @@ export default function CRMApp() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<any>(null);
+  const autoStopRef = useRef<any>(null);
+  const recordingStartRef = useRef<number>(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [showAdmin, setShowAdmin] = useState(false);
@@ -296,11 +298,21 @@ export default function CRMApp() {
   };
 
   // ===================== GRABACIÓN DE AUDIO =====================
+  // Voz clara para WhatsApp: mono, 48 kHz (nativo de Opus), supresión de ruido y
+  // 64 kbps. Límite práctico de ~5 min por el tamaño del cuerpo en serverless.
+  const MAX_GRABACION_SEG = 300;
+  const MIN_DURACION_NOTA_MS = 400;
   const startRecording = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: true }
-      });
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1, sampleRate: 48000 },
+        });
+      } catch {
+        // Dispositivos estrictos que rechazan constraints: pedir audio básico.
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      }
       let mimeType = "";
       if (typeof MediaRecorder !== "undefined") {
         if (MediaRecorder.isTypeSupported("audio/webm;codecs=opus")) mimeType = "audio/webm;codecs=opus";
@@ -308,7 +320,7 @@ export default function CRMApp() {
         else if (MediaRecorder.isTypeSupported("audio/mp4")) mimeType = "audio/mp4";
         else if (MediaRecorder.isTypeSupported("audio/webm")) mimeType = "audio/webm";
       }
-      const options = mimeType ? { mimeType } : undefined;
+      const options: MediaRecorderOptions = { audioBitsPerSecond: 64000, ...(mimeType ? { mimeType } : {}) };
       const mediaRecorder = new MediaRecorder(stream, options);
       mediaRecorderRef.current = mediaRecorder;
       audioChunksRef.current = [];
@@ -317,10 +329,17 @@ export default function CRMApp() {
         if (e.data && e.data.size > 0) audioChunksRef.current.push(e.data);
       };
       mediaRecorder.onstop = async () => {
+        const duracionMs = Date.now() - recordingStartRef.current;
         const usedMime = mediaRecorder.mimeType || mimeType || "audio/webm";
         const ext = usedMime.includes("ogg") ? "ogg" : usedMime.includes("mp4") ? "mp4" : "webm";
         const audioBlob = new Blob(audioChunksRef.current, { type: usedMime });
+        audioChunksRef.current = [];
+        stream.getTracks().forEach((track) => track.stop());
         if (audioBlob.size === 0) return;
+        if (duracionMs < MIN_DURACION_NOTA_MS) {
+          setSendError("La nota de voz es demasiado corta; mantené presionado un momento más.");
+          return;
+        }
         const reader = new FileReader();
         reader.readAsDataURL(audioBlob);
         reader.onloadend = async () => {
@@ -330,12 +349,15 @@ export default function CRMApp() {
             // The error is displayed below the message composer.
           }
         };
-        stream.getTracks().forEach((track) => track.stop());
+        reader.onerror = () => setSendError("No se pudo leer la nota de voz grabada.");
       };
+      recordingStartRef.current = Date.now();
       mediaRecorder.start(200);
       setIsRecording(true);
       setRecordingTime(0);
+      setSendError("");
       timerRef.current = setInterval(() => setRecordingTime((prev) => prev + 1), 1000);
+      autoStopRef.current = setTimeout(() => stopRecording(), MAX_GRABACION_SEG * 1000);
     } catch (err: any) {
       alert("Error accediendo al micrófono.");
     }
@@ -343,6 +365,7 @@ export default function CRMApp() {
 
   const stopRecording = () => {
     if (mediaRecorderRef.current && isRecording) {
+      if (autoStopRef.current) { clearTimeout(autoStopRef.current); autoStopRef.current = null; }
       mediaRecorderRef.current.stop();
       setIsRecording(false);
       if (timerRef.current) clearInterval(timerRef.current);
@@ -350,6 +373,7 @@ export default function CRMApp() {
   };
   const cancelRecording = () => {
     if (mediaRecorderRef.current && isRecording) {
+      if (autoStopRef.current) { clearTimeout(autoStopRef.current); autoStopRef.current = null; }
       mediaRecorderRef.current.onstop = () => {
         mediaRecorderRef.current?.stream.getTracks().forEach((t) => t.stop());
       };

@@ -35,6 +35,11 @@ export async function POST(req: Request) {
     const pureBase64 = cleanBase64(fileBase64);
     const mime = String(fileMime || "application/octet-stream").split(";")[0];
     const isAudio = Boolean(pureBase64 && (mime.startsWith("audio/") || String(fileName || "").includes("nota_de_voz")));
+    // Lo que se guarda en el historial del chat. Si el audio se convierte a
+    // OGG/Opus más abajo, se guarda la versión convertida: Safari no reproduce
+    // el WebM crudo del navegador, así la nota de voz se escucha en todos los
+    // dispositivos del equipo.
+    let storedFileBase64: string | null = typeof fileBase64 === "string" ? fileBase64 : null;
 
     let fuente = "meta_business";
     let chatwootConvId: string | number | null = null;
@@ -86,6 +91,7 @@ export async function POST(req: Request) {
             // `voice: true` to the WhatsApp Cloud API payload.
             outgoingMime = "audio/ogg";
             outgoingName = /\.webm$/i.test(outgoingName) ? outgoingName.replace(/\.webm$/i, ".ogg") : `${outgoingName}.ogg`;
+            storedFileBase64 = `data:${outgoingMime};base64,${bytes.toString("base64")}`;
           } catch (conversionError: any) {
             console.error("WebM a OGG falló:", conversionError?.message || conversionError);
             return NextResponse.json({ error: `No se pudo convertir la nota de voz a OGG/Opus para WhatsApp (${conversionError?.message || "formato inválido"}).` }, { status: 500 });
@@ -144,6 +150,7 @@ export async function POST(req: Request) {
             const converted = remuxWebmToOgg(Buffer.from(pureBase64, "base64"), { prerollMs: WEBM_OGG_PREROLL_MS });
             audioMime = "audio/ogg";
             audioBase64 = converted.toString("base64");
+            storedFileBase64 = `data:${audioMime};base64,${audioBase64}`;
           } catch (conversionError: any) {
             console.error("WebM a OGG para Evolution falló:", conversionError?.message || conversionError);
             return NextResponse.json({ error: `No se pudo preparar la nota de voz para WhatsApp (${conversionError?.message || "formato inválido"}).` }, { status: 500 });
@@ -173,7 +180,7 @@ export async function POST(req: Request) {
 
     if (conversacionId) {
       const contenidoFinal = texto?.trim() || (pureBase64 ? `[${tipoGuardado}]` : "");
-      const { error: messageError } = await supabase.from("mensajes").insert([{ conversacion_id: conversacionId, tipo: "enviado", contenido: contenidoFinal, tipo_contenido: tipoGuardado, url_archivo: fileBase64 || null, creado_en: new Date().toISOString() }]);
+      const { error: messageError } = await supabase.from("mensajes").insert([{ conversacion_id: conversacionId, tipo: "enviado", contenido: contenidoFinal, tipo_contenido: tipoGuardado, url_archivo: storedFileBase64, creado_en: new Date().toISOString() }]);
       if (messageError) console.error("Could not save outgoing message:", messageError.message);
 
       await supabase.from("conversaciones").update({ ultimo_mensaje: contenidoFinal, ultimo_mensaje_en: new Date().toISOString() }).eq("id", conversacionId);

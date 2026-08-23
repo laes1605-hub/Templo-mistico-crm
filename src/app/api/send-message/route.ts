@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabase } from "../../../lib/supabase";
+import { remuxWebmToOgg } from "../../../lib/webm-to-ogg";
 
 const cleanBase64 = (value: unknown) => {
   if (!value) return null;
@@ -67,12 +68,29 @@ export async function POST(req: Request) {
         }
         if (!bytes.length) return NextResponse.json({ error: "El archivo de audio está vacío." }, { status: 400 });
 
+        let outgoingMime = mime;
+        let outgoingName = safeFileName(fileName, mime);
+        // WhatsApp Cloud API (Meta) rejects WebM voice notes: it only accepts
+        // OGG/Opus (`audio/ogg; codecs=opus`). Browsers record Opus inside a
+        // WebM container, so rewrap the packets losslessly into OGG before
+        // uploading the attachment to Chatwoot.
+        if (isAudio && mime === "audio/webm") {
+          try {
+            bytes = remuxWebmToOgg(bytes);
+            outgoingMime = "audio/ogg; codecs=opus";
+            outgoingName = /\.webm$/i.test(outgoingName) ? outgoingName.replace(/\.webm$/i, ".ogg") : `${outgoingName}.ogg`;
+          } catch (conversionError: any) {
+            console.error("WebM a OGG falló:", conversionError?.message || conversionError);
+            return NextResponse.json({ error: `No se pudo convertir la nota de voz a OGG/Opus para WhatsApp (${conversionError?.message || "formato inválido"}).` }, { status: 500 });
+          }
+        }
+
         const form = new FormData();
         form.set("content", texto?.trim() || (isAudio ? "🎤 Nota de voz" : "Archivo enviado"));
         form.set("message_type", "outgoing");
         // Copy into a browser-compatible typed array; Buffer's ArrayBufferLike type
         // is not accepted by the Web Blob type used by Next's fetch implementation.
-        form.append("attachments[]", new Blob([new Uint8Array(bytes)], { type: mime }), safeFileName(fileName, mime));
+        form.append("attachments[]", new Blob([new Uint8Array(bytes)], { type: outgoingMime }), outgoingName);
         response = await fetch(endpoint, {
           method: "POST",
           headers: { api_access_token: chatwootToken },

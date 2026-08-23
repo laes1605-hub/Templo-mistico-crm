@@ -81,7 +81,10 @@ export async function POST(req: Request) {
         if (isAudio && mime.startsWith("audio/webm")) {
           try {
             bytes = remuxWebmToOgg(bytes, { prerollMs: WEBM_OGG_PREROLL_MS });
-            outgoingMime = "audio/ogg; codecs=opus";
+            // Chatwoot 4.15+ requires the exact `audio/ogg` content type to
+            // recognize the attachment as a voice message and add
+            // `voice: true` to the WhatsApp Cloud API payload.
+            outgoingMime = "audio/ogg";
             outgoingName = /\.webm$/i.test(outgoingName) ? outgoingName.replace(/\.webm$/i, ".ogg") : `${outgoingName}.ogg`;
           } catch (conversionError: any) {
             console.error("WebM a OGG falló:", conversionError?.message || conversionError);
@@ -92,6 +95,13 @@ export async function POST(req: Request) {
         const form = new FormData();
         form.set("content", texto?.trim() || (isAudio ? "🎤 Nota de voz" : "Archivo enviado"));
         form.set("message_type", "outgoing");
+        form.set("private", "false");
+        // Chatwoot 4.15+ stores this marker on the audio attachment and sends
+        // `audio.voice: true` to Meta, which makes WhatsApp render it as a
+        // native voice note instead of a regular downloadable audio file.
+        if (isAudio && outgoingMime === "audio/ogg") {
+          form.set("is_voice_message", "true");
+        }
         // Copy into a browser-compatible typed array; Buffer's ArrayBufferLike type
         // is not accepted by the Web Blob type used by Next's fetch implementation.
         form.append("attachments[]", new Blob([new Uint8Array(bytes)], { type: outgoingMime }), outgoingName);

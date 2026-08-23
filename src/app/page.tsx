@@ -301,15 +301,12 @@ export default function CRMApp() {
   };
 
   // ===================== GRABACIÓN DE AUDIO =====================
-  // En móviles el micrófono y WhatsApp pueden recortar el arranque real de la
-  // nota (primeros 1-2 segundos). Por eso iniciamos el MediaRecorder de una vez,
-  // dejamos una pequeña pregrabación de calentamiento antes de mostrar el timer,
-  // evitamos procesamientos agresivos del teléfono y el backend agrega preroll
-  // silencioso cuando convierte WebM/Opus a OGG/Opus.
+  // El micrófono se abre y la grabación arranca de inmediato: el contador corre
+  // desde el primer instante y no se graba ningún silencio de "calentamiento".
+  // El backend sólo agrega un preroll mínimo (300 ms) al convertir a OGG/Opus
+  // para que WhatsApp no recorte la primera sílaba.
   const MAX_GRABACION_SEG = 300;
   const MIN_DURACION_NOTA_MS = 400;
-  const MOBILE_MIC_WARMUP_MS = 2500;
-  const UI_PREPARE_PAUSE_MS = 350;
 
   const getPreferredAudioMime = () => {
     if (typeof MediaRecorder === "undefined") return "";
@@ -331,8 +328,6 @@ export default function CRMApp() {
     stream?.getTracks().forEach((track) => track.stop());
   };
 
-  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
   const startRecording = async () => {
     if (mediaRecorderRef.current?.state === "recording" || isSending || isPreparingRecording) return;
     let stream: MediaStream | null = null;
@@ -346,7 +341,6 @@ export default function CRMApp() {
       setIsPreparingRecording(true);
     });
     try {
-      await sleep(UI_PREPARE_PAUSE_MS);
       if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
         setIsPreparingRecording(false);
         setSendError("Tu navegador no permite grabar notas de voz desde esta página.");
@@ -419,15 +413,12 @@ export default function CRMApp() {
       recordingStartRef.current = Date.now();
       // Sin timeslice: evita cortes/lag en grabaciones creadas desde teléfonos.
       mediaRecorder.start();
+      setIsPreparingRecording(false);
       setIsRecording(true);
       setRecordingTime(0);
       setSendError("");
-      warmupTimerRef.current = setTimeout(() => {
-        recordingStartRef.current = Date.now();
-        setIsPreparingRecording(false);
-        timerRef.current = setInterval(() => setRecordingTime((prev) => prev + 1), 1000);
-      }, MOBILE_MIC_WARMUP_MS);
-      autoStopRef.current = setTimeout(() => stopRecording(), (MAX_GRABACION_SEG * 1000) + MOBILE_MIC_WARMUP_MS);
+      timerRef.current = setInterval(() => setRecordingTime((prev) => prev + 1), 1000);
+      autoStopRef.current = setTimeout(() => stopRecording(), MAX_GRABACION_SEG * 1000);
     } catch (err: any) {
       cleanupRecordingTimers();
       stopStreamTracks(stream || mediaRecorderRef.current?.stream);

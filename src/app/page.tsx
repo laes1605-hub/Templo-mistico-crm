@@ -41,6 +41,8 @@ export default function CRMApp() {
   const [tempNombre, setTempNombre] = useState("");
 
   const [nuevoMensaje, setNuevoMensaje] = useState("");
+  const [isSending, setIsSending] = useState(false);
+  const [sendError, setSendError] = useState("");
   const [loadingChats, setLoadingChats] = useState(true);
   const [filtroCanal, setFiltroCanal] = useState<"todos" | "evolution" | "meta_business" | "spam">("todos");
   const [showMobileDetails, setShowMobileDetails] = useState(false);
@@ -241,35 +243,55 @@ export default function CRMApp() {
   // ===================== ENVIAR MENSAJE =====================
   async function sendToApi(texto: string, fileBase64: string | null = null, fileMime: string | null = null, fileName: string | null = null) {
     if (!selectedConv) return;
-    await fetch("/api/send-message", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        conversacionId: selectedConv.id,
-        clienteId: selectedConv.cliente_id,
-        numeroWhatsApp: selectedConv.numero_whatsapp,
-        texto, fileBase64, fileMime, fileName
-      }),
-    });
+    setIsSending(true);
+    setSendError("");
+    try {
+      const response = await fetch("/api/send-message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          conversacionId: selectedConv.id,
+          clienteId: selectedConv.cliente_id,
+          numeroWhatsApp: selectedConv.numero_whatsapp,
+          texto, fileBase64, fileMime, fileName
+        }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || !result.success) throw new Error(result.error || "No se pudo enviar el mensaje.");
+    } catch (error: any) {
+      const message = error.message || "No se pudo enviar el mensaje.";
+      setSendError(message);
+      throw error;
+    } finally {
+      setIsSending(false);
+    }
   }
 
   async function handleSendMessage(e: React.FormEvent) {
     e.preventDefault();
-    if (!nuevoMensaje.trim()) return;
+    if (!nuevoMensaje.trim() || isSending) return;
     const txt = nuevoMensaje;
     setNuevoMensaje("");
-    await sendToApi(txt);
+    try {
+      await sendToApi(txt);
+    } catch {
+      setNuevoMensaje(txt);
+    }
   }
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file) return;
+    if (!file || isSending) return;
     const reader = new FileReader();
     reader.readAsDataURL(file);
     reader.onload = async () => {
-      const base64 = reader.result as string;
-      await sendToApi("", base64, file.type, file.name);
+      try {
+        await sendToApi("", reader.result as string, file.type, file.name);
+      } catch {
+        // sendToApi already exposes the provider error in the conversation UI.
+      }
     };
+    reader.onerror = () => setSendError("No se pudo leer el archivo seleccionado.");
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
@@ -302,8 +324,11 @@ export default function CRMApp() {
         const reader = new FileReader();
         reader.readAsDataURL(audioBlob);
         reader.onloadend = async () => {
-          const base64data = reader.result as string;
-          await sendToApi("", base64data, usedMime, `nota_de_voz.${ext}`);
+          try {
+            await sendToApi("", reader.result as string, usedMime, `nota_de_voz.${ext}`);
+          } catch {
+            // The error is displayed below the message composer.
+          }
         };
         stream.getTracks().forEach((track) => track.stop());
       };
@@ -601,13 +626,14 @@ export default function CRMApp() {
                         </div>
                       </div>
                     ) : (
-                      <form onSubmit={handleSendMessage} className="flex-1 flex items-center gap-2">
-                        <input type="text" value={nuevoMensaje} onChange={(e) => setNuevoMensaje(e.target.value)} placeholder="Escribe un mensaje..." disabled={clienteActual.es_spam} className="flex-1 bg-background border border-border rounded-full px-4 py-2.5 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-purple-500 disabled:opacity-50" />
+                      <form onSubmit={handleSendMessage} className="flex-1 flex flex-wrap items-center gap-2">
+                        <input type="text" value={nuevoMensaje} onChange={(e) => setNuevoMensaje(e.target.value)} placeholder="Escribe un mensaje..." disabled={clienteActual.es_spam || isSending} className="flex-1 bg-background border border-border rounded-full px-4 py-2.5 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-purple-500 disabled:opacity-50" />
                         {nuevoMensaje.trim() ? (
-                          <button type="submit" className="bg-purple-600 hover:bg-purple-700 text-white p-2.5 rounded-full transition-colors"><Send className="w-5 h-5" /></button>
+                          <button type="submit" disabled={isSending} className="bg-purple-600 hover:bg-purple-700 text-white p-2.5 rounded-full transition-colors disabled:opacity-50"><Send className="w-5 h-5" /></button>
                         ) : (
-                          <button type="button" onClick={startRecording} disabled={clienteActual.es_spam} className="bg-surface border border-border text-purple-400 hover:bg-purple-600 hover:text-white hover:border-purple-600 p-2.5 rounded-full transition-colors disabled:opacity-50"><Mic className="w-5 h-5" /></button>
+                          <button type="button" onClick={startRecording} disabled={clienteActual.es_spam || isSending} className="bg-surface border border-border text-purple-400 hover:bg-purple-600 hover:text-white hover:border-purple-600 p-2.5 rounded-full transition-colors disabled:opacity-50"><Mic className="w-5 h-5" /></button>
                         )}
+                        {sendError && <p className="w-full text-xs text-red-400 px-2">{sendError}</p>}
                       </form>
                     )}
                   </div>

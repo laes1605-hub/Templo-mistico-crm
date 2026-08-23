@@ -1,119 +1,137 @@
 import { NextResponse } from "next/server";
 import { supabase } from "../../../lib/supabase";
 
+const cleanBase64 = (value: unknown) => {
+  if (!value) return null;
+  const encoded = String(value);
+  return encoded.includes(",") ? encoded.slice(encoded.indexOf(",") + 1) : encoded;
+};
+
+const safeFileName = (name: unknown, mime: string) => {
+  const fallbackExtension = mime.includes("ogg") ? "ogg" : mime.includes("mpeg") ? "mp3" : mime.includes("mp4") ? "m4a" : "webm";
+  const cleaned = String(name || `audio.${fallbackExtension}`).replace(/[^a-zA-Z0-9._-]/g, "_");
+  return cleaned || `archivo.${fallbackExtension}`;
+};
+
 export async function POST(req: Request) {
   try {
     const body = await req.json();
     const { conversacionId, numeroWhatsApp, texto, fileBase64, fileMime, fileName } = body;
 
-    if (!numeroWhatsApp || (!texto && !fileBase64)) {
+    if (!numeroWhatsApp || (!texto?.trim() && !fileBase64)) {
       return NextResponse.json({ error: "Faltan parámetros requeridos" }, { status: 400 });
     }
 
-    const evoUrl = process.env.EVOLUTION_API_URL || "https://evo.crmesteban.duckdns.org";
+    const evoUrl = (process.env.EVOLUTION_API_URL || "https://evo.crmesteban.duckdns.org").replace(/\/$/, "");
     const evoKey = process.env.EVOLUTION_API_KEY || "";
     const chatwootToken = process.env.CHATWOOT_API_TOKEN || "";
-    const chatwootUrl = process.env.CHATWOOT_URL || "https://crmesteban.duckdns.org";
-
+    const chatwootUrl = (process.env.CHATWOOT_URL || "https://crmesteban.duckdns.org").replace(/\/$/, "");
     const cleanNumber = String(numeroWhatsApp).replace(/[^\d]/g, "");
+    const pureBase64 = cleanBase64(fileBase64);
+    const mime = String(fileMime || "application/octet-stream").split(";")[0];
+    const isAudio = Boolean(pureBase64 && (mime.startsWith("audio/") || String(fileName || "").includes("nota_de_voz")));
 
     let fuente = "meta_business";
-    let chatwootConvId = null;
-
+    let chatwootConvId: string | number | null = null;
     if (conversacionId) {
-      const { data: convData } = await supabase
+      const { data: convData, error: conversationError } = await supabase
         .from("conversaciones")
         .select("fuente, chatwoot_conversation_id")
         .eq("id", conversacionId)
         .single();
 
-      if (convData) {
-        fuente = convData.fuente || "meta_business";
-        chatwootConvId = convData.chatwoot_conversation_id;
+      if (conversationError) {
+        return NextResponse.json({ error: "No se pudo identificar la conversación." }, { status: 404 });
       }
+      fuente = convData?.fuente || "meta_business";
+      chatwootConvId = convData?.chatwoot_conversation_id || null;
     }
 
-    let tipoGuardado = "texto";
+    let tipoGuardado = isAudio ? "audio" : "texto";
 
-    // Enviar a Meta Cloud API vía Chatwoot
+    // Meta Cloud API is connected through Chatwoot. A text-only payload drops the
+    // attachment, so files must be sent as multipart/form-data using attachments[].
     if (fuente === "meta_business" && chatwootConvId) {
-      const cwRes = await fetch(`${chatwootUrl}/api/v1/accounts/1/conversations/${chatwootConvId}/messages`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          api_access_token: chatwootToken,
-        },
-        body: JSON.stringify({
-          content: texto || (fileBase64 ? `[Archivo enviado]` : ""),
-          message_type: "outgoing",
-        }),
-      });
+      if (!chatwootToken) {
+        return NextResponse.json({ error: "Falta CHATWOOT_API_TOKEN para enviar por WhatsApp Business." }, { status: 500 });
+      }
 
-      if (!cwRes.ok) {
-        console.error("Error enviando mensaje a Chatwoot API:", await cwRes.text());
+      const endpoint = `${chatwootUrl}/api/v1/accounts/1/conversations/${chatwootConvId}/messages`;
+      let response: Response;
+      if (pureBase64) {
+        let bytes: Buffer;
+        try {
+          bytes = Buffer.from(pureBase64, "base64");
+        } catch {
+          return NextResponse.json({ error: "El archivo de audio no tiene un formato válido." }, { status: 400 });
+        }
+        if (!bytes.length) return NextResponse.json({ error: "El archivo de audio está vacío." }, { status: 400 });
+
+        const form = new FormData();
+        form.set("content", texto?.trim() || (isAudio ? "🎤 Nota de voz" : "Archivo enviado"));
+        form.set("message_type", "outgoing");
+        // Copy into a browser-compatible typed array; Buffer's ArrayBufferLike type
+        // is not accepted by the Web Blob type used by Next's fetch implementation.
+        form.append("attachments[]", new Blob([new Uint8Array(bytes)], { type: mime }), safeFileName(fileName, mime));
+        response = await fetch(endpoint, {
+          method: "POST",
+          headers: { api_access_token: chatwootToken },
+          body: form,
+        });
+      } else {
+        response = await fetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", api_access_token: chatwootToken },
+          body: JSON.stringify({ content: texto.trim(), message_type: "outgoing" }),
+        });
+      }
+
+      if (!response.ok) {
+        const detail = (await response.text()).slice(0, 500);
+        console.error("Chatwoot rejected outgoing message:", response.status, detail);
+        return NextResponse.json({ error: `WhatsApp Business no aceptó el ${isAudio ? "audio" : "mensaje"} (${response.status}). ${detail}` }, { status: 502 });
       }
     } else {
-      // Enviar a WhatsApp Personal vía Evolution API
-      const pureBase64 = fileBase64
-        ? (String(fileBase64).includes(",") ? String(fileBase64).split(",")[1] : String(fileBase64))
-        : null;
+      if (!evoKey) {
+        return NextResponse.json({ error: "Falta EVOLUTION_API_KEY para enviar por WhatsApp Personal." }, { status: 500 });
+      }
 
       let endpoint = `${evoUrl}/message/sendText/personal`;
-      let payload: any = { number: cleanNumber, text: texto || "" };
-
-      if (fileBase64 && (fileMime?.startsWith("audio/") || fileName?.includes("nota_de_voz"))) {
+      let payload: Record<string, unknown> = { number: cleanNumber, text: texto || "" };
+      if (pureBase64 && isAudio) {
         tipoGuardado = "audio";
         endpoint = `${evoUrl}/message/sendWhatsAppAudio/personal`;
         payload = { number: cleanNumber, audio: pureBase64 };
-      } else if (fileBase64) {
-        endpoint = `${evoUrl}/message/sendMedia/personal`;
+      } else if (pureBase64) {
         let mediatype = "document";
-        if (fileMime?.startsWith("image/")) { mediatype = "image"; tipoGuardado = "imagen"; }
-        else if (fileMime?.startsWith("video/")) { mediatype = "video"; tipoGuardado = "video"; }
-        payload = {
-          number: cleanNumber,
-          mediatype,
-          mimetype: fileMime || "application/octet-stream",
-          fileName: fileName || "archivo",
-          caption: texto || "",
-          media: pureBase64,
-        };
+        if (mime.startsWith("image/")) { mediatype = "image"; tipoGuardado = "imagen"; }
+        else if (mime.startsWith("video/")) { mediatype = "video"; tipoGuardado = "video"; }
+        payload = { number: cleanNumber, mediatype, mimetype: mime, fileName: safeFileName(fileName, mime), caption: texto || "", media: pureBase64 };
       }
 
-      await fetch(endpoint, {
+      const response = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json", apikey: evoKey },
         body: JSON.stringify(payload),
       });
+      if (!response.ok) {
+        const detail = (await response.text()).slice(0, 500);
+        console.error("Evolution rejected outgoing message:", response.status, detail);
+        return NextResponse.json({ error: `WhatsApp Personal no aceptó el ${isAudio ? "audio" : "mensaje"} (${response.status}). ${detail}` }, { status: 502 });
+      }
     }
 
-    // Guardar en Supabase
     if (conversacionId) {
-      const contenidoFinal = texto || (fileBase64 ? `[${tipoGuardado}]` : "");
+      const contenidoFinal = texto?.trim() || (pureBase64 ? `[${tipoGuardado}]` : "");
+      const { error: messageError } = await supabase.from("mensajes").insert([{ conversacion_id: conversacionId, tipo: "enviado", contenido: contenidoFinal, tipo_contenido: tipoGuardado, url_archivo: fileBase64 || null, creado_en: new Date().toISOString() }]);
+      if (messageError) console.error("Could not save outgoing message:", messageError.message);
 
-      await supabase.from("mensajes").insert([
-        {
-          conversacion_id: conversacionId,
-          tipo: "enviado",
-          contenido: contenidoFinal,
-          tipo_contenido: tipoGuardado,
-          url_archivo: fileBase64 || null,
-          creado_en: new Date().toISOString(),
-        },
-      ]);
-
-      await supabase
-        .from("conversaciones")
-        .update({
-          ultimo_mensaje: contenidoFinal,
-          ultimo_mensaje_en: new Date().toISOString(),
-        })
-        .eq("id", conversacionId);
+      await supabase.from("conversaciones").update({ ultimo_mensaje: contenidoFinal, ultimo_mensaje_en: new Date().toISOString() }).eq("id", conversacionId);
     }
 
     return NextResponse.json({ success: true });
   } catch (error: any) {
     console.error("Error en send-message:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: error.message || "No se pudo enviar el mensaje." }, { status: 500 });
   }
 }

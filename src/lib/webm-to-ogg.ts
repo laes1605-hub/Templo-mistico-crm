@@ -8,8 +8,9 @@
  * re-encoding and no native ffmpeg binary required (important for serverless).
  *
  * Supported input: Matroska/WebM files containing an `A_OPUS` track, including
- * streaming files with unknown-size segments (what Chrome's MediaRecorder
- * produces). SimpleBlock and BlockGroup blocks, all lacing modes.
+ * live-recorded files (Chrome MediaRecorder) where the Segment AND every
+ * Cluster are written with unknown sizes, blocks grouped in BlockGroup, and
+ * Xiph/fixed/EBML lacing. SimpleBlock and BlockGroup, all lacing modes.
  */
 
 // ---- Matroska element IDs (enough to locate the Opus track and packets) ----
@@ -31,43 +32,58 @@ const ID_BLOCK = 0xa1;
 
 const SAMPLES_PER_SECOND = 48000; // Opus always decodes at 48 kHz
 
-/** Iterate over the EBML elements contained in buf[start, end). */
+/** One EBML element: header + body boundaries, and whether the size was known. */
+type Element = {
+  id: number;
+  bodyStart: number;
+  bodyEnd: number; // for unknown sizes this equals `scopeEnd`
+  known: boolean;
+};
+
+/** Read the element that starts at `pos`, bounded by `scopeEnd`. Null when done/invalid. */
+function readElement(buf: Buffer, pos: number, scopeEnd: number): Element | null {
+  if (pos + 2 > scopeEnd) return null;
+  const first = buf[pos];
+  if (first === 0) return null; // padding / invalid
+  let idLen = 1;
+  let mask = 0x80;
+  while ((first & mask) === 0) {
+    mask >>= 1;
+    idLen++;
+    if (idLen > 4) return null;
+  }
+  const sPos = pos + idLen;
+  if (sPos >= scopeEnd) return null;
+  let id = first;
+  for (let i = 1; i < idLen; i++) id = id * 256 + buf[pos + i];
+
+  const sFirst = buf[sPos];
+  if (sFirst === undefined || sFirst === 0) return null;
+  let sLen = 1;
+  let sMask = 0x80;
+  while ((sFirst & sMask) === 0) {
+    sMask >>= 1;
+    sLen++;
+    if (sLen > 8) return null;
+  }
+  if (sPos + sLen > scopeEnd) return null;
+  let size = sFirst & (sMask - 1);
+  for (let i = 1; i < sLen; i++) size = size * 256 + buf[sPos + i];
+
+  const known = size !== Math.pow(2, 7 * sLen) - 1; // all-one vint = unknown (streaming)
+  const bodyStart = sPos + sLen;
+  const bodyEnd = known ? Math.min(bodyStart + size, scopeEnd) : scopeEnd;
+  return { id, bodyStart, bodyEnd, known };
+}
+
+/** Iterate over the EBML children with KNOWN sizes contained in [start, end). */
 function forEachElement(buf: Buffer, start: number, end: number, cb: (id: number, bodyStart: number, bodyEnd: number) => void): void {
   let pos = start;
-  while (pos + 2 <= end) {
-    const first = buf[pos];
-    if (first === 0) return; // padding / invalid
-    let idLen = 1;
-    let mask = 0x80;
-    while ((first & mask) === 0) {
-      mask >>= 1;
-      idLen++;
-      if (idLen > 4) return;
-    }
-    const sPos = pos + idLen;
-    if (sPos >= end) return;
-    let id = first;
-    for (let i = 1; i < idLen; i++) id = id * 256 + buf[pos + i];
-
-    const sFirst = buf[sPos];
-    if (sFirst === undefined || sFirst === 0) return;
-    let sLen = 1;
-    let sMask = 0x80;
-    while ((sFirst & sMask) === 0) {
-      sMask >>= 1;
-      sLen++;
-      if (sLen > 8) return;
-    }
-    if (sPos + sLen > end) return;
-    let size = sFirst & (sMask - 1);
-    for (let i = 1; i < sLen; i++) size = size * 256 + buf[sPos + i];
-
-    const unknownSize = size === Math.pow(2, 7 * sLen) - 1; // all-one vint (streaming)
-    const bodyStart = sPos + sLen;
-    const bodyEnd = unknownSize || bodyStart + size > end ? end : bodyStart + size;
-    cb(id, bodyStart, bodyEnd);
-    if (unknownSize) return; // the body consumed the rest of the scope
-    pos = bodyEnd;
+  while (true) {
+    const el = readElement(buf, pos, end);
+    if (!el || !el.known) return; // unknown-size children are handled by the callers
+    cb(el.id, el.bodyStart, el.bodyEnd);
+    pos = el.bodyEnd;
   }
 }
 
@@ -263,7 +279,7 @@ export function remuxWebmToOgg(webm: Uint8Array): Buffer {
   type TrackInfo = { codecId: string; codecPrivate: Buffer | null; channels: number };
   const tracks = new Map<number, TrackInfo>();
   let timecodeScale = 1_000_000; // nanoseconds per tick (Matroska default = 1 ms)
-  const packets: { timecodeNs: number; data: Buffer }[] = [];
+  const packets: { data: Buffer }[] = [];
   let clusterTime = 0;
   let opusTrack: number | null = null;
 
@@ -277,49 +293,85 @@ export function remuxWebmToOgg(webm: Uint8Array): Buffer {
       }
     }
     if (opusTrack === null) return;
-    forEachFrame(buf, start, end, clusterTime, timecodeScale, (track, timecodeNs, frame) => {
+    forEachFrame(buf, start, end, clusterTime, timecodeScale, (track, _timecodeNs, frame) => {
       if (track !== opusTrack) return;
-      packets.push({ timecodeNs, data: frame });
+      packets.push({ data: frame });
     });
   };
 
-  forEachElement(buf, 0, buf.length, (id, bs, be) => {
-    if (id !== ID_SEGMENT) return; // EBML header, Void, etc.
-    forEachElement(buf, bs, be, (id2, bs2, be2) => {
-      if (id2 === ID_INFO) {
-        forEachElement(buf, bs2, be2, (id3, bs3, be3) => {
-          if (id3 === ID_TIMECODE_SCALE) timecodeScale = readUint(buf, bs3, be3) || 1_000_000;
-        });
-      } else if (id2 === ID_TRACKS) {
-        forEachElement(buf, bs2, be2, (id3, bs3, be3) => {
-          if (id3 !== ID_TRACK_ENTRY) return;
-          let trackNumber = -1;
-          const info: TrackInfo = { codecId: "", codecPrivate: null, channels: 0 };
-          forEachElement(buf, bs3, be3, (id4, bs4, be4) => {
-            if (id4 === ID_TRACK_NUMBER) trackNumber = readUint(buf, bs4, be4);
-            else if (id4 === ID_CODEC_ID) info.codecId = buf.toString("latin1", bs4, be4);
-            else if (id4 === ID_CODEC_PRIVATE) info.codecPrivate = buf.subarray(bs4, be4);
-            else if (id4 === ID_AUDIO) {
-              forEachElement(buf, bs4, be4, (id5, bs5, be5) => {
-                if (id5 === ID_CHANNELS) info.channels = readUint(buf, bs5, be5);
-              });
-            }
-          });
-          if (trackNumber >= 0) tracks.set(trackNumber, info);
-        });
-      } else if (id2 === ID_CLUSTER) {
-        forEachElement(buf, bs2, be2, (id3, bs3, be3) => {
-          if (id3 === ID_TIMECODE) clusterTime = readUint(buf, bs3, be3);
-          else if (id3 === ID_SIMPLE_BLOCK) collectBlock(bs3, be3);
-          else if (id3 === ID_BLOCK_GROUP) {
-            forEachElement(buf, bs3, be3, (id4, bs4, be4) => {
-              if (id4 === ID_BLOCK) collectBlock(bs4, be4);
-            });
-          }
-        });
+  /** Parse the children of a Cluster. Returns the position where the Segment walk should continue. */
+  const parseCluster = (cluster: Element, segmentEnd: number): number => {
+    const end = cluster.known ? cluster.bodyEnd : segmentEnd;
+    let pos = cluster.bodyStart;
+    while (true) {
+      const child = readElement(buf, pos, end);
+      if (!child) return end;
+      // A live-recorded (unknown-size) cluster implicitly ends where the next
+      // sibling element of the Segment level begins.
+      if (!cluster.known && (child.id === ID_CLUSTER || child.id === ID_INFO || child.id === ID_TRACKS)) return pos;
+      if (child.id === ID_TIMECODE) {
+        clusterTime = readUint(buf, child.bodyStart, child.bodyEnd);
+      } else if (child.id === ID_SIMPLE_BLOCK) {
+        collectBlock(child.bodyStart, child.bodyEnd);
+      } else if (child.id === ID_BLOCK_GROUP) {
+        const groupEnd = child.known ? child.bodyEnd : end;
+        let gpos = child.bodyStart;
+        while (true) {
+          const inner = readElement(buf, gpos, groupEnd);
+          if (!inner) break;
+          if (!child.known && (inner.id === ID_TIMECODE || inner.id === ID_SIMPLE_BLOCK || inner.id === ID_BLOCK_GROUP || inner.id === ID_CLUSTER)) break;
+          if (inner.id === ID_BLOCK) collectBlock(inner.bodyStart, inner.bodyEnd);
+          if (!inner.known) break;
+          gpos = inner.bodyEnd;
+        }
       }
-    });
-  });
+      if (!child.known) return end; // a block child with unknown size cannot be bounded
+      pos = child.bodyEnd;
+    }
+  };
+
+  // Walk the top level (EBML header, then one Segment).
+  let top = 0;
+  while (true) {
+    const el = readElement(buf, top, buf.length);
+    if (!el) break;
+    if (el.id === ID_SEGMENT) {
+      const segmentEnd = el.known ? el.bodyEnd : buf.length;
+      let pos = el.bodyStart;
+      while (pos + 2 <= segmentEnd) {
+        const child = readElement(buf, pos, segmentEnd);
+        if (!child) break;
+        if (child.id === ID_INFO) {
+          forEachElement(buf, child.bodyStart, child.bodyEnd, (id, bs, be) => {
+            if (id === ID_TIMECODE_SCALE) timecodeScale = readUint(buf, bs, be) || 1_000_000;
+          });
+        } else if (child.id === ID_TRACKS) {
+          forEachElement(buf, child.bodyStart, child.bodyEnd, (id, bs, be) => {
+            if (id !== ID_TRACK_ENTRY) return;
+            let trackNumber = -1;
+            const info: TrackInfo = { codecId: "", codecPrivate: null, channels: 0 };
+            forEachElement(buf, bs, be, (id2, bs2, be2) => {
+              if (id2 === ID_TRACK_NUMBER) trackNumber = readUint(buf, bs2, be2);
+              else if (id2 === ID_CODEC_ID) info.codecId = buf.toString("latin1", bs2, be2);
+              else if (id2 === ID_CODEC_PRIVATE) info.codecPrivate = buf.subarray(bs2, be2);
+              else if (id2 === ID_AUDIO) {
+                forEachElement(buf, bs2, be2, (id3, bs3, be3) => {
+                  if (id3 === ID_CHANNELS) info.channels = readUint(buf, bs3, be3);
+                });
+              }
+            });
+            if (trackNumber >= 0) tracks.set(trackNumber, info);
+          });
+        } else if (child.id === ID_CLUSTER) {
+          pos = parseCluster(child, segmentEnd);
+          continue;
+        }
+        pos = child.known ? child.bodyEnd : segmentEnd;
+      }
+    }
+    if (!el.known) break; // unknown-size Segment reaches the end of the buffer
+    top = el.bodyEnd;
+  }
 
   if (!packets.length) throw new Error("El WebM no contiene paquetes Opus");
 
@@ -356,7 +408,8 @@ export function remuxWebmToOgg(webm: Uint8Array): Buffer {
     return page;
   };
 
-  const head = buildOpusHead(tracks.get(opusTrack!)?.codecPrivate ?? null, tracks.get(opusTrack!)?.channels ?? 1);
+  const trackInfo = tracks.get(opusTrack!) ?? { codecId: "A_OPUS", codecPrivate: null, channels: 1 };
+  const head = buildOpusHead(trackInfo.codecPrivate, trackInfo.channels);
   const preSkip = head.readUInt16LE(10);
   pages.push(buildPage(0x02 /* BOS */, 0, lacingValues(head.length), [head]));
   const tags = buildOpusTags();

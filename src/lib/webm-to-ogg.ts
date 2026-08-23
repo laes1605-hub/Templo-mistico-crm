@@ -272,7 +272,7 @@ function buildOpusTags(): Buffer {
  * Remux the Opus track of a WebM/Matroska buffer into a valid OGG/Opus stream
  * (`audio/ogg; codecs=opus`). Throws when the input contains no Opus packets.
  */
-export function remuxWebmToOgg(webm: Uint8Array): Buffer {
+export function remuxWebmToOgg(webm: Uint8Array, options: { prerollMs?: number } = {}): Buffer {
   const buf = Buffer.isBuffer(webm) ? webm : Buffer.from(webm);
   if (!buf.length) throw new Error("El WebM está vacío");
 
@@ -411,6 +411,11 @@ export function remuxWebmToOgg(webm: Uint8Array): Buffer {
   const trackInfo = tracks.get(opusTrack!) ?? { codecId: "A_OPUS", codecPrivate: null, channels: 1 };
   const head = buildOpusHead(trackInfo.codecPrivate, trackInfo.channels);
   const preSkip = head.readUInt16LE(10);
+  const prerollMs = Math.max(0, Math.min(options.prerollMs || 0, 3000));
+  const silencePackets = Math.round(prerollMs / 20);
+  // A valid 20 ms Opus silence/CN packet. Padding the start avoids the first
+  // spoken syllables being eaten by mobile/WhatsApp decoder warm-up.
+  const opusSilence20Ms = Buffer.from([0xf8, 0xff, 0xfe]);
   pages.push(buildPage(0x02 /* BOS */, 0, lacingValues(head.length), [head]));
   const tags = buildOpusTags();
   pages.push(buildPage(0x00, 0, lacingValues(tags.length), [tags]));
@@ -434,17 +439,20 @@ export function remuxWebmToOgg(webm: Uint8Array): Buffer {
     payloadBytes = 0;
   };
 
-  for (const packet of packets) {
-    totalSamples += opusPacketSamples(packet.data);
+  const addPacket = (data: Buffer) => {
+    totalSamples += opusPacketSamples(data);
     lastGranule = preSkip + totalSamples;
-    const lacing = lacingValues(packet.data.length);
+    const lacing = lacingValues(data.length);
     if (lacing.length > 255) throw new Error("Paquete Opus demasiado grande para una página OGG");
-    if (segmentCount + lacing.length > 255 || payloadBytes + packet.data.length > 65025) flushPage(false);
+    if (segmentCount + lacing.length > 255 || payloadBytes + data.length > 65025) flushPage(false);
     segments.push(...lacing);
-    payload.push(packet.data);
+    payload.push(data);
     segmentCount += lacing.length;
-    payloadBytes += packet.data.length;
-  }
+    payloadBytes += data.length;
+  };
+
+  for (let i = 0; i < silencePackets; i++) addPacket(opusSilence20Ms);
+  for (const packet of packets) addPacket(packet.data);
   flushPage(true);
 
   return Buffer.concat(pages);

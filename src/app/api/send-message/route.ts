@@ -8,6 +8,8 @@ const cleanBase64 = (value: unknown) => {
   return encoded.includes(",") ? encoded.slice(encoded.indexOf(",") + 1) : encoded;
 };
 
+const WEBM_OGG_PREROLL_MS = 1400;
+
 const safeFileName = (name: unknown, mime: string) => {
   const fallbackExtension = mime.includes("ogg") ? "ogg" : mime.includes("mpeg") ? "mp3" : mime.includes("mp4") ? "m4a" : "webm";
   const cleaned = String(name || `audio.${fallbackExtension}`).replace(/[^a-zA-Z0-9._-]/g, "_");
@@ -74,9 +76,9 @@ export async function POST(req: Request) {
         // OGG/Opus (`audio/ogg; codecs=opus`). Browsers record Opus inside a
         // WebM container, so rewrap the packets losslessly into OGG before
         // uploading the attachment to Chatwoot.
-        if (isAudio && mime === "audio/webm") {
+        if (isAudio && mime.startsWith("audio/webm")) {
           try {
-            bytes = remuxWebmToOgg(bytes);
+            bytes = remuxWebmToOgg(bytes, { prerollMs: WEBM_OGG_PREROLL_MS });
             outgoingMime = "audio/ogg; codecs=opus";
             outgoingName = /\.webm$/i.test(outgoingName) ? outgoingName.replace(/\.webm$/i, ".ogg") : `${outgoingName}.ogg`;
           } catch (conversionError: any) {
@@ -119,9 +121,24 @@ export async function POST(req: Request) {
       if (pureBase64 && isAudio) {
         tipoGuardado = "audio";
         endpoint = `${evoUrl}/message/sendWhatsAppAudio/personal`;
-        const audioDataUri = String(fileBase64).includes(",")
-          ? String(fileBase64)
-          : `data:${mime};base64,${pureBase64}`;
+        let audioMime = mime;
+        let audioBase64 = pureBase64;
+
+        // Igual que en WhatsApp Business: si el celular grabó WebM/Opus, lo
+        // reempaquetamos a OGG/Opus y le agregamos un preroll silencioso. Esto
+        // evita que Evolution/WhatsApp recorten la primera palabra del audio.
+        if (mime.startsWith("audio/webm")) {
+          try {
+            const converted = remuxWebmToOgg(Buffer.from(pureBase64, "base64"), { prerollMs: WEBM_OGG_PREROLL_MS });
+            audioMime = "audio/ogg";
+            audioBase64 = converted.toString("base64");
+          } catch (conversionError: any) {
+            console.error("WebM a OGG para Evolution falló:", conversionError?.message || conversionError);
+            return NextResponse.json({ error: `No se pudo preparar la nota de voz para WhatsApp (${conversionError?.message || "formato inválido"}).` }, { status: 500 });
+          }
+        }
+
+        const audioDataUri = `data:${audioMime};base64,${audioBase64}`;
         payload = { number: cleanNumber, audio: audioDataUri, encoding: true };
       } else if (pureBase64) {
         let mediatype = "document";

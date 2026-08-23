@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
+import { flushSync } from "react-dom";
 import { supabase } from "../lib/supabase";
 import {
   MessageSquare, Users, DollarSign, TrendingUp, Brain, Send, Bot, Phone,
@@ -57,10 +58,12 @@ export default function CRMApp() {
   const [nuevaTareaFecha, setNuevaTareaFecha] = useState("");
 
   const [isRecording, setIsRecording] = useState(false);
+  const [isPreparingRecording, setIsPreparingRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<any>(null);
+  const warmupTimerRef = useRef<any>(null);
   const autoStopRef = useRef<any>(null);
   const recordingStartRef = useRef<number>(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -298,29 +301,77 @@ export default function CRMApp() {
   };
 
   // ===================== GRABACIÓN DE AUDIO =====================
-  // Voz clara para WhatsApp: mono, 48 kHz (nativo de Opus), supresión de ruido y
-  // 64 kbps. Límite práctico de ~5 min por el tamaño del cuerpo en serverless.
+  // En móviles el micrófono y WhatsApp pueden recortar el arranque real de la
+  // nota (primeros 1-2 segundos). Por eso iniciamos el MediaRecorder de una vez,
+  // dejamos una pequeña pregrabación de calentamiento antes de mostrar el timer,
+  // evitamos procesamientos agresivos del teléfono y el backend agrega preroll
+  // silencioso cuando convierte WebM/Opus a OGG/Opus.
   const MAX_GRABACION_SEG = 300;
   const MIN_DURACION_NOTA_MS = 400;
+  const MOBILE_MIC_WARMUP_MS = 2500;
+  const UI_PREPARE_PAUSE_MS = 350;
+
+  const getPreferredAudioMime = () => {
+    if (typeof MediaRecorder === "undefined") return "";
+    const ua = navigator.userAgent || "";
+    const isAppleMobile = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+    const candidates = isAppleMobile
+      ? ["audio/mp4", "audio/aac", "audio/webm;codecs=opus", "audio/ogg;codecs=opus", "audio/webm"]
+      : ["audio/webm;codecs=opus", "audio/ogg;codecs=opus", "audio/mp4", "audio/aac", "audio/webm"];
+    return candidates.find((type) => MediaRecorder.isTypeSupported(type)) || "";
+  };
+
+  const cleanupRecordingTimers = () => {
+    if (autoStopRef.current) { clearTimeout(autoStopRef.current); autoStopRef.current = null; }
+    if (warmupTimerRef.current) { clearTimeout(warmupTimerRef.current); warmupTimerRef.current = null; }
+    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+  };
+
+  const stopStreamTracks = (stream?: MediaStream | null) => {
+    stream?.getTracks().forEach((track) => track.stop());
+  };
+
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
   const startRecording = async () => {
+    if (mediaRecorderRef.current?.state === "recording" || isSending || isPreparingRecording) return;
+    let stream: MediaStream | null = null;
+    // Forzamos el render antes de abrir el micrófono. Algunos celulares bloquean
+    // la UI mientras inicializan getUserMedia, y por eso el aviso no alcanzaba
+    // a mostrarse aunque el estado ya estuviera cambiando.
+    flushSync(() => {
+      setSendError("");
+      setRecordingTime(0);
+      setIsRecording(false);
+      setIsPreparingRecording(true);
+    });
     try {
-      let stream: MediaStream;
+      await sleep(UI_PREPARE_PAUSE_MS);
+      if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+        setIsPreparingRecording(false);
+        setSendError("Tu navegador no permite grabar notas de voz desde esta página.");
+        return;
+      }
+
       try {
         stream = await navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1, sampleRate: 48000 },
+          audio: {
+            // En teléfonos estos procesamientos suelen "abrir la compuerta" tarde
+            // y se comen la primera palabra; para notas de voz es más seguro raw.
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
+            channelCount: { ideal: 1 },
+            sampleRate: { ideal: 48000 },
+          },
         });
       } catch {
         // Dispositivos estrictos que rechazan constraints: pedir audio básico.
         stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       }
-      let mimeType = "";
-      if (typeof MediaRecorder !== "undefined") {
-        if (MediaRecorder.isTypeSupported("audio/webm;codecs=opus")) mimeType = "audio/webm;codecs=opus";
-        else if (MediaRecorder.isTypeSupported("audio/ogg;codecs=opus")) mimeType = "audio/ogg;codecs=opus";
-        else if (MediaRecorder.isTypeSupported("audio/mp4")) mimeType = "audio/mp4";
-        else if (MediaRecorder.isTypeSupported("audio/webm")) mimeType = "audio/webm";
-      }
-      const options: MediaRecorderOptions = { audioBitsPerSecond: 64000, ...(mimeType ? { mimeType } : {}) };
+
+      const mimeType = getPreferredAudioMime();
+      const options: MediaRecorderOptions = { audioBitsPerSecond: 96000, ...(mimeType ? { mimeType } : {}) };
       const mediaRecorder = new MediaRecorder(stream, options);
       mediaRecorderRef.current = mediaRecorder;
       audioChunksRef.current = [];
@@ -328,14 +379,28 @@ export default function CRMApp() {
       mediaRecorder.ondataavailable = (e) => {
         if (e.data && e.data.size > 0) audioChunksRef.current.push(e.data);
       };
+      mediaRecorder.onerror = () => {
+        cleanupRecordingTimers();
+        stopStreamTracks(stream);
+        mediaRecorderRef.current = null;
+        setIsRecording(false);
+        setIsPreparingRecording(false);
+        setSendError("La grabación falló. Intentá de nuevo manteniendo la app abierta.");
+      };
       mediaRecorder.onstop = async () => {
+        cleanupRecordingTimers();
         const duracionMs = Date.now() - recordingStartRef.current;
         const usedMime = mediaRecorder.mimeType || mimeType || "audio/webm";
-        const ext = usedMime.includes("ogg") ? "ogg" : usedMime.includes("mp4") ? "mp4" : "webm";
+        const ext = usedMime.includes("ogg") ? "ogg" : usedMime.includes("mp4") ? "m4a" : usedMime.includes("aac") ? "aac" : "webm";
         const audioBlob = new Blob(audioChunksRef.current, { type: usedMime });
         audioChunksRef.current = [];
-        stream.getTracks().forEach((track) => track.stop());
-        if (audioBlob.size === 0) return;
+        stopStreamTracks(stream);
+        mediaRecorderRef.current = null;
+        setIsPreparingRecording(false);
+        if (audioBlob.size === 0) {
+          setSendError("No se capturó audio. Revisá el permiso del micrófono e intentá otra vez.");
+          return;
+        }
         if (duracionMs < MIN_DURACION_NOTA_MS) {
           setSendError("La nota de voz es demasiado corta; mantené presionado un momento más.");
           return;
@@ -352,35 +417,48 @@ export default function CRMApp() {
         reader.onerror = () => setSendError("No se pudo leer la nota de voz grabada.");
       };
       recordingStartRef.current = Date.now();
-      mediaRecorder.start(200);
+      // Sin timeslice: evita cortes/lag en grabaciones creadas desde teléfonos.
+      mediaRecorder.start();
       setIsRecording(true);
       setRecordingTime(0);
       setSendError("");
-      timerRef.current = setInterval(() => setRecordingTime((prev) => prev + 1), 1000);
-      autoStopRef.current = setTimeout(() => stopRecording(), MAX_GRABACION_SEG * 1000);
+      warmupTimerRef.current = setTimeout(() => {
+        recordingStartRef.current = Date.now();
+        setIsPreparingRecording(false);
+        timerRef.current = setInterval(() => setRecordingTime((prev) => prev + 1), 1000);
+      }, MOBILE_MIC_WARMUP_MS);
+      autoStopRef.current = setTimeout(() => stopRecording(), (MAX_GRABACION_SEG * 1000) + MOBILE_MIC_WARMUP_MS);
     } catch (err: any) {
+      cleanupRecordingTimers();
+      stopStreamTracks(stream || mediaRecorderRef.current?.stream);
+      mediaRecorderRef.current = null;
+      setIsRecording(false);
+      setIsPreparingRecording(false);
       alert("Error accediendo al micrófono.");
     }
   };
 
   const stopRecording = () => {
-    if (mediaRecorderRef.current && isRecording) {
-      if (autoStopRef.current) { clearTimeout(autoStopRef.current); autoStopRef.current = null; }
-      mediaRecorderRef.current.stop();
+    const recorder = mediaRecorderRef.current;
+    if (recorder && recorder.state === "recording") {
+      cleanupRecordingTimers();
+      recorder.stop();
       setIsRecording(false);
-      if (timerRef.current) clearInterval(timerRef.current);
+      setIsPreparingRecording(false);
     }
   };
   const cancelRecording = () => {
-    if (mediaRecorderRef.current && isRecording) {
-      if (autoStopRef.current) { clearTimeout(autoStopRef.current); autoStopRef.current = null; }
-      mediaRecorderRef.current.onstop = () => {
-        mediaRecorderRef.current?.stream.getTracks().forEach((t) => t.stop());
+    const recorder = mediaRecorderRef.current;
+    if (recorder && recorder.state === "recording") {
+      cleanupRecordingTimers();
+      recorder.onstop = () => {
+        stopStreamTracks(recorder.stream);
+        mediaRecorderRef.current = null;
       };
-      mediaRecorderRef.current.stop();
-      setIsRecording(false);
-      if (timerRef.current) clearInterval(timerRef.current);
       audioChunksRef.current = [];
+      recorder.stop();
+      setIsRecording(false);
+      setIsPreparingRecording(false);
     }
   };
   const formatTime = (secs: number) => {
@@ -641,12 +719,12 @@ export default function CRMApp() {
                   <div className="p-3 border-t border-border bg-surface/80 backdrop-blur-md flex items-center gap-2 flex-shrink-0">
                     <input type="file" ref={fileInputRef} className="hidden" onChange={handleFileUpload} accept="image/*,audio/*,video/*,.pdf,.doc,.docx,.xls,.xlsx" />
                     <button type="button" onClick={() => fileInputRef.current?.click()} disabled={clienteActual.es_spam || isRecording} className="p-2.5 text-gray-400 hover:text-purple-400 hover:bg-surfaceHover rounded-full transition-colors disabled:opacity-40"><Paperclip className="w-5 h-5" /></button>
-                    {isRecording ? (
+                    {(isRecording || isPreparingRecording) ? (
                       <div className="flex-1 bg-red-950/30 border border-red-900/50 rounded-full px-4 py-2 flex items-center justify-between">
-                        <div className="flex items-center gap-2 text-red-400 text-sm font-medium"><span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" /><Mic className="w-4 h-4" /> {formatTime(recordingTime)}</div>
+                        <div className="flex items-center gap-2 text-red-400 text-sm font-medium"><span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" /><Mic className="w-4 h-4" /> {isPreparingRecording ? "Preparando micrófono..." : formatTime(recordingTime)}</div>
                         <div className="flex items-center gap-1">
-                          <button onClick={cancelRecording} className="p-1.5 text-gray-400 hover:text-white rounded-full"><Trash2 className="w-4 h-4" /></button>
-                          <button onClick={stopRecording} className="p-1.5 text-white bg-red-600 hover:bg-red-500 rounded-full shadow-lg"><Send className="w-4 h-4 ml-0.5" /></button>
+                          <button onClick={cancelRecording} disabled={!isRecording} className="p-1.5 text-gray-400 hover:text-white rounded-full disabled:opacity-40"><Trash2 className="w-4 h-4" /></button>
+                          <button onClick={stopRecording} disabled={isPreparingRecording || !isRecording} className="p-1.5 text-white bg-red-600 hover:bg-red-500 rounded-full shadow-lg disabled:opacity-40"><Send className="w-4 h-4 ml-0.5" /></button>
                         </div>
                       </div>
                     ) : (
@@ -655,7 +733,7 @@ export default function CRMApp() {
                         {nuevoMensaje.trim() ? (
                           <button type="submit" disabled={isSending} className="bg-purple-600 hover:bg-purple-700 text-white p-2.5 rounded-full transition-colors disabled:opacity-50"><Send className="w-5 h-5" /></button>
                         ) : (
-                          <button type="button" onClick={startRecording} disabled={clienteActual.es_spam || isSending} className="bg-surface border border-border text-purple-400 hover:bg-purple-600 hover:text-white hover:border-purple-600 p-2.5 rounded-full transition-colors disabled:opacity-50"><Mic className="w-5 h-5" /></button>
+                          <button type="button" onClick={startRecording} disabled={clienteActual.es_spam || isSending || isPreparingRecording} className="bg-surface border border-border text-purple-400 hover:bg-purple-600 hover:text-white hover:border-purple-600 p-2.5 rounded-full transition-colors disabled:opacity-50"><Mic className="w-5 h-5" /></button>
                         )}
                         {sendError && <p className="w-full text-xs text-red-400 px-2">{sendError}</p>}
                       </form>

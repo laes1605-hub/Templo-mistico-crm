@@ -8,7 +8,9 @@ const cleanBase64 = (value: unknown) => {
   return encoded.includes(",") ? encoded.slice(encoded.indexOf(",") + 1) : encoded;
 };
 
-const WEBM_OGG_PREROLL_MS = 1400;
+// Preroll mínimo: sólo el necesario para que WhatsApp no recorte la primera
+// sílaba. Más que esto se escucha como silencio muerto al inicio de la nota.
+const WEBM_OGG_PREROLL_MS = 300;
 
 const safeFileName = (name: unknown, mime: string) => {
   const fallbackExtension = mime.includes("ogg") ? "ogg" : mime.includes("mpeg") ? "mp3" : mime.includes("mp4") ? "m4a" : "webm";

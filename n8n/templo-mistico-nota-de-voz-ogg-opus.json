@@ -1,0 +1,285 @@
+{
+  "name": "Templo Místico — Nota de voz del Agente (OGG/Opus para WhatsApp)",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "a1000000-0000-4000-8000-000000000001",
+      "name": "Llamado desde el Agente",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [-600, 220],
+      "notes": "Llamá este sub-workflow desde tu flujo del Agente Luna con: texto, conversation_id (id de Chatwoot) y opcional reference_id."
+    },
+    {
+      "parameters": {},
+      "id": "a1000000-0000-4000-8000-000000000002",
+      "name": "Probar manualmente",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [-600, 440]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "t1",
+              "name": "texto",
+              "value": "Hola, soy Luna del Templo Místico. Te dejo esta nota de voz para confirmar tu consulta espiritual.",
+              "type": "string"
+            },
+            {
+              "id": "t2",
+              "name": "conversation_id",
+              "value": "1",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000003",
+      "name": "Datos de prueba",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [-380, 440]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─────────────────────────────────────────────────────────────\n// Normaliza la entrada y arma rutas temporales únicas por ejecución.\n// Cambiá los valores por defecto (cuenta, URL, voz) a tu instalación.\n// ─────────────────────────────────────────────────────────────\n\n// Algunas instalaciones bloquean $env en los Code nodes\n// (N8N_BLOCK_ENV_ACCESS_IN_NODE=true), así que lo leemos sin romper.\nconst env = (clave) => {\n  try { return $env[clave] || ''; } catch (e) { return ''; }\n};\n\nconst CHATWOOT_URL    = (env('CHATWOOT_URL') || 'https://crmesteban.duckdns.org').replace(/\\/$/, '');\nconst CHATWOOT_CUENTA = env('CHATWOOT_ACCOUNT_ID') || '1';\nconst VOZ_POR_DEFECTO = env('FISH_REFERENCE_ID');\n\nreturn $input.all().map((item, i) => {\n  const d = item.json || {};\n\n  const texto = String(d.texto ?? d.text ?? d.output ?? d.message ?? '').trim();\n  if (!texto) {\n    throw new Error('No llegó texto para convertir en nota de voz (campo \"texto\").');\n  }\n\n  const conversationId = d.conversation_id ?? d.chatwoot_conversation_id ?? d.conversacion_id;\n  if (!conversationId) {\n    throw new Error('Falta conversation_id (el id de la conversación en Chatwoot).');\n  }\n\n  // Base única: evita que dos ejecuciones simultáneas pisen el mismo archivo.\n  const base = `/tmp/tm_voz_${$execution.id}_${i}_${Date.now()}`;\n\n  return {\n    json: {\n      texto,\n      conversation_id: String(conversationId),\n      reference_id: d.reference_id || VOZ_POR_DEFECTO,\n      chatwoot_url: d.chatwoot_url || CHATWOOT_URL,\n      account_id: d.account_id || CHATWOOT_CUENTA,\n      // La nota de voz no lleva texto visible: WhatsApp muestra solo el audio.\n      caption: d.caption ?? '',\n      archivo_entrada: `${base}.in`,\n      archivo_ogg: `${base}.ogg`,\n      nombre_archivo: 'nota_de_voz.ogg'\n    }\n  };\n});"
+      },
+      "id": "a1000000-0000-4000-8000-000000000004",
+      "name": "Preparar variables",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-160, 320]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.fish.audio/v1/tts",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "s1"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  text: $json.texto,\n  reference_id: $json.reference_id || undefined,\n  format: 'opus',\n  opus_bitrate: 32,\n  latency: 'normal',\n  normalize: true,\n  chunk_length: 200\n}) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "data"
+            }
+          },
+          "timeout": 120000
+        }
+      },
+      "id": "a1000000-0000-4000-8000-000000000005",
+      "name": "Fish Audio TTS",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [60, 320],
+      "notes": "Credencial: Header Auth → Name: Authorization / Value: Bearer TU_FISH_AUDIO_API_KEY.\nOJO: pedimos format=opus pero NO confiamos en el contenedor ni en el MIME que devuelve. ffmpeg lo normaliza después."
+    },
+    {
+      "parameters": {
+        "operation": "write",
+        "fileName": "={{ $json.archivo_entrada }}",
+        "dataPropertyName": "data",
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000006",
+      "name": "Guardar audio crudo",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [280, 320]
+    },
+    {
+      "parameters": {
+        "command": "=ffmpeg -y -hide_banner -loglevel error -i \"{{ $('Preparar variables').item.json.archivo_entrada }}\" -vn -map_metadata -1 -ac 1 -ar 48000 -c:a libopus -b:a 32k -vbr on -compression_level 10 -application voip -f ogg \"{{ $('Preparar variables').item.json.archivo_ogg }}\" && echo CONVERSION_OK"
+      },
+      "id": "a1000000-0000-4000-8000-000000000007",
+      "name": "ffmpeg → OGG/Opus",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [500, 320],
+      "notes": "-c:a libopus + -f ogg = contenedor OGG con códec Opus, que es lo único que acepta Meta.\n-ac 1 -ar 48000 -application voip = mono 48 kHz, igual que una nota de voz real de WhatsApp."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.exitCode }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000008",
+      "name": "¿Conversión OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [720, 320]
+    },
+    {
+      "parameters": {
+        "fileSelector": "={{ $('Preparar variables').item.json.archivo_ogg }}",
+        "options": {
+          "dataPropertyName": "data"
+        }
+      },
+      "id": "a1000000-0000-4000-8000-000000000009",
+      "name": "Leer OGG",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [940, 220]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// ─────────────────────────────────────────────────────────────\n// PASO CLAVE DEL ARREGLO.\n// Meta rechaza el audio (error 131053) si el MIME es \"audio/opus\"\n// o si el archivo se llama .opus / .webm / .mp3.\n// Acá forzamos nombre .ogg + MIME \"audio/ogg\" y verificamos que el\n// binario sea realmente un OGG con cabecera OpusHead.\n// ─────────────────────────────────────────────────────────────\nconst prep = $('Preparar variables').item.json;\nconst bin = $input.item.binary && $input.item.binary.data;\n\nif (!bin) throw new Error('No se recibió el archivo OGG desde el disco.');\n\n// La firma del helper cambia según la versión de n8n y el modo de\n// almacenamiento binario (memoria vs filesystem). Probamos las variantes.\nlet buffer;\ntry {\n  buffer = await this.helpers.getBinaryDataBuffer('data');\n} catch (e) {\n  try {\n    buffer = await this.helpers.getBinaryDataBuffer(0, 'data');\n  } catch (e2) {\n    buffer = Buffer.from(bin.data, 'base64');\n  }\n}\n\nif (!buffer || buffer.length < 57) {\n  throw new Error(`El OGG generado está vacío o es demasiado corto (${buffer ? buffer.length : 0} bytes).`);\n}\n\n// Firma del contenedor OGG: los 4 primeros bytes deben ser \"OggS\".\nif (buffer.toString('latin1', 0, 4) !== 'OggS') {\n  throw new Error('El archivo no es un contenedor OGG válido (falta la firma OggS).');\n}\n\n// La primera página debe contener la cabecera de identificación \"OpusHead\".\nif (buffer.toString('latin1', 28, 36) !== 'OpusHead') {\n  throw new Error('El OGG no contiene un stream Opus (falta OpusHead). Revisá que ffmpeg tenga libopus.');\n}\n\nconst canales = buffer[37];\n\n// Reescribimos los metadatos del binario: esto es lo que Chatwoot lee\n// para decidir qué MIME manda a Meta.\nbin.fileName = prep.nombre_archivo;   // nota_de_voz.ogg\nbin.fileExtension = 'ogg';\nbin.fileType = 'audio';\nbin.mimeType = 'audio/ogg';           // NUNCA \"audio/opus\"\n\n$input.item.json = {\n  ...prep,\n  ogg_bytes: buffer.length,\n  ogg_canales: canales,\n  ogg_valido: true\n};\n\nreturn $input.item;"
+      },
+      "id": "a1000000-0000-4000-8000-00000000000a",
+      "name": "Forzar MIME audio/ogg",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1160, 220]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.chatwoot_url }}/api/v1/accounts/{{ $json.account_id }}/conversations/{{ $json.conversation_id }}/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "content",
+              "value": "={{ $json.caption }}"
+            },
+            {
+              "name": "message_type",
+              "value": "outgoing"
+            },
+            {
+              "name": "private",
+              "value": "false"
+            },
+            {
+              "parameterType": "formBinaryData",
+              "name": "attachments[]",
+              "inputDataFieldName": "data"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 120000,
+          "response": {
+            "response": {
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "a1000000-0000-4000-8000-00000000000b",
+      "name": "Enviar a Chatwoot",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1380, 220],
+      "notes": "Credencial: Header Auth → Name: api_access_token / Value: TU_CHATWOOT_API_TOKEN.\nDebe ir como multipart/form-data con attachments[]: si mandás JSON, Chatwoot descarta el audio."
+    },
+    {
+      "parameters": {
+        "command": "=rm -f \"{{ $('Preparar variables').item.json.archivo_entrada }}\" \"{{ $('Preparar variables').item.json.archivo_ogg }}\"; echo LIMPIEZA_OK"
+      },
+      "id": "a1000000-0000-4000-8000-00000000000c",
+      "name": "Borrar temporales",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [1600, 220],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "errorMessage": "=ffmpeg no pudo convertir el audio a OGG/Opus. Salida: {{ $json.stderr || $json.stdout || 'sin detalle' }}"
+      },
+      "id": "a1000000-0000-4000-8000-00000000000d",
+      "name": "Falló la conversión",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [940, 460]
+    }
+  ],
+  "connections": {
+    "Llamado desde el Agente": {
+      "main": [[{ "node": "Preparar variables", "type": "main", "index": 0 }]]
+    },
+    "Probar manualmente": {
+      "main": [[{ "node": "Datos de prueba", "type": "main", "index": 0 }]]
+    },
+    "Datos de prueba": {
+      "main": [[{ "node": "Preparar variables", "type": "main", "index": 0 }]]
+    },
+    "Preparar variables": {
+      "main": [[{ "node": "Fish Audio TTS", "type": "main", "index": 0 }]]
+    },
+    "Fish Audio TTS": {
+      "main": [[{ "node": "Guardar audio crudo", "type": "main", "index": 0 }]]
+    },
+    "Guardar audio crudo": {
+      "main": [[{ "node": "ffmpeg → OGG/Opus", "type": "main", "index": 0 }]]
+    },
+    "ffmpeg → OGG/Opus": {
+      "main": [[{ "node": "¿Conversión OK?", "type": "main", "index": 0 }]]
+    },
+    "¿Conversión OK?": {
+      "main": [
+        [{ "node": "Leer OGG", "type": "main", "index": 0 }],
+        [{ "node": "Falló la conversión", "type": "main", "index": 0 }]
+      ]
+    },
+    "Leer OGG": {
+      "main": [[{ "node": "Forzar MIME audio/ogg", "type": "main", "index": 0 }]]
+    },
+    "Forzar MIME audio/ogg": {
+      "main": [[{ "node": "Enviar a Chatwoot", "type": "main", "index": 0 }]]
+    },
+    "Enviar a Chatwoot": {
+      "main": [[{ "node": "Borrar temporales", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "instanceId": "templo-mistico-crm"
+  },
+  "tags": []
+}

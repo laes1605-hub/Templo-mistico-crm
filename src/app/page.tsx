@@ -20,11 +20,11 @@ import {
   Mic, Paperclip, ArrowLeft, Info, ListTodo, CheckSquare, Square,
   Sparkles, Play, Pause, RefreshCw, Image as ImageIcon, ChevronDown, ChevronRight,
   Archive, ArchiveRestore, Search, AlertTriangle,
-  StickyNote, FileText, Coins, Globe, Percent, Save, Eye, EyeOff, Palette
+  StickyNote, FileText, Coins, Globe, Percent, Save, Eye, EyeOff, Palette, Power, User, Landmark
 } from "lucide-react";
 
 export default function CRMApp() {
-  const [tab, setTab] = useState<"chats" | "pipeline" | "cartera" | "tareas" | "ads" | "cerebro" | "archivados">("chats");
+  const [tab, setTab] = useState<"chats" | "spam" | "pipeline" | "cartera" | "tareas" | "ads" | "cerebro" | "archivados">("chats");
   
   const [conversaciones, setConversaciones] = useState<any[]>([]);
   const [selectedConv, setSelectedConv] = useState<any | null>(null);
@@ -39,6 +39,17 @@ export default function CRMApp() {
   
   const [pipelineEtapas, setPipelineEtapas] = useState<any[]>([]);
   const [isEditingPipeline, setIsEditingPipeline] = useState(false);
+
+  // GRUPOS PERSONAL / TEMPLO
+  const [grupoActivo, setGrupoActivo] = useState<"personal" | "templo">("personal");
+  const [personalLabel, setPersonalLabel] = useState("Personal");
+  const [temploLabel, setTemploLabel] = useState("Templo");
+  const [isEditingGroupLabels, setIsEditingGroupLabels] = useState(false);
+
+  // KILL SWITCH GLOBAL LUNA
+  const [lunaGlobalActiva, setLunaGlobalActiva] = useState(true);
+  const [togglingLunaGlobal, setTogglingLunaGlobal] = useState(false);
+  const [editingEtapaColor, setEditingEtapaColor] = useState<string | null>(null);
 
   // META ADS
   const [campanas, setCampanas] = useState<any[]>([]);
@@ -133,6 +144,7 @@ export default function CRMApp() {
     fetchTodasTareas();
     fetchCampanasAds();
     cargarConfigDivisas();
+    cargarConfigGeneral();
 
     const convSub = supabase.channel("r-conv").on("postgres_changes", { event: "*", schema: "public", table: "conversaciones" }, fetchConversaciones).subscribe();
     const cliSub = supabase.channel("r-cli").on("postgres_changes", { event: "*", schema: "public", table: "clientes" }, () => { fetchConversaciones(); fetchTodosClientes(); }).subscribe();
@@ -168,7 +180,12 @@ export default function CRMApp() {
         const abierta = typeof document !== "undefined" && document.visibilityState === "visible";
         if (abierta && selectedConvRef.current?.id === msg.conversacion_id) return;
         const conv = conversacionesRef.current.find((c) => c.id === msg.conversacion_id);
-        const nombre = conv?.clientes?.nombre || conv?.clientes?.telefono_display || conv?.numero_whatsapp || "Cliente";
+        const nombre = (() => {
+          const c = conv?.clientes;
+          if (c?.nombre && c.nombre.trim() && c.nombre.trim().toLowerCase() !== "sin nombre") return c.nombre;
+          const num = c?.telefono_display || conv?.numero_whatsapp || "";
+          return num ? (num.startsWith("+") ? num : `+${num.replace(/^0+/, "")}`) : "Cliente";
+        })();
         let preview = msg.contenido || "";
         if (msg.tipo_contenido === "audio" || /\[audio\]|\[nota_de_voz\]/i.test(preview)) preview = "🎤 Nota de voz";
         else if (msg.tipo_contenido === "imagen") preview = "📷 Imagen";
@@ -241,6 +258,130 @@ export default function CRMApp() {
       { clave: "comision_cambio_default", valor: String(comisionDefault) }
     ]).then(() => {});
     setShowDivisaConfig(false);
+  }
+
+  // ===================== CONFIG GENERAL (Luna global, grupos) =====================
+  async function cargarConfigGeneral() {
+    try {
+      const { data } = await supabase.from("config_general").select("*");
+      if (data) {
+        data.forEach((row: any) => {
+          if (row.clave === "luna_global_activa") setLunaGlobalActiva(row.valor !== "false");
+          if (row.clave === "grupo_activo" && (row.valor === "personal" || row.valor === "templo")) {
+            setGrupoActivo(row.valor as any);
+          }
+          if (row.clave === "personal_label" && row.valor) setPersonalLabel(row.valor);
+          if (row.clave === "templo_label" && row.valor) setTemploLabel(row.valor);
+        });
+      }
+    } catch (e) {
+      console.log("config_general no disponible:", e);
+    }
+  }
+
+  async function toggleLunaGlobal() {
+    const nuevoEstado = !lunaGlobalActiva;
+    setTogglingLunaGlobal(true);
+    setLunaGlobalActiva(nuevoEstado);
+
+    // 1) Apagar/encender TODAS las conversaciones de un solo golpe
+    //    (usamos .not("id","is",null) porque Supabase exige al menos un filtro en UPDATE)
+    try {
+      const { error } = await supabase.from("conversaciones").update({ agente_activo: nuevoEstado }).not("id", "is", null);
+      if (error) {
+        // Fallback por si el operador "is" no funciona: actualizar en bloques
+        const { data: allConvs } = await supabase.from("conversaciones").select("id");
+        if (allConvs && allConvs.length > 0) {
+          const ids = allConvs.map((c: any) => c.id);
+          await supabase.from("conversaciones").update({ agente_activo: nuevoEstado }).in("id", ids);
+        }
+      }
+      // Actualizar estado local
+      setConversaciones(prev => prev.map(c => ({ ...c, agente_activo: nuevoEstado })));
+      if (selectedConv) setSelectedConv({ ...selectedConv, agente_activo: nuevoEstado });
+    } catch (e) {
+      console.error("Error cambiando estado global de Luna:", e);
+    }
+
+    // 2) Guardar el kill switch en config
+    try {
+      await supabase.from("config_general").upsert([
+        { clave: "luna_global_activa", valor: nuevoEstado ? "true" : "false" }
+      ]);
+    } catch {}
+    setTogglingLunaGlobal(false);
+  }
+
+  async function guardarLabelsGrupos() {
+    try {
+      await supabase.from("config_general").upsert([
+        { clave: "personal_label", valor: personalLabel || "Personal" },
+        { clave: "templo_label", valor: temploLabel || "Templo" }
+      ]);
+    } catch {}
+    setIsEditingGroupLabels(false);
+  }
+
+  function cambiarGrupo(grupo: "personal" | "templo") {
+    setGrupoActivo(grupo);
+    setSelectedConv(null);
+    setFiltroCanal("todos");
+    setSearchChats("");
+    setSearchArchivados("");
+    try {
+      supabase.from("config_general").upsert([{ clave: "grupo_activo", valor: grupo }]).then(() => {});
+    } catch {}
+  }
+
+  // ===================== COLOR PIPELINE =====================
+  const PALETA_COLORES = [
+    { color: "border-blue-500", bg: "bg-blue-500/15", text: "text-blue-300" },
+    { color: "border-indigo-500", bg: "bg-indigo-500/15", text: "text-indigo-300" },
+    { color: "border-purple-500", bg: "bg-purple-500/15", text: "text-purple-300" },
+    { color: "border-pink-500", bg: "bg-pink-500/15", text: "text-pink-300" },
+    { color: "border-fuchsia-500", bg: "bg-fuchsia-500/15", text: "text-fuchsia-300" },
+    { color: "border-violet-500", bg: "bg-violet-500/15", text: "text-violet-300" },
+    { color: "border-cyan-500", bg: "bg-cyan-500/15", text: "text-cyan-300" },
+    { color: "border-teal-500", bg: "bg-teal-500/15", text: "text-teal-300" },
+    { color: "border-emerald-500", bg: "bg-emerald-500/15", text: "text-emerald-300" },
+    { color: "border-green-500", bg: "bg-green-500/15", text: "text-green-300" },
+    { color: "border-yellow-500", bg: "bg-yellow-500/15", text: "text-yellow-300" },
+    { color: "border-orange-500", bg: "bg-orange-500/15", text: "text-orange-300" },
+    { color: "border-red-500", bg: "bg-red-500/15", text: "text-red-300" },
+    { color: "border-rose-500", bg: "bg-rose-500/15", text: "text-rose-300" },
+    { color: "border-amber-500", bg: "bg-amber-500/15", text: "text-amber-300" },
+  ];
+
+  async function actualizarColorEtapa(id: string, paleta: any) {
+    setPipelineEtapas(prev => prev.map(e => e.id === id ? { ...e, color: paleta.color, bg_color: paleta.bg, text_color: paleta.text } : e));
+    try {
+      await supabase.from("pipeline_etapas").update({ color: paleta.color, bg_color: paleta.bg, text_color: paleta.text }).eq("id", id);
+    } catch (e) { console.error(e); }
+    setEditingEtapaColor(null);
+  }
+
+  function getEtapa(clienteEstado: string | undefined) {
+    const clave = clienteEstado || "nuevo_lead";
+    return pipelineEtapas.find(e => e.clave === clave) || null;
+  }
+
+  // ===================== DISPLAY NAME (número con + si no hay nombre) =====================
+  function getDisplayName(cliente: any, conv?: any) {
+    // Si tiene nombre personalizado, mostrarlo
+    if (cliente?.nombre && cliente.nombre.trim() && cliente.nombre.trim().toLowerCase() !== "sin nombre") {
+      return cliente.nombre;
+    }
+    // Si no, mostrar el número con +
+    const num = cliente?.telefono_display || conv?.numero_whatsapp || "";
+    if (!num) return "Sin número";
+    // Asegurar que empiece con +
+    return num.startsWith("+") ? num : `+${num.replace(/^0+/, "")}`;
+  }
+
+  function getAvatarInitial(displayName: string) {
+    // Si empieza con +, mostrar un ícono de teléfono; si no, la inicial
+    if (displayName.startsWith("+")) return "#";
+    return displayName.charAt(0).toUpperCase();
   }
 
   // Actualizar tasa de cambio automáticamente al cambiar moneda
@@ -784,6 +925,11 @@ export default function CRMApp() {
   // ===================== ACCIONES CLIENTE =====================
   async function toggleAgenteIA() {
     if (!selectedConv) return;
+    // Si Luna está apagada globalmente, no permitir encenderla individualmente
+    if (!lunaGlobalActiva && !selectedConv.agente_activo) {
+      alert("Luna está apagada globalmente. Actívala primero con el botón superior.");
+      return;
+    }
     const est = !selectedConv.agente_activo;
     await supabase.from("conversaciones").update({ agente_activo: est }).eq("id", selectedConv.id);
     setSelectedConv({ ...selectedConv, agente_activo: est });
@@ -921,24 +1067,63 @@ export default function CRMApp() {
   }
 
   // ===================== PIPELINE =====================
-  async function agregarEtapaPipeline() {
-    const { data } = await supabase.from("pipeline_etapas").insert([{ clave: `etapa_${Date.now()}`, nombre: "Nueva Etapa", orden: pipelineEtapas.length + 1, color: "border-purple-500" }]).select();
+  async function agregarEtapaPipeline(grupo: "personal" | "templo" = grupoActivo) {
+    const etapasGrupo = pipelineEtapas.filter(e => e.grupo === grupo && !e.es_spam && !e.es_archivado);
+    const paletaDefault = PALETA_COLORES[etapasGrupo.length % PALETA_COLORES.length];
+    const nuevaEtapa = {
+      clave: `etapa_${grupo}_${Date.now()}`,
+      nombre: "Nueva Etapa",
+      orden: etapasGrupo.length + 1,
+      color: paletaDefault.color,
+      bg_color: paletaDefault.bg,
+      text_color: paletaDefault.text,
+      grupo,
+      es_spam: false,
+      es_archivado: false,
+    };
+    const { data } = await supabase.from("pipeline_etapas").insert([nuevaEtapa]).select();
     if (data) setPipelineEtapas([...pipelineEtapas, data[0]]);
   }
   async function actualizarNombreEtapa(id: string, nuevoNombre: string) {
     setPipelineEtapas(pipelineEtapas.map((e) => (e.id === id ? { ...e, nombre: nuevoNombre } : e)));
     await supabase.from("pipeline_etapas").update({ nombre: nuevoNombre }).eq("id", id);
   }
+  async function actualizarGrupoEtapa(id: string, nuevoGrupo: "personal" | "templo") {
+    setPipelineEtapas(pipelineEtapas.map((e) => (e.id === id ? { ...e, grupo: nuevoGrupo } : e)));
+    await supabase.from("pipeline_etapas").update({ grupo: nuevoGrupo }).eq("id", id);
+  }
   async function eliminarEtapa(id: string) {
+    const etapa = pipelineEtapas.find(e => e.id === id);
+    if (!etapa) return;
+    if (etapa.es_spam || etapa.es_archivado) {
+      alert("No puedes eliminar la etapa de Spam ni Archivados.");
+      return;
+    }
+    if (!confirm(`¿Eliminar la etapa "${etapa.nombre}"? Los clientes en esa etapa quedarán como "Nuevo Lead" del grupo ${etapa.grupo === "templo" ? temploLabel : personalLabel}.`)) return;
+    // Reasignar clientes al nuevo_lead del grupo correspondiente
+    const nuevoLeadKey = etapa.grupo === "templo" ? "nuevo_lead_templo" : "nuevo_lead";
+    await supabase.from("clientes").update({ estado: nuevoLeadKey }).eq("estado", etapa.clave);
     await supabase.from("pipeline_etapas").delete().eq("id", id);
     setPipelineEtapas(pipelineEtapas.filter((e) => e.id !== id));
+    fetchTodosClientes();
+    fetchConversaciones();
   }
-  async function moverEtapa(index: number, direccion: -1 | 1) {
-    if (index + direccion < 0 || index + direccion >= pipelineEtapas.length) return;
-    const nuevas = [...pipelineEtapas];
-    const temp = nuevas[index].orden; nuevas[index].orden = nuevas[index + direccion].orden; nuevas[index + direccion].orden = temp;
-    nuevas.sort((a, b) => a.orden - b.orden); setPipelineEtapas(nuevas);
-    for (const etapa of nuevas) await supabase.from("pipeline_etapas").update({ orden: etapa.orden }).eq("id", etapa.id);
+  async function moverEtapaPipeline(idA: string, idB: string) {
+    const a = pipelineEtapas.find(e => e.id === idA);
+    const b = pipelineEtapas.find(e => e.id === idB);
+    if (!a || !b) return;
+    if (a.grupo !== b.grupo) return; // no intercambiar entre grupos
+    const tempOrden = a.orden;
+    const nuevas = pipelineEtapas.map(e => {
+      if (e.id === idA) return { ...e, orden: b.orden };
+      if (e.id === idB) return { ...e, orden: tempOrden };
+      return e;
+    });
+    setPipelineEtapas(nuevas);
+    try {
+      await supabase.from("pipeline_etapas").update({ orden: b.orden }).eq("id", idA);
+      await supabase.from("pipeline_etapas").update({ orden: tempOrden }).eq("id", idB);
+    } catch (e) { console.error(e); }
   }
 
   // ===================== ADMIN SALDOS =====================
@@ -958,29 +1143,38 @@ export default function CRMApp() {
   const conversacionesFiltradas = conversaciones.filter((c) => {
     const esSpam = c.clientes?.es_spam === true;
     const isArchivada = (c as any).archivada === true;
+    // Filtrar por grupo Personal/Templo
+    const grupoCliente = c.clientes?.grupo || (c.fuente === "meta_business" ? "templo" : "personal");
+    if (grupoCliente !== grupoActivo) return false;
     if (isArchivada) return false;
     if (filtroCanal === "spam") return esSpam;
     if (esSpam) return false;
-    const matchCanal = filtroCanal === "todos" || c.fuente === filtroCanal;
-    const matchSearch = !searchChats || 
-      (c.clientes?.nombre || "").toLowerCase().includes(searchChats.toLowerCase()) ||
+    const matchSearch = !searchChats ||
+      getDisplayName(c.clientes, c).toLowerCase().includes(searchChats.toLowerCase()) ||
       (c.numero_whatsapp || "").includes(searchChats) ||
       (c.clientes?.telefono_display || "").includes(searchChats);
-    return matchCanal && matchSearch;
+    return matchSearch;
   });
 
   const conversacionesArchivadas = conversaciones.filter((c) => {
     const esSpam = c.clientes?.es_spam === true;
     const isArchivada = (c as any).archivada === true;
+    const grupoCliente = c.clientes?.grupo || (c.fuente === "meta_business" ? "templo" : "personal");
+    if (grupoCliente !== grupoActivo) return false;
     if (!isArchivada || esSpam) return false;
-    const matchCanal = filtroArchivados === "todos" || c.fuente === filtroArchivados;
     const q = searchArchivados.toLowerCase();
     const matchSearch = !searchArchivados ||
-      (c.clientes?.nombre || "").toLowerCase().includes(q) ||
+      getDisplayName(c.clientes, c).toLowerCase().includes(q) ||
       (c.numero_whatsapp || "").includes(searchArchivados) ||
       (c.clientes?.telefono_display || "").includes(searchArchivados) ||
       (c.ultimo_mensaje || "").toLowerCase().includes(q);
-    return matchCanal && matchSearch;
+    return matchSearch;
+  });
+
+  const conversacionesSpam = conversaciones.filter((c) => {
+    const esSpam = c.clientes?.es_spam === true;
+    const grupoCliente = c.clientes?.grupo || (c.fuente === "meta_business" ? "templo" : "personal");
+    return esSpam && grupoCliente === grupoActivo;
   });
 
   const ahora = new Date(); const inicioMes = new Date(ahora.getFullYear(), ahora.getMonth(), 1);
@@ -1028,6 +1222,7 @@ export default function CRMApp() {
 
   const menuItems = [
     { id: "chats", icon: MessageSquare, label: "Chats" },
+    { id: "spam", icon: Ban, label: "Spam" },
     { id: "archivados", icon: Archive, label: "Archivados" },
     { id: "pipeline", icon: Users, label: "Pipeline" },
     { id: "tareas", icon: ListTodo, label: "Tareas" },
@@ -1035,6 +1230,10 @@ export default function CRMApp() {
     { id: "ads", icon: TrendingUp, label: "Ads" },
     { id: "cerebro", icon: Brain, label: "Cerebro" }
   ];
+
+  const etapasGrupoActual = pipelineEtapas.filter(e => e.grupo === grupoActivo && !e.es_spam && !e.es_archivado).sort((a, b) => a.orden - b.orden);
+  const etapaSpam = pipelineEtapas.find(e => e.grupo === grupoActivo && e.es_spam);
+  const etapaArchivado = pipelineEtapas.find(e => e.grupo === grupoActivo && e.es_archivado);
 
   // Preview conversión en form
   const previewMonto = parseFloat(montoTotal) || 0;
@@ -1081,14 +1280,94 @@ export default function CRMApp() {
       <main className="flex-1 flex overflow-hidden mb-16 md:mb-0 relative">
         
         {/* ================= CHATS ================= */}
-        {tab === "chats" && (
+        {(tab === "chats" || tab === "spam") && (
           <>
             <section className={`w-full md:w-80 border-r border-border bg-surface/50 flex-col ${selectedConv ? "hidden md:flex" : "flex"}`}>
               <div className="p-4 border-b border-border flex flex-col gap-3 pt-6 md:pt-4">
+
+                {/* SELECTOR DE GRUPO: PERSONAL / TEMPLO */}
+                <div className="flex items-stretch gap-2">
+                  <button
+                    onClick={() => cambiarGrupo("personal")}
+                    className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-xs font-bold border transition-all ${
+                      grupoActivo === "personal"
+                        ? "bg-gradient-to-br from-blue-600 to-indigo-600 text-white border-blue-500 shadow-lg shadow-blue-900/30"
+                        : "bg-surface border-border text-gray-400 hover:text-white"
+                    }`}
+                  >
+                    <User className="w-3.5 h-3.5" />
+                    {personalLabel}
+                  </button>
+                  <button
+                    onClick={() => cambiarGrupo("templo")}
+                    className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-xs font-bold border transition-all ${
+                      grupoActivo === "templo"
+                        ? "bg-gradient-to-br from-purple-600 to-fuchsia-600 text-white border-purple-500 shadow-lg shadow-purple-900/30"
+                        : "bg-surface border-border text-gray-400 hover:text-white"
+                    }`}
+                  >
+                    <Landmark className="w-3.5 h-3.5" />
+                    {temploLabel}
+                  </button>
+                  <button
+                    onClick={() => setIsEditingGroupLabels(!isEditingGroupLabels)}
+                    className="px-2 rounded-lg border border-border text-gray-500 hover:text-purple-300 hover:border-purple-500 transition-colors"
+                    title="Editar nombres de grupos"
+                  >
+                    <Edit2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+
+                {isEditingGroupLabels && (
+                  <div className="bg-background border border-purple-900/40 rounded-xl p-3 space-y-2">
+                    <p className="text-[10px] text-purple-300 font-bold uppercase">Editar nombres</p>
+                    <div className="flex gap-2 items-center">
+                      <User className="w-3 h-3 text-blue-400 flex-shrink-0" />
+                      <input
+                        type="text"
+                        value={personalLabel}
+                        onChange={(e) => setPersonalLabel(e.target.value)}
+                        className="flex-1 bg-surface border border-border rounded px-2 py-1 text-xs focus:outline-none focus:border-purple-500"
+                      />
+                    </div>
+                    <div className="flex gap-2 items-center">
+                      <Landmark className="w-3 h-3 text-purple-400 flex-shrink-0" />
+                      <input
+                        type="text"
+                        value={temploLabel}
+                        onChange={(e) => setTemploLabel(e.target.value)}
+                        className="flex-1 bg-surface border border-border rounded px-2 py-1 text-xs focus:outline-none focus:border-purple-500"
+                      />
+                    </div>
+                    <div className="flex gap-2 pt-1">
+                      <button onClick={guardarLabelsGrupos} className="flex-1 bg-purple-600 hover:bg-purple-700 text-white text-[10px] font-bold py-1.5 rounded flex items-center justify-center gap-1"><Save className="w-3 h-3" /> Guardar</button>
+                      <button onClick={() => setIsEditingGroupLabels(false)} className="flex-1 bg-surface border border-border text-gray-400 text-[10px] py-1.5 rounded">Cancelar</button>
+                    </div>
+                  </div>
+                )}
+
+                {/* KILL SWITCH GLOBAL LUNA */}
+                <button
+                  onClick={toggleLunaGlobal}
+                  disabled={togglingLunaGlobal}
+                  className={`w-full flex items-center justify-center gap-2 py-2 rounded-xl border text-xs font-bold transition-all disabled:opacity-50 ${
+                    lunaGlobalActiva
+                      ? "bg-emerald-950/30 border-emerald-800/50 text-emerald-300 hover:bg-emerald-900/40"
+                      : "bg-red-950/40 border-red-700 text-red-300 hover:bg-red-900/50 animate-pulse"
+                  }`}
+                >
+                  <Power className={`w-4 h-4 ${togglingLunaGlobal ? "animate-spin" : ""}`} />
+                  {togglingLunaGlobal ? "Cambiando..." : lunaGlobalActiva ? "🌙 Luna Encendida (Click para Apagarla TODO)" : "⚠️ Luna APAGADA Globalmente (Click para Encender)"}
+                </button>
+
                 <div className="flex items-center justify-between">
-                  <h1 className="text-lg font-bold text-gray-100">Bandeja</h1>
+                  <h1 className="text-lg font-bold text-gray-100">
+                    {tab === "spam" ? "🚫 Spam" : "Bandeja"}
+                  </h1>
                   <div className="flex items-center gap-2">
-                    <span className="text-xs px-2 py-0.5 rounded-full bg-purple-900/50 text-purple-300 font-medium">{conversacionesFiltradas.length}</span>
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-purple-900/50 text-purple-300 font-medium">
+                      {tab === "spam" ? conversacionesSpam.length : conversacionesFiltradas.length}
+                    </span>
                     <button className="md:hidden text-gray-500" onClick={() => setShowAdmin(true)}><Shield className="w-4 h-4" /></button>
                   </div>
                 </div>
@@ -1098,7 +1377,7 @@ export default function CRMApp() {
                   <input 
                     value={searchChats} 
                     onChange={e => setSearchChats(e.target.value)}
-                    placeholder="Buscar nombre o número..." 
+                    placeholder="Buscar por nombre o número..." 
                     className="w-full bg-background border border-border rounded-lg pl-9 pr-3 py-2 text-xs text-gray-200 placeholder-gray-500 focus:outline-none focus:border-purple-500"
                   />
                   {searchChats && (
@@ -1108,37 +1387,54 @@ export default function CRMApp() {
                   )}
                 </div>
 
-                <div className="flex bg-background p-1 rounded-lg border border-border text-xs flex-wrap">
-                  {["todos", "evolution", "meta_business", "spam"].map((f) => (
-                    <button key={f} onClick={() => setFiltroCanal(f as any)} className={`flex-1 py-1.5 rounded-md transition-all capitalize ${filtroCanal === f ? (f === 'spam' ? "bg-red-900/50 text-red-400" : "bg-surfaceHover text-white font-medium") : "text-gray-500"}`}>
-                      {f === "evolution" ? "Personal" : f === "meta_business" ? "Business" : f}
-                    </button>
-                  ))}
-                </div>
-
-                <button onClick={autoArchivarInactivos} className="w-full flex items-center justify-center gap-2 py-2 rounded-lg bg-amber-950/30 border border-amber-900/50 text-amber-400 hover:bg-amber-900/30 text-xs font-medium transition-colors">
-                  <Archive className="w-3.5 h-3.5" /> Archivar inactivos (+7 días)
-                </button>
+                {tab === "chats" && (
+                  <button onClick={autoArchivarInactivos} className="w-full flex items-center justify-center gap-2 py-2 rounded-lg bg-amber-950/30 border border-amber-900/50 text-amber-400 hover:bg-amber-900/30 text-xs font-medium transition-colors">
+                    <Archive className="w-3.5 h-3.5" /> Archivar inactivos (+7 días)
+                  </button>
+                )}
               </div>
               <div className="flex-1 overflow-y-auto divide-y divide-border/50">
-                {loadingChats ? <div className="p-6 text-center text-sm text-gray-500">Cargando...</div> : conversacionesFiltradas.length === 0 ? <div className="p-6 text-center text-sm text-gray-500">Bandeja vacía</div> :
-                  conversacionesFiltradas.map((conv) => {
+                {loadingChats ? <div className="p-6 text-center text-sm text-gray-500">Cargando...</div>
+                  : (tab === "spam" ? conversacionesSpam : conversacionesFiltradas).length === 0
+                  ? <div className="p-6 text-center text-sm text-gray-500">{tab === "spam" ? "No hay spam en este grupo" : "Bandeja vacía"}</div>
+                  : (tab === "spam" ? conversacionesSpam : conversacionesFiltradas).map((conv) => {
                     const cliente = conv.clientes;
-                    const displayName = cliente?.nombre || cliente?.telefono_display || conv.numero_whatsapp;
+                    const displayName = getDisplayName(cliente, conv);
                     const tieneNotas = cliente?.notas_personales || cliente?.detalles_caso;
+                    const etapaCliente = getEtapa(cliente?.estado);
+                    const etapaColor = etapaCliente?.color || "border-transparent";
+                    const etapaBg = etapaCliente?.bg_color || "";
+                    const etapaText = etapaCliente?.text_color || "text-gray-400";
                     return (
-                      <div key={conv.id} className={`group relative w-full flex items-start gap-3 text-left hover:bg-surfaceHover transition-colors ${selectedConv?.id === conv.id ? "bg-surfaceHover border-l-4 border-purple-500" : ""}`}>
+                      <div key={conv.id} className={`group relative w-full flex items-start gap-3 text-left hover:bg-surfaceHover transition-colors ${selectedConv?.id === conv.id ? `bg-surfaceHover border-l-4 ${etapaColor}` : `border-l-4 ${etapaColor} ${etapaBg}`}`}>
                         <button onClick={() => selectConversation(conv)} className="flex-1 p-4 flex items-start gap-3 text-left">
                           <div className="relative flex-shrink-0">
-                            <div className="w-12 h-12 rounded-full bg-surface border border-border flex items-center justify-center text-purple-400 font-bold overflow-hidden">
-                              {cliente?.foto_url ? <img src={cliente.foto_url} alt="" className="w-full h-full object-cover" /> : <span>{displayName?.charAt(0) || "W"}</span>}
+                            <div className={`w-12 h-12 rounded-full bg-surface border ${etapaColor} flex items-center justify-center ${etapaText} font-bold overflow-hidden`}>
+                              {cliente?.foto_url
+                                ? <img src={cliente.foto_url} alt="" className="w-full h-full object-cover" />
+                                : displayName.startsWith("+")
+                                  ? <Phone className="w-5 h-5" />
+                                  : <span>{displayName.charAt(0).toUpperCase()}</span>}
                             </div>
-                            {conv.agente_activo && !cliente?.es_spam && <span className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-purple-600 border-2 border-surface flex items-center justify-center"><Bot className="w-2.5 h-2.5 text-white" /></span>}
+                            {conv.agente_activo && !cliente?.es_spam && lunaGlobalActiva && <span className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-purple-600 border-2 border-surface flex items-center justify-center"><Bot className="w-2.5 h-2.5 text-white" /></span>}
+                            {!lunaGlobalActiva && !cliente?.es_spam && <span className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-red-800 border-2 border-surface flex items-center justify-center" title="Luna apagada globalmente"><Power className="w-2 h-2 text-red-200" /></span>}
                             {tieneNotas && <span className="absolute -top-1 -left-1 w-4 h-4 rounded-full bg-amber-600 border-2 border-surface flex items-center justify-center"><StickyNote className="w-2.5 h-2.5 text-white" /></span>}
                           </div>
                           <div className="flex-1 min-w-0">
-                            <div className="flex justify-between mb-1"><h2 className="text-sm font-semibold text-gray-200 truncate flex items-center gap-1">{displayName}{tieneNotas && <StickyNote className="w-3 h-3 text-amber-400" />}</h2><span className="text-[10px] text-gray-500">{new Date(conv.ultimo_mensaje_en).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span></div>
-                            <p className="text-xs text-gray-400 truncate flex items-center gap-1">{(conv.ultimo_mensaje === "[audio]" || conv.ultimo_mensaje === "[nota_de_voz]" || (conv.ultimo_mensaje && /\[audio\]|nota_de_voz|Nota de voz/i.test(conv.ultimo_mensaje))) ? (<><Mic className="w-3.5 h-3.5 text-purple-400 flex-shrink-0" /><span>Nota de voz</span></>) : (conv.ultimo_mensaje || "Sin mensajes")}</p>
+                            <div className="flex justify-between mb-1">
+                              <h2 className={`text-sm font-semibold truncate flex items-center gap-1 ${etapaText}`}>{displayName}{tieneNotas && <StickyNote className="w-3 h-3 text-amber-400" />}</h2>
+                              <span className="text-[10px] text-gray-500">{new Date(conv.ultimo_mensaje_en).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                            </div>
+                            {etapaCliente && !cliente?.es_spam && (
+                              <span className={`inline-block text-[9px] px-1.5 py-0 rounded ${etapaBg} ${etapaText} border ${etapaColor} mb-1`}>
+                                {etapaCliente.nombre}
+                              </span>
+                            )}
+                            <p className="text-xs text-gray-400 truncate flex items-center gap-1">
+                              {(conv.ultimo_mensaje === "[audio]" || conv.ultimo_mensaje === "[nota_de_voz]" || (conv.ultimo_mensaje && /\[audio\]|nota_de_voz|Nota de voz/i.test(conv.ultimo_mensaje)))
+                                ? (<><Mic className="w-3.5 h-3.5 text-purple-400 flex-shrink-0" /><span>Nota de voz</span></>)
+                                : (conv.ultimo_mensaje || "Sin mensajes")}
+                            </p>
                           </div>
                         </button>
                         <div className="absolute right-2 top-2 hidden group-hover:flex items-center gap-1 bg-surface border border-border rounded-lg p-1 shadow-lg">
@@ -1159,19 +1455,32 @@ export default function CRMApp() {
                     <div className="flex items-center gap-3">
                       <button onClick={() => setSelectedConv(null)} className="md:hidden p-2 -ml-2 text-gray-400 hover:text-white"><ArrowLeft className="w-5 h-5" /></button>
                       <div className="w-10 h-10 rounded-full bg-surface border border-border flex items-center justify-center text-purple-400 font-bold overflow-hidden">
-                        {clienteActual.foto_url ? <img src={clienteActual.foto_url} className="w-full h-full object-cover" alt="" /> : <span>{clienteActual.nombre?.charAt(0) || "W"}</span>}
+                        {clienteActual.foto_url
+                          ? <img src={clienteActual.foto_url} className="w-full h-full object-cover" alt="" />
+                          : (clienteActual.nombre && clienteActual.nombre !== "Sin Nombre" && clienteActual.nombre.trim())
+                            ? <span>{clienteActual.nombre.charAt(0).toUpperCase()}</span>
+                            : <Phone className="w-4 h-4 text-purple-400" />}
                       </div>
                       <div className="flex flex-col cursor-pointer" onClick={() => setShowMobileDetails(true)}>
-                        <h2 className="text-sm font-bold text-gray-100 flex items-center gap-1">{clienteActual.nombre || "Sin nombre"}{clienteActual.notas_personales && <StickyNote className="w-3 h-3 text-amber-400" />}</h2>
-                        <span className="text-[10px] text-gray-400 flex items-center gap-1"><Phone className="w-3 h-3" /> {clienteActual.telefono_display || clienteActual.telefono}</span>
+                        <h2 className="text-sm font-bold text-gray-100 flex items-center gap-1">
+                          {getDisplayName(clienteActual, selectedConv)}
+                          {clienteActual.notas_personales && <StickyNote className="w-3 h-3 text-amber-400" />}
+                        </h2>
+                        <span className="text-[10px] text-gray-400 flex items-center gap-1">
+                          <Phone className="w-3 h-3" /> {clienteActual.telefono_display || clienteActual.telefono}
+                        </span>
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
-                      {!clienteActual.es_spam && (
+                      {!clienteActual.es_spam && (!lunaGlobalActiva ? (
+                        <button onClick={toggleLunaGlobal} className="hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-all bg-red-950/40 border-red-700 text-red-300 animate-pulse">
+                          <Power className="w-3.5 h-3.5" /><span>Luna APAGADA (Encender)</span>
+                        </button>
+                      ) : (
                         <button onClick={toggleAgenteIA} className={`hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-all ${selectedConv.agente_activo ? "bg-purple-950/50 border-purple-700 text-purple-300" : "bg-surfaceHover border-border text-gray-400"}`}>
                           <Bot className="w-3.5 h-3.5" /><span>{selectedConv.agente_activo ? "Agente Luna: ON" : "Agente Pausado"}</span>
                         </button>
-                      )}
+                      ))}
                       <button onClick={() => archivarConversacion(selectedConv.id, true)} className="p-2 text-amber-400 hover:bg-amber-950/30 rounded-lg border border-amber-900/30 transition-colors" title="Archivar"><Archive className="w-4 h-4" /></button>
                       <button onClick={() => setShowDeleteConfirm(selectedConv.id)} className="p-2 text-red-400 hover:bg-red-950/30 rounded-lg border border-red-900/30 transition-colors" title="Eliminar"><Trash2 className="w-4 h-4" /></button>
                       <button onClick={() => setShowMobileDetails(true)} className="md:hidden p-2 text-gray-400"><Info className="w-5 h-5" /></button>
@@ -1243,21 +1552,45 @@ export default function CRMApp() {
                   <div className="p-5 space-y-5">
                     <div className="text-center">
                       <div className="w-20 h-20 mx-auto rounded-full bg-surface border-2 border-purple-500 flex items-center justify-center text-2xl font-bold text-purple-300 mb-3 overflow-hidden shadow-lg shadow-purple-900/20">
-                        {clienteActual.foto_url ? <img src={clienteActual.foto_url} alt="" className="w-full h-full object-cover" /> : <span>{clienteActual.nombre?.charAt(0) || "W"}</span>}
+                        {clienteActual.foto_url
+                          ? <img src={clienteActual.foto_url} alt="" className="w-full h-full object-cover" />
+                          : (clienteActual.nombre && clienteActual.nombre.trim() && clienteActual.nombre !== "Sin Nombre")
+                            ? <span>{clienteActual.nombre.charAt(0).toUpperCase()}</span>
+                            : <Phone className="w-7 h-7 text-purple-400" />}
                       </div>
                       {isEditingNombre ? (
                         <div className="flex items-center justify-center gap-1.5 px-2">
-                          <input type="text" value={tempNombre} onChange={(e) => setTempNombre(e.target.value)} className="bg-background border border-purple-500 rounded-lg px-2.5 py-1 text-sm text-gray-100 focus:outline-none w-full text-center" autoFocus onKeyDown={(e) => { if (e.key === "Enter") guardarNuevoNombre(); }} />
+                          <input
+                            type="text"
+                            value={tempNombre}
+                            onChange={(e) => setTempNombre(e.target.value)}
+                            placeholder="Nombre personalizado..."
+                            className="bg-background border border-purple-500 rounded-lg px-2.5 py-1 text-sm text-gray-100 focus:outline-none w-full text-center"
+                            autoFocus
+                            onKeyDown={(e) => { if (e.key === "Enter") guardarNuevoNombre(); }}
+                          />
                           <button onClick={guardarNuevoNombre} className="p-1.5 text-emerald-400 hover:text-emerald-300"><CheckCircle2 className="w-4 h-4" /></button>
                           <button onClick={() => setIsEditingNombre(false)} className="p-1.5 text-gray-400 hover:text-red-400"><X className="w-4 h-4" /></button>
                         </div>
                       ) : (
                         <div className="flex items-center justify-center gap-2 group">
-                          <h3 className="text-base font-bold text-gray-100">{clienteActual.nombre || "Sin Nombre"}</h3>
-                          <button onClick={() => { setTempNombre(clienteActual.nombre || ""); setIsEditingNombre(true); }} className="text-gray-500 hover:text-purple-300 transition-colors" title="Editar nombre"><Edit2 className="w-3.5 h-3.5" /></button>
+                          <h3 className={`text-base font-bold ${getDisplayName(clienteActual, selectedConv).startsWith("+") ? "text-purple-300 font-mono text-sm" : "text-gray-100"}`}>
+                            {getDisplayName(clienteActual, selectedConv)}
+                          </h3>
+                          <button
+                            onClick={() => { setTempNombre(clienteActual.nombre || ""); setIsEditingNombre(true); }}
+                            className="text-gray-500 hover:text-purple-300 transition-colors"
+                            title="Asignar nombre personalizado"
+                          >
+                            <Edit2 className="w-3.5 h-3.5" />
+                          </button>
                         </div>
                       )}
-                      <p className="text-xs text-gray-400 mt-0.5">{clienteActual.telefono_display || clienteActual.telefono}</p>
+                      {!clienteActual.nombre || clienteActual.nombre === "Sin Nombre" ? (
+                        <p className="text-[10px] text-gray-500 mt-1 italic">Sin nombre asignado — toca ✏️ para ponerle uno</p>
+                      ) : (
+                        <p className="text-xs text-gray-400 mt-0.5">{clienteActual.telefono_display || clienteActual.telefono}</p>
+                      )}
                     </div>
 
                     <div className="flex gap-2">
@@ -1330,9 +1663,22 @@ export default function CRMApp() {
                     </div>
 
                     <div className="bg-background p-4 rounded-xl border border-border space-y-2">
-                      <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider block">Estado Pipeline</label>
-                      <select value={clienteActual.estado || "nuevo_lead"} onChange={(e) => actualizarEstadoCliente(clienteActual.id, e.target.value)} className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-purple-500">
-                        {pipelineEtapas.map((etapa) => <option key={etapa.clave} value={etapa.clave}>{etapa.nombre}</option>)}
+                      <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider block">Etapa del Pipeline</label>
+                      <select
+                        value={clienteActual.estado || (grupoActivo === "templo" ? "nuevo_lead_templo" : "nuevo_lead")}
+                        onChange={(e) => actualizarEstadoCliente(clienteActual.id, e.target.value)}
+                        className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
+                      >
+                        <optgroup label={personalLabel}>
+                          {pipelineEtapas.filter(e => e.grupo === "personal" && !e.es_spam && !e.es_archivado).map((etapa) => (
+                            <option key={etapa.clave} value={etapa.clave}>{etapa.nombre}</option>
+                          ))}
+                        </optgroup>
+                        <optgroup label={temploLabel}>
+                          {pipelineEtapas.filter(e => e.grupo === "templo" && !e.es_spam && !e.es_archivado).map((etapa) => (
+                            <option key={etapa.clave} value={etapa.clave}>{etapa.nombre}</option>
+                          ))}
+                        </optgroup>
                       </select>
                     </div>
 
@@ -1492,12 +1838,12 @@ export default function CRMApp() {
                 ) : (
                   conversacionesArchivadas.map((conv) => {
                     const cliente = conv.clientes;
-                    const displayName = cliente?.nombre || cliente?.telefono_display || conv.numero_whatsapp;
+                    const displayName = getDisplayName(cliente, conv);
                     const diasArchivado = conv.fecha_archivado ? Math.floor((Date.now() - new Date(conv.fecha_archivado).getTime()) / (1000*60*60*24)) : Math.floor((Date.now() - new Date(conv.ultimo_mensaje_en).getTime()) / (1000*60*60*24));
                     return (
                       <div key={conv.id} className={`group relative w-full flex items-start gap-3 text-left hover:bg-surfaceHover transition-colors ${selectedConv?.id === conv.id ? "bg-amber-950/20 border-l-4 border-amber-600" : ""}`}>
                         <button onClick={() => selectConversation(conv)} className="flex-1 p-4 flex items-start gap-3 text-left">
-                          <div className="relative flex-shrink-0"><div className="w-11 h-11 rounded-full bg-surface border border-amber-900/30 flex items-center justify-center text-amber-400 font-bold overflow-hidden opacity-80">{cliente?.foto_url ? <img src={cliente.foto_url} alt="" className="w-full h-full object-cover grayscale" /> : <span>{displayName?.charAt(0) || "W"}</span>}</div><span className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-amber-900 border-2 border-surface flex items-center justify-center"><Archive className="w-2.5 h-2.5 text-amber-300" /></span></div>
+                          <div className="relative flex-shrink-0"><div className="w-11 h-11 rounded-full bg-surface border border-amber-900/30 flex items-center justify-center text-amber-400 font-bold overflow-hidden opacity-80">{cliente?.foto_url ? <img src={cliente.foto_url} alt="" className="w-full h-full object-cover grayscale" /> : displayName.startsWith("+") ? <Phone className="w-5 h-5" /> : <span>{displayName.charAt(0) || "W"}</span>}</div><span className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-amber-900 border-2 border-surface flex items-center justify-center"><Archive className="w-2.5 h-2.5 text-amber-300" /></span></div>
                           <div className="flex-1 min-w-0"><div className="flex justify-between mb-1"><h2 className="text-sm font-medium text-gray-300 truncate">{displayName}</h2><span className="text-[10px] text-amber-500/70">{diasArchivado}d</span></div><p className="text-xs text-gray-500 truncate">{conv.ultimo_mensaje || "Sin mensajes"}</p><p className="text-[10px] text-gray-600 mt-1">{new Date(conv.ultimo_mensaje_en).toLocaleDateString()}</p></div>
                         </button>
                         <div className="absolute right-2 top-2 hidden group-hover:flex items-center gap-1 bg-surface border border-border rounded-lg p-1 shadow-lg">
@@ -1517,8 +1863,8 @@ export default function CRMApp() {
                   <header className="h-16 px-4 md:px-6 border-b border-amber-900/30 bg-amber-950/20 backdrop-blur-md flex items-center justify-between flex-shrink-0">
                     <div className="flex items-center gap-3">
                       <button onClick={() => setSelectedConv(null)} className="md:hidden p-2 -ml-2 text-gray-400 hover:text-white"><ArrowLeft className="w-5 h-5" /></button>
-                      <div className="w-10 h-10 rounded-full bg-surface border border-amber-800/50 flex items-center justify-center text-amber-400 font-bold overflow-hidden">{clienteActual.foto_url ? <img src={clienteActual.foto_url} className="w-full h-full object-cover" alt="" /> : <span>{clienteActual.nombre?.charAt(0) || "W"}</span>}</div>
-                      <div className="flex flex-col"><h2 className="text-sm font-bold text-gray-100 flex items-center gap-2">{clienteActual.nombre || "Sin nombre"}<span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-900/50 text-amber-300 border border-amber-800/50">ARCHIVADO</span></h2><span className="text-[10px] text-gray-400 flex items-center gap-1"><Phone className="w-3 h-3" /> {clienteActual.telefono_display || clienteActual.telefono}</span></div>
+                      <div className="w-10 h-10 rounded-full bg-surface border border-amber-800/50 flex items-center justify-center text-amber-400 font-bold overflow-hidden">{clienteActual.foto_url ? <img src={clienteActual.foto_url} className="w-full h-full object-cover" alt="" /> : (() => { const dn = getDisplayName(clienteActual, selectedConv); return dn.startsWith("+") ? <Phone className="w-5 h-5" /> : <span>{dn.charAt(0) || "W"}</span>; })()}</div>
+                      <div className="flex flex-col"><h2 className="text-sm font-bold text-gray-100 flex items-center gap-2">{getDisplayName(clienteActual, selectedConv)}<span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-900/50 text-amber-300 border border-amber-800/50">ARCHIVADO</span></h2><span className="text-[10px] text-gray-400 flex items-center gap-1"><Phone className="w-3 h-3" /> {clienteActual.telefono_display || clienteActual.telefono}</span></div>
                     </div>
                     <div className="flex items-center gap-2">
                       <button onClick={() => archivarConversacion(selectedConv.id, false)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-900/30 border border-emerald-800/50 text-emerald-300 hover:bg-emerald-900/50 text-xs font-medium transition-colors"><ArchiveRestore className="w-4 h-4" /> Restaurar</button>
@@ -1547,7 +1893,7 @@ export default function CRMApp() {
                 <aside className={`w-full md:w-80 lg:w-96 border-l border-border bg-surface/95 overflow-y-auto absolute inset-0 z-30 md:relative flex flex-col ${!showMobileDetails ? "hidden md:flex" : "flex"}`}>
                   <header className="md:hidden flex items-center p-4 border-b border-border bg-background sticky top-0 z-10"><button onClick={() => setShowMobileDetails(false)} className="p-2 -ml-2 text-gray-400"><ArrowLeft className="w-5 h-5" /></button><h2 className="font-bold ml-2">Ficha Archivada</h2></header>
                   <div className="p-5 space-y-5">
-                    <div className="text-center"><div className="w-20 h-20 mx-auto rounded-full bg-surface border-2 border-amber-700 flex items-center justify-center text-2xl font-bold text-amber-300 mb-3 overflow-hidden shadow-lg">{clienteActual.foto_url ? <img src={clienteActual.foto_url} alt="" className="w-full h-full object-cover" /> : <span>{clienteActual.nombre?.charAt(0) || "W"}</span>}</div><h3 className="text-base font-bold text-gray-100">{clienteActual.nombre || "Sin Nombre"}</h3><p className="text-xs text-gray-400 mt-0.5">{clienteActual.telefono_display || clienteActual.telefono}</p></div>
+                    <div className="text-center"><div className="w-20 h-20 mx-auto rounded-full bg-surface border-2 border-amber-700 flex items-center justify-center text-2xl font-bold text-amber-300 mb-3 overflow-hidden shadow-lg">{clienteActual.foto_url ? <img src={clienteActual.foto_url} alt="" className="w-full h-full object-cover" /> : (() => { const dn = getDisplayName(clienteActual, selectedConv); return dn.startsWith("+") ? <Phone className="w-8 h-8" /> : <span>{dn.charAt(0) || "W"}</span>; })()}</div><h3 className="text-base font-bold text-gray-100">{getDisplayName(clienteActual, selectedConv)}</h3><p className="text-xs text-gray-400 mt-0.5">{clienteActual.telefono_display || clienteActual.telefono}</p></div>
                     <button onClick={() => archivarConversacion(selectedConv.id, false)} className="w-full flex justify-center items-center gap-1.5 py-2.5 rounded-lg bg-emerald-900/30 border border-emerald-800 text-emerald-300 hover:bg-emerald-900/50 text-xs font-bold transition-all"><ArchiveRestore className="w-4 h-4" /> Restaurar a bandeja</button>
                     {/* Notas en archivados también */}
                     {(clienteActual.notas_personales || clienteActual.detalles_caso) && (
@@ -1569,35 +1915,147 @@ export default function CRMApp() {
         {/* ==================== PIPELINE ==================== */}
         {tab === "pipeline" && (
           <div className="flex-1 flex flex-col h-full overflow-hidden bg-background">
-            <header className="p-4 md:p-6 border-b border-border flex items-center justify-between bg-surface/30">
-              <div><h1 className="text-xl md:text-2xl font-bold text-gray-100">Pipeline</h1><p className="text-xs md:text-sm text-gray-400">Embudo visual de trabajos</p></div>
-              <button onClick={() => setIsEditingPipeline(!isEditingPipeline)} className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs md:text-sm font-medium transition-all ${isEditingPipeline ? "bg-purple-600 text-white" : "bg-surface border border-border text-gray-300 hover:bg-surfaceHover"}`}><Settings className="w-4 h-4" /> {isEditingPipeline ? "Cerrar" : "Configurar"}</button>
+            <header className="p-4 md:p-6 border-b border-border flex flex-col md:flex-row md:items-center justify-between gap-3 bg-surface/30">
+              <div>
+                <h1 className="text-xl md:text-2xl font-bold text-gray-100">Pipeline</h1>
+                <p className="text-xs md:text-sm text-gray-400">Embudo visual por grupo — las etapas tienen colores que se reflejan en el chat</p>
+              </div>
+              <div className="flex items-center gap-2">
+                {/* Selector de grupo para pipeline */}
+                <div className="flex bg-surface border border-border rounded-lg p-0.5">
+                  <button onClick={() => cambiarGrupo("personal")} className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all flex items-center gap-1 ${grupoActivo === "personal" ? "bg-blue-600 text-white" : "text-gray-400"}`}><User className="w-3 h-3" /> {personalLabel}</button>
+                  <button onClick={() => cambiarGrupo("templo")} className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all flex items-center gap-1 ${grupoActivo === "templo" ? "bg-purple-600 text-white" : "text-gray-400"}`}><Landmark className="w-3 h-3" /> {temploLabel}</button>
+                </div>
+                <button onClick={() => setIsEditingPipeline(!isEditingPipeline)} className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs md:text-sm font-medium transition-all ${isEditingPipeline ? "bg-purple-600 text-white" : "bg-surface border border-border text-gray-300 hover:bg-surfaceHover"}`}><Settings className="w-4 h-4" /> {isEditingPipeline ? "Cerrar" : "Configurar"}</button>
+              </div>
             </header>
             <div className="flex-1 flex overflow-x-auto p-4 md:p-6 gap-4">
               {isEditingPipeline && (
-                <div className="w-72 flex-shrink-0 bg-surface border border-border rounded-2xl p-4 flex flex-col gap-4 shadow-xl">
-                  <h2 className="text-sm font-bold text-purple-300 flex items-center gap-2 border-b border-border pb-2"><Edit2 className="w-4 h-4" /> Editar Etapas</h2>
-                  <div className="flex-1 overflow-y-auto space-y-2">
-                    {pipelineEtapas.map((etapa, idx) => (
-                      <div key={etapa.id} className="flex items-center gap-2 bg-background p-2 rounded-lg border border-border">
-                        <div className="flex flex-col gap-1"><button onClick={() => moverEtapa(idx, -1)} className="text-gray-500 hover:text-white"><ArrowUp className="w-3 h-3" /></button><button onClick={() => moverEtapa(idx, 1)} className="text-gray-500 hover:text-white"><ArrowDown className="w-3 h-3" /></button></div>
-                        <input type="text" value={etapa.nombre} onChange={(e) => actualizarNombreEtapa(etapa.id, e.target.value)} className="flex-1 bg-transparent text-sm focus:outline-none focus:text-purple-300" />
-                        <button onClick={() => eliminarEtapa(etapa.id)} className="text-red-500/70 hover:text-red-400 p-1"><Trash2 className="w-4 h-4" /></button>
+                <div className="w-80 flex-shrink-0 bg-surface border border-border rounded-2xl p-4 flex flex-col gap-3 shadow-xl overflow-y-auto">
+                  <h2 className="text-sm font-bold text-purple-300 flex items-center gap-2 border-b border-border pb-2">
+                    <Edit2 className="w-4 h-4" /> Editar subcategorías ({grupoActivo === "personal" ? personalLabel : temploLabel})
+                  </h2>
+                  <p className="text-[10px] text-gray-500">Cambia nombres, colores y orden. Los clientes se mueven entre etapas arrastrando en el chat.</p>
+                  <div className="space-y-2">
+                    {pipelineEtapas.filter(e => e.grupo === grupoActivo && !e.es_spam && !e.es_archivado).sort((a, b) => a.orden - b.orden).map((etapa, idx, arr) => (
+                      <div key={etapa.id} className={`bg-background p-2.5 rounded-lg border-l-4 ${etapa.color} border-r border-t border-b border-border`}>
+                        <div className="flex items-center gap-1 mb-2">
+                          <div className="flex flex-col gap-0.5">
+                            <button onClick={() => {
+                              const list = pipelineEtapas.filter(e => e.grupo === grupoActivo && !e.es_spam && !e.es_archivado).sort((a, b) => a.orden - b.orden);
+                              const i = list.findIndex(x => x.id === etapa.id);
+                              if (i > 0) moverEtapaPipeline(etapa.id, list[i - 1].id);
+                            }} className="text-gray-500 hover:text-white"><ArrowUp className="w-3 h-3" /></button>
+                            <button onClick={() => {
+                              const list = pipelineEtapas.filter(e => e.grupo === grupoActivo && !e.es_spam && !e.es_archivado).sort((a, b) => a.orden - b.orden);
+                              const i = list.findIndex(x => x.id === etapa.id);
+                              if (i < list.length - 1) moverEtapaPipeline(etapa.id, list[i + 1].id);
+                            }} className="text-gray-500 hover:text-white"><ArrowDown className="w-3 h-3" /></button>
+                          </div>
+                          <input
+                            type="text"
+                            value={etapa.nombre}
+                            onChange={(e) => actualizarNombreEtapa(etapa.id, e.target.value)}
+                            className="flex-1 bg-transparent text-sm focus:outline-none focus:text-purple-300"
+                          />
+                          <div className="relative">
+                            <button
+                              onClick={(e) => { e.stopPropagation(); setEditingEtapaColor(editingEtapaColor === etapa.id ? null : etapa.id); }}
+                              className={`w-5 h-5 rounded-full ${etapa.color.replace("border-", "bg-")} border border-white/20`}
+                              title="Cambiar color"
+                            />
+                            {editingEtapaColor === etapa.id && (
+                              <div className="absolute right-0 top-7 z-20 bg-surface border border-border rounded-lg p-2 grid grid-cols-5 gap-1 shadow-xl">
+                                {PALETA_COLORES.map(p => (
+                                  <button
+                                    key={p.color}
+                                    onClick={(e) => { e.stopPropagation(); actualizarColorEtapa(etapa.id, p); }}
+                                    className={`w-6 h-6 rounded-full ${p.color.replace("border-", "bg-")} border-2 border-white/20 hover:scale-125 transition-transform`}
+                                    title={p.color}
+                                  />
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                          <button onClick={() => eliminarEtapa(etapa.id)} className="text-red-500/70 hover:text-red-400 p-1"><Trash2 className="w-4 h-4" /></button>
+                        </div>
                       </div>
                     ))}
                   </div>
-                  <button onClick={agregarEtapaPipeline} className="w-full py-2 bg-surfaceHover border border-dashed border-gray-600 rounded-lg text-xs text-gray-400 hover:text-white flex items-center justify-center gap-2"><Plus className="w-4 h-4" /> Agregar Etapa</button>
+                  <button onClick={() => agregarEtapaPipeline(grupoActivo)} className="w-full py-2 bg-surfaceHover border border-dashed border-gray-600 rounded-lg text-xs text-gray-400 hover:text-white flex items-center justify-center gap-2">
+                    <Plus className="w-4 h-4" /> Agregar subcategoría
+                  </button>
                 </div>
               )}
-              {pipelineEtapas.filter((e) => e.clave !== "spam").map((col) => {
-                const clientesEnCol = conversaciones.filter((c) => (c.clientes?.estado || "nuevo_lead") === col.clave && !c.clientes?.es_spam && !(c as any).archivada);
+              {pipelineEtapas.filter(e => e.grupo === grupoActivo && !e.es_spam && !e.es_archivado).sort((a, b) => a.orden - b.orden).map((col) => {
+                const clientesEnCol = conversaciones.filter((c) => {
+                  const grupoCliente = c.clientes?.grupo || (c.fuente === "meta_business" ? "templo" : "personal");
+                  return (c.clientes?.estado || (grupoActivo === "templo" ? "nuevo_lead_templo" : "nuevo_lead")) === col.clave
+                    && !c.clientes?.es_spam
+                    && !(c as any).archivada
+                    && grupoCliente === grupoActivo;
+                });
                 return (
-                  <div key={col.id} className="w-72 flex-shrink-0 bg-surface/60 border border-border rounded-2xl p-4 flex flex-col gap-3 min-h-full">
-                    <div className={`flex items-center justify-between pb-2 border-b-2 ${col.color || "border-purple-500"}`}><h2 className="text-xs font-bold text-gray-200">{col.nombre}</h2><span className="text-xs px-2 py-0.5 rounded-full bg-surfaceHover text-gray-400 font-semibold">{clientesEnCol.length}</span></div>
-                    <div className="space-y-3 overflow-y-auto flex-1">{clientesEnCol.map((c) => (<div key={c.id} onClick={() => { selectConversation(c); setTab("chats"); }} className="p-3 bg-surface rounded-xl border border-border/80 hover:border-purple-500/80 cursor-pointer shadow-sm group"><h3 className="text-xs font-bold text-gray-200 group-hover:text-purple-300 truncate">{c.clientes?.nombre || c.clientes?.telefono_display || c.numero_whatsapp}</h3><p className="text-[11px] text-gray-400 mt-1 truncate">{c.clientes?.tipo_trabajo || "Sin clasificar"}{c.clientes?.notas_personales ? " • 📝" : ""}</p></div>))}</div>
+                  <div key={col.id} className={`w-72 flex-shrink-0 rounded-2xl p-4 flex flex-col gap-3 min-h-full border ${col.color} ${col.bg_color}`}>
+                    <div className={`flex items-center justify-between pb-2 border-b-2 ${col.color}`}>
+                      <h2 className={`text-xs font-bold ${col.text_color}`}>{col.nombre}</h2>
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-surface/60 text-gray-300 font-semibold">{clientesEnCol.length}</span>
+                    </div>
+                    <div className="space-y-2 overflow-y-auto flex-1">
+                      {clientesEnCol.map((c) => (
+                        <div
+                          key={c.id}
+                          onClick={() => { selectConversation(c); setTab("chats"); }}
+                          className="p-3 bg-surface/80 backdrop-blur rounded-xl border border-border/60 hover:border-white/30 cursor-pointer shadow-sm group"
+                        >
+                          <h3 className={`text-xs font-bold ${col.text_color} truncate`}>
+                            {getDisplayName(c.clientes, c)}
+                          </h3>
+                          <p className="text-[11px] text-gray-400 mt-1 truncate">
+                            {c.clientes?.tipo_trabajo || "Sin clasificar"}
+                            {c.clientes?.notas_personales ? " • 📝" : ""}
+                          </p>
+                        </div>
+                      ))}
+                      {clientesEnCol.length === 0 && (
+                        <p className="text-[11px] text-gray-500 italic text-center py-4">Vacío</p>
+                      )}
+                    </div>
                   </div>
                 );
               })}
+
+              {/* Columna de Spam */}
+              <div className="w-64 flex-shrink-0 bg-red-950/20 border-2 border-red-800/50 rounded-2xl p-4 flex flex-col gap-3 min-h-full">
+                <div className="flex items-center justify-between pb-2 border-b-2 border-red-700">
+                  <h2 className="text-xs font-bold text-red-300 flex items-center gap-1"><Ban className="w-3 h-3" /> Spam</h2>
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-red-900/50 text-red-300 font-semibold">{conversacionesSpam.length}</span>
+                </div>
+                <div className="space-y-2 overflow-y-auto flex-1">
+                  {conversacionesSpam.map((c) => (
+                    <div key={c.id} onClick={() => { selectConversation(c); setTab("spam"); }} className="p-3 bg-surface/70 rounded-xl border border-red-900/30 cursor-pointer hover:border-red-500/50">
+                      <h3 className="text-xs font-bold text-red-300 truncate">{getDisplayName(c.clientes, c)}</h3>
+                    </div>
+                  ))}
+                  {conversacionesSpam.length === 0 && <p className="text-[11px] text-gray-500 italic text-center py-4">Sin spam 🎉</p>}
+                </div>
+              </div>
+
+              {/* Columna Archivados */}
+              <div className="w-64 flex-shrink-0 bg-amber-950/20 border-2 border-amber-800/50 rounded-2xl p-4 flex flex-col gap-3 min-h-full">
+                <div className="flex items-center justify-between pb-2 border-b-2 border-amber-700">
+                  <h2 className="text-xs font-bold text-amber-300 flex items-center gap-1"><Archive className="w-3 h-3" /> Archivados</h2>
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-amber-900/50 text-amber-300 font-semibold">{conversacionesArchivadas.length}</span>
+                </div>
+                <div className="space-y-2 overflow-y-auto flex-1">
+                  {conversacionesArchivadas.map((c) => (
+                    <div key={c.id} onClick={() => { selectConversation(c); setTab("archivados"); }} className="p-3 bg-surface/70 rounded-xl border border-amber-900/30 cursor-pointer hover:border-amber-500/50 opacity-80">
+                      <h3 className="text-xs font-bold text-amber-300/80 truncate">{getDisplayName(c.clientes, c)}</h3>
+                    </div>
+                  ))}
+                  {conversacionesArchivadas.length === 0 && <p className="text-[11px] text-gray-500 italic text-center py-4">Sin archivados ✨</p>}
+                </div>
+              </div>
             </div>
           </div>
         )}
@@ -1607,9 +2065,9 @@ export default function CRMApp() {
           <div className="flex-1 p-4 md:p-8 overflow-y-auto bg-background">
             <header className="mb-6"><h1 className="text-xl md:text-2xl font-bold text-gray-100 flex items-center gap-2"><ListTodo className="text-purple-400 w-6 h-6" /> Panel de Tareas</h1><p className="text-xs md:text-sm text-gray-400">Pendientes del día y checklist de clientes</p></header>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6 items-start">
-              <div className="bg-surface/50 border border-border rounded-2xl p-4 md:p-5 flex flex-col gap-4"><h2 className="text-sm font-bold text-amber-400 flex items-center gap-2 border-b border-border pb-2"><Clock className="w-4 h-4" /> Pendientes / Vencidas</h2><div className="space-y-2">{todasTareas.filter((t) => !t.completada && t.fecha_vencimiento && new Date(t.fecha_vencimiento) <= ahora).length === 0 && <p className="text-xs text-gray-500 italic">Todo al día ✅</p>}{todasTareas.filter((t) => !t.completada && t.fecha_vencimiento && new Date(t.fecha_vencimiento) <= ahora).map((t) => (<div key={t.id} className="bg-background border border-amber-900/30 p-3 rounded-xl"><div className="flex justify-between items-start mb-1"><span className="text-[10px] bg-amber-950/50 text-amber-500 px-1.5 rounded border border-amber-900">{t.fecha_vencimiento}</span><span className="text-[10px] text-gray-400 truncate max-w-[120px]">{t.clientes?.nombre || "Cliente"}</span></div><p className="text-xs text-gray-200 font-medium">{t.titulo}</p><button onClick={() => toggleTarea(t.id, false)} className="mt-2 text-[10px] text-purple-400 hover:text-purple-300">Marcar hecha ✓</button></div>))}</div></div>
-              <div className="bg-surface/50 border border-border rounded-2xl p-4 md:p-5 flex flex-col gap-4"><h2 className="text-sm font-bold text-blue-400 flex items-center gap-2 border-b border-border pb-2"><Calendar className="w-4 h-4" /> Próximas / Sin fecha</h2><div className="space-y-2">{todasTareas.filter((t) => !t.completada && (!t.fecha_vencimiento || new Date(t.fecha_vencimiento) > ahora)).map((t) => (<div key={t.id} className="bg-background border border-border p-3 rounded-xl"><div className="flex justify-between items-start mb-1"><span className="text-[10px] text-blue-400">{t.fecha_vencimiento || "Sin fecha"}</span><span className="text-[10px] text-gray-400 truncate max-w-[120px]">{t.clientes?.nombre || "Cliente"}</span></div><p className="text-xs text-gray-200">{t.titulo}</p><button onClick={() => toggleTarea(t.id, false)} className="mt-2 text-[10px] text-purple-400 hover:text-purple-300">Marcar hecha ✓</button></div>))}</div></div>
-              <div className="bg-surface/50 border border-border rounded-2xl p-4 md:p-5 flex flex-col gap-4"><h2 className="text-sm font-bold text-emerald-400 flex items-center gap-2 border-b border-border pb-2"><CheckCircle2 className="w-4 h-4" /> Completadas</h2><div className="space-y-2">{todasTareas.filter((t) => t.completada).slice(-15).reverse().map((t) => (<div key={t.id} className="bg-background border border-border p-3 rounded-xl opacity-60"><div className="flex justify-between items-start"><span className="text-[10px] text-gray-500 line-through">{t.titulo}</span><span className="text-[10px] text-gray-600">{t.clientes?.nombre}</span></div></div>))}</div></div>
+              <div className="bg-surface/50 border border-border rounded-2xl p-4 md:p-5 flex flex-col gap-4"><h2 className="text-sm font-bold text-amber-400 flex items-center gap-2 border-b border-border pb-2"><Clock className="w-4 h-4" /> Pendientes / Vencidas</h2><div className="space-y-2">{todasTareas.filter((t) => !t.completada && t.fecha_vencimiento && new Date(t.fecha_vencimiento) <= ahora).length === 0 && <p className="text-xs text-gray-500 italic">Todo al día ✅</p>}{todasTareas.filter((t) => !t.completada && t.fecha_vencimiento && new Date(t.fecha_vencimiento) <= ahora).map((t) => { const nombreT = (() => { const c: any = t.clientes; if (!c) return "Cliente"; if (c.nombre && c.nombre.trim() && c.nombre.trim().toLowerCase() !== "sin nombre") return c.nombre; const num = c.telefono_display || c.telefono || ""; return num ? (num.startsWith("+") ? num : `+${num.replace(/^0+/, "")}`) : "Cliente"; })(); return (<div key={t.id} className="bg-background border border-amber-900/30 p-3 rounded-xl"><div className="flex justify-between items-start mb-1"><span className="text-[10px] bg-amber-950/50 text-amber-500 px-1.5 rounded border border-amber-900">{t.fecha_vencimiento}</span><span className="text-[10px] text-gray-400 truncate max-w-[120px]">{nombreT}</span></div><p className="text-xs text-gray-200 font-medium">{t.titulo}</p><button onClick={() => toggleTarea(t.id, false)} className="mt-2 text-[10px] text-purple-400 hover:text-purple-300">Marcar hecha ✓</button></div>); })}</div></div>
+              <div className="bg-surface/50 border border-border rounded-2xl p-4 md:p-5 flex flex-col gap-4"><h2 className="text-sm font-bold text-blue-400 flex items-center gap-2 border-b border-border pb-2"><Calendar className="w-4 h-4" /> Próximas / Sin fecha</h2><div className="space-y-2">{todasTareas.filter((t) => !t.completada && (!t.fecha_vencimiento || new Date(t.fecha_vencimiento) > ahora)).map((t) => { const nombreT = (() => { const c: any = t.clientes; if (!c) return "Cliente"; if (c.nombre && c.nombre.trim() && c.nombre.trim().toLowerCase() !== "sin nombre") return c.nombre; const num = c.telefono_display || c.telefono || ""; return num ? (num.startsWith("+") ? num : `+${num.replace(/^0+/, "")}`) : "Cliente"; })(); return (<div key={t.id} className="bg-background border border-border p-3 rounded-xl"><div className="flex justify-between items-start mb-1"><span className="text-[10px] text-blue-400">{t.fecha_vencimiento || "Sin fecha"}</span><span className="text-[10px] text-gray-400 truncate max-w-[120px]">{nombreT}</span></div><p className="text-xs text-gray-200">{t.titulo}</p><button onClick={() => toggleTarea(t.id, false)} className="mt-2 text-[10px] text-purple-400 hover:text-purple-300">Marcar hecha ✓</button></div>); })}</div></div>
+              <div className="bg-surface/50 border border-border rounded-2xl p-4 md:p-5 flex flex-col gap-4"><h2 className="text-sm font-bold text-emerald-400 flex items-center gap-2 border-b border-border pb-2"><CheckCircle2 className="w-4 h-4" /> Completadas</h2><div className="space-y-2">{todasTareas.filter((t) => t.completada).slice(-15).reverse().map((t) => { const nombreT = (() => { const c: any = t.clientes; if (!c) return ""; if (c.nombre && c.nombre.trim() && c.nombre.trim().toLowerCase() !== "sin nombre") return c.nombre; const num = c.telefono_display || c.telefono || ""; return num ? (num.startsWith("+") ? num : `+${num.replace(/^0+/, "")}`) : ""; })(); return (<div key={t.id} className="bg-background border border-border p-3 rounded-xl opacity-60"><div className="flex justify-between items-start"><span className="text-[10px] text-gray-500 line-through">{t.titulo}</span><span className="text-[10px] text-gray-600">{nombreT}</span></div></div>); })}</div></div>
             </div>
           </div>
         )}
@@ -1712,9 +2170,15 @@ export default function CRMApp() {
                   {todosPagos.filter((p) => p.estado === "pendiente" && new Date(p.fecha_vencimiento) < ahora).map((pago) => {
                     const cliente = todosClientes.find((c) => c.id === pago.cliente_id);
                     const moneda = pago.moneda || "COP";
+                    const nombreCliente = (() => {
+                      if (!cliente) return "Cliente";
+                      if (cliente.nombre && cliente.nombre.trim() && cliente.nombre.trim().toLowerCase() !== "sin nombre") return cliente.nombre;
+                      const num = cliente.telefono_display || cliente.telefono || "";
+                      return num ? (num.startsWith("+") ? num : `+${num.replace(/^0+/, "")}`) : "Cliente";
+                    })();
                     return (
                       <div key={pago.id} className="p-4 flex items-center justify-between">
-                        <div><div className="text-sm font-medium text-gray-200 flex items-center gap-2">{cliente?.nombre || "Cliente"}<span className="text-[9px] px-1 py-0.5 rounded bg-surfaceHover text-gray-400">{moneda}</span></div><div className="text-xs text-gray-400">{pago.notas} • Vencía: {pago.fecha_vencimiento}</div></div>
+                        <div><div className="text-sm font-medium text-gray-200 flex items-center gap-2">{nombreCliente}<span className="text-[9px] px-1 py-0.5 rounded bg-surfaceHover text-gray-400">{moneda}</span></div><div className="text-xs text-gray-400">{pago.notas} • Vencía: {pago.fecha_vencimiento}</div></div>
                         <div className="text-right"><div className="text-sm font-bold text-red-400">{formatearMoneda(pago.monto, moneda)}</div><div className="text-[11px] text-emerald-400">${Math.round(calcularCOP(pago)).toLocaleString()} COP</div></div>
                       </div>
                     );

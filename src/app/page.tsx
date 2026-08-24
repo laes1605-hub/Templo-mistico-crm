@@ -23,6 +23,17 @@ import {
   StickyNote, FileText, Coins, Globe, Percent, Save, Eye, EyeOff, Palette, Power, User, Landmark
 } from "lucide-react";
 
+// Equivalencias de etapas Personal → Templo (para re-enrutar leads por número)
+const ESTADO_PERSONAL_A_TEMPLO: Record<string, string> = {
+  nuevo_lead: "nuevo_lead_templo",
+  en_consulta: "en_consulta_templo",
+  consulta_hecha: "consulta_hecha_templo",
+  pago_recibido: "pago_recibido_templo",
+  trabajo_proceso: "trabajo_proceso_templo",
+  trabajo_completado: "trabajo_completado_templo",
+  perdido: "perdido_templo",
+};
+
 export default function CRMApp() {
   // Subcategoría especial de chats: "Por leer" (chats de TODAS las categorías
   // con mensajes pendientes por leer). No es una etapa del pipeline.
@@ -661,6 +672,71 @@ export default function CRMApp() {
     if (data) setTodosTareas(data);
   }
 
+  // ===================== 📲 ENRUTAR LEADS POR NÚMERO =====================
+  // Los leads de la publicidad van dirigidos al número del WhatsApp API
+  // (conversaciones.fuente = "meta_business" = grupo Templo). Si un webhook
+  // los clasifica en el personal (ej: "No Contesta"), aquí se corrigen y caen
+  // en "Nuevo Lead" del Templo. Los leads del WhatsApp personal no se tocan.
+  const enrutarEnCurso = useRef(false);
+  async function enrutarLeadsPorNumero() {
+    if (enrutarEnCurso.current) return;
+    if (conversaciones.length === 0 || pipelineEtapas.length === 0) return;
+    enrutarEnCurso.current = true;
+    try {
+      const clavesPersonales = new Set(pipelineEtapas.filter(e => e.grupo === "personal").map(e => e.clave));
+      // ¿Cuántas conversaciones tiene cada cliente en cada número?
+      const statsPorCliente = new Map<string, { meta: number; otras: number }>();
+      conversaciones.forEach(c => {
+        if (!c.cliente_id) return;
+        const stat = statsPorCliente.get(c.cliente_id) || { meta: 0, otras: 0 };
+        if (c.fuente === "meta_business") stat.meta++; else stat.otras++;
+        statsPorCliente.set(c.cliente_id, stat);
+      });
+
+      const tareasFix: any[] = [];
+      const fixes: { id: string; grupo?: string; estado?: string }[] = [];
+      statsPorCliente.forEach((stat, clienteId) => {
+        if (stat.meta === 0) return; // lead del WhatsApp personal: no se toca
+        const cliente = todosClientes.find(c => c.id === clienteId)
+          || conversaciones.find(c => c.cliente_id === clienteId)?.clientes;
+        if (!cliente) return;
+        const grupoActual = cliente.grupo || "";
+        const estadoActual = cliente.estado || "";
+        // Grupo: Templo si TODAS sus conversaciones son del número API
+        const grupoNuevo = stat.otras === 0 ? "templo" : grupoActual;
+        // Estado: etapas del pipeline personal (o vacía) → equivalente Templo
+        let estadoNuevo = estadoActual;
+        if (grupoNuevo === "templo" && (!estadoActual || clavesPersonales.has(estadoActual))) {
+          estadoNuevo = ESTADO_PERSONAL_A_TEMPLO[estadoActual] || "nuevo_lead_templo";
+        }
+        const cambios: any = { actualizado_en: new Date().toISOString() };
+        if (grupoNuevo && grupoNuevo !== grupoActual) cambios.grupo = grupoNuevo;
+        if (estadoNuevo !== estadoActual) cambios.estado = estadoNuevo || null;
+        if (Object.keys(cambios).length === 1) return; // solo actualizado_en → nada que arreglar
+        tareasFix.push(supabase.from("clientes").update(cambios).eq("id", clienteId));
+        fixes.push({ id: clienteId, ...(cambios.grupo ? { grupo: cambios.grupo } : {}), ...(cambios.estado !== undefined ? { estado: cambios.estado } : {}) });
+      });
+
+      if (tareasFix.length === 0) return;
+      console.log(`📲 Re-enrutando ${tareasFix.length} lead(s) al número correcto (WhatsApp API Templo)`);
+      await Promise.all(tareasFix);
+      // Actualizar el estado local sin esperar el refetch del realtime
+      setTodosClientes(prev => prev.map(c => { const f = fixes.find(x => x.id === c.id); return f ? { ...c, ...(f.grupo ? { grupo: f.grupo } : {}), ...(f.estado !== undefined ? { estado: f.estado } : {}) } : c; }));
+      setConversaciones(prev => prev.map(c => {
+        const f = c.cliente_id ? fixes.find(x => x.id === c.cliente_id) : undefined;
+        return f ? { ...c, clientes: { ...c.clientes, ...(f.grupo ? { grupo: f.grupo } : {}), ...(f.estado !== undefined ? { estado: f.estado } : {}) } } : c;
+      }));
+    } finally {
+      enrutarEnCurso.current = false;
+    }
+  }
+
+  // Re-enrutar cada vez que llega data nueva (mensajes, leads, etapas)
+  useEffect(() => {
+    void enrutarLeadsPorNumero();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversaciones, pipelineEtapas]);
+
   // ===================== META ADS =====================
   async function fetchCampanasAds() {
     setLoadingAds(true);
@@ -1190,12 +1266,22 @@ export default function CRMApp() {
     // Al pasar por "Consulta Hecha" el cliente queda marcado como atendido para
     // siempre, aunque después salga del pipeline (perdido, abandono, etc.)
     const pasaConsultaHecha = nuevoEstado.startsWith("consulta_hecha");
+    // El grupo del cliente sigue a la etapa: si lo mueves a una etapa del
+    // Templo cae en esa bandeja (y viceversa con el Personal).
+    const etapaDestino = pipelineEtapas.find(e => e.clave === nuevoEstado);
+    const grupoDestino = etapaDestino?.grupo === "templo" ? "templo" : (etapaDestino?.grupo === "personal" ? "personal" : undefined);
     await supabase.from("clientes").update({
       estado: nuevoEstado,
+      ...(grupoDestino ? { grupo: grupoDestino } : {}),
       ...(pasaConsultaHecha ? { atendido: true } : {}),
       actualizado_en: new Date().toISOString(),
     }).eq("id", clienteId);
-    if (clienteActual?.id === clienteId) setClienteActual({ ...clienteActual, estado: nuevoEstado, ...(pasaConsultaHecha ? { atendido: true } : {}) });
+    if (clienteActual?.id === clienteId) setClienteActual({
+      ...clienteActual,
+      estado: nuevoEstado,
+      ...(grupoDestino ? { grupo: grupoDestino } : {}),
+      ...(pasaConsultaHecha ? { atendido: true } : {}),
+    });
     fetchConversaciones(); fetchTodosClientes();
   }
 

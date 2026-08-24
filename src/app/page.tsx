@@ -17,13 +17,28 @@ import {
   MessageSquare, Users, DollarSign, TrendingUp, Brain, Send, Bot, Phone,
   CheckCircle2, Clock, Plus, Ban, Settings, Edit2, Trash2, ArrowUp, ArrowDown,
   Wallet, Target, TrendingDown, Award, Calendar, Shield, X,
-  Mic, Paperclip, ArrowLeft, Info, ListTodo, CheckSquare, Square,
+  Mic, Paperclip, ArrowLeft, Info, ListTodo, CheckSquare, Square, MailOpen,
   Sparkles, Play, Pause, RefreshCw, Image as ImageIcon, ChevronDown, ChevronRight,
   Archive, ArchiveRestore, Search, AlertTriangle,
   StickyNote, FileText, Coins, Globe, Percent, Save, Eye, EyeOff, Palette, Power, User, Landmark
 } from "lucide-react";
 
+// Equivalencias de etapas Personal → Templo (para re-enrutar leads por número)
+const ESTADO_PERSONAL_A_TEMPLO: Record<string, string> = {
+  nuevo_lead: "nuevo_lead_templo",
+  en_consulta: "en_consulta_templo",
+  consulta_hecha: "consulta_hecha_templo",
+  pago_recibido: "pago_recibido_templo",
+  trabajo_proceso: "trabajo_proceso_templo",
+  trabajo_completado: "trabajo_completado_templo",
+  perdido: "perdido_templo",
+};
+
 export default function CRMApp() {
+  // Subcategoría especial de chats: "Por leer" (chats de TODAS las categorías
+  // con mensajes pendientes por leer). No es una etapa del pipeline.
+  const CATEGORIA_POR_LEER = "__por_leer__";
+
   const [tab, setTab] = useState<"chats" | "pipeline" | "cartera" | "tareas" | "ads" | "cerebro" | "archivados">("chats");
   
   const [conversaciones, setConversaciones] = useState<any[]>([]);
@@ -195,7 +210,7 @@ export default function CRMApp() {
   useEffect(() => {
     const claveNuevoLead = grupoActivo === "templo" ? "nuevo_lead_templo" : "nuevo_lead";
     const existe = pipelineEtapas.find((e) => e.grupo === grupoActivo && e.clave === chatCategoria);
-    if (!existe && chatCategoria !== claveNuevoLead) setChatCategoria(claveNuevoLead);
+    if (!existe && chatCategoria !== claveNuevoLead && chatCategoria !== CATEGORIA_POR_LEER) setChatCategoria(claveNuevoLead);
   }, [grupoActivo, pipelineEtapas]);
 
   // Al volver a la app con un chat abierto, ese chat cuenta como revisado
@@ -231,11 +246,12 @@ export default function CRMApp() {
         }
         // Si no, se suma al contador de no leídos (solo lo limpia el operador al revisar)
         sincronizarNoLeidos();
+        // Título de la notificación: solo nombre MANUAL o el número con + (nunca el nombre cargado)
         const nombre = (() => {
-          const c = conv?.clientes;
-          if (c?.nombre && c.nombre.trim() && c.nombre.trim().toLowerCase() !== "sin nombre") return c.nombre;
-          const num = c?.telefono_display || conv?.numero_whatsapp || "";
-          return num ? (num.startsWith("+") ? num : `+${num.replace(/^0+/, "")}`) : "Cliente";
+          const manual = getNombreManual(conv?.clientes);
+          if (manual) return manual;
+          const num = getTelefonoE164(conv?.clientes, conv);
+          return num || "Cliente";
         })();
         let preview = msg.contenido || "";
         if (msg.tipo_contenido === "audio" || /\[audio\]|\[nota_de_voz\]/i.test(preview)) preview = "🎤 Nota de voz";
@@ -417,23 +433,69 @@ export default function CRMApp() {
     return pipelineEtapas.find(e => e.clave === clave) || null;
   }
 
-  // ===================== DISPLAY NAME (número con + si no hay nombre) =====================
-  function getDisplayName(cliente: any, conv?: any) {
-    // Si tiene nombre personalizado, mostrarlo
-    if (cliente?.nombre && cliente.nombre.trim() && cliente.nombre.trim().toLowerCase() !== "sin nombre") {
-      return cliente.nombre;
+  // ============ IDENTIDAD DEL CLIENTE: NÚMERO PRIMERO, NOMBRE SOLO SI ES MANUAL ============
+  // Regla: el CRM muestra el número de teléfono en formato internacional con
+  // el indicativo del país y el "+" (ej: +573054021111 o +595985123456).
+  // El nombre SOLO se muestra si el operador lo puso manualmente (nombre_manual);
+  // nunca se muestran nombres cargados de WhatsApp ni de la agenda del teléfono.
+
+  // Normaliza cualquier número a formato E.164 compacto: +573054021111
+  function formatPhoneE164(raw: any): string {
+    if (raw === null || raw === undefined) return "";
+    const s = String(raw).trim();
+    if (!s) return "";
+    const tieneMas = s.startsWith("+");
+    let digitos = s.replace(/\D/g, "");
+    if (!digitos) return "";
+    if (!tieneMas) digitos = digitos.replace(/^0+/, ""); // quita prefijo 00 internacional o 0 local
+    if (!digitos) return "";
+    return `+${digitos}`;
+  }
+
+  // Devuelve el mejor número disponible del cliente en formato +XXXXXXXXX.
+  // Entre candidatos (telefono_display, telefono, numero_whatsapp) gana el más
+  // largo, porque es el que incluye el indicativo del país.
+  function getTelefonoE164(cliente: any, conv?: any): string {
+    const candidatos = [cliente?.telefono_display, cliente?.telefono, conv?.numero_whatsapp];
+    let mejor = "";
+    for (const cand of candidatos) {
+      const f = formatPhoneE164(cand);
+      if (f.length > mejor.length) mejor = f;
     }
-    // Si no, mostrar el número con +
-    const num = cliente?.telefono_display || conv?.numero_whatsapp || "";
-    if (!num) return "Sin número";
-    // Asegurar que empiece con +
-    return num.startsWith("+") ? num : `+${num.replace(/^0+/, "")}`;
+    return mejor;
+  }
+
+  // Nombre visible: solo el puesto manualmente por el operador (nombre_manual).
+  // "nombre" viene cargado automáticamente (WhatsApp/agenda) y NUNCA se muestra.
+  function getNombreManual(cliente: any): string {
+    const n = cliente?.nombre_manual;
+    if (!n) return "";
+    const t = String(n).trim();
+    if (!t || t.toLowerCase() === "sin nombre") return "";
+    return t;
+  }
+
+  // Lo que se muestra como título del chat: nombre manual si existe, si no el número con +
+  function getDisplayName(cliente: any, conv?: any) {
+    const manual = getNombreManual(cliente);
+    if (manual) return manual;
+    const num = getTelefonoE164(cliente, conv);
+    return num || "Sin número";
   }
 
   function getAvatarInitial(displayName: string) {
     // Si empieza con +, mostrar un ícono de teléfono; si no, la inicial
     if (displayName.startsWith("+")) return "#";
     return displayName.charAt(0).toUpperCase();
+  }
+
+  // Nombre para las tarjetas de tareas: nombre manual o número con +
+  function getNombreTarea(t: any): string {
+    const c: any = t?.clientes;
+    if (!c) return "Cliente";
+    const manual = getNombreManual(c);
+    if (manual) return manual;
+    return getTelefonoE164(c) || "Cliente";
   }
 
   // Actualizar tasa de cambio automáticamente al cambiar moneda
@@ -605,9 +667,75 @@ export default function CRMApp() {
     if (data) setTodosClientes(data);
   }
   async function fetchTodasTareas() {
-    const { data } = await supabase.from("tareas").select("*, clientes(nombre)").order("fecha_vencimiento", { ascending: true });
+    // clientes(*) trae nombre_manual y teléfonos para mostrar número con + si no hay nombre manual
+    const { data } = await supabase.from("tareas").select("*, clientes(*)").order("fecha_vencimiento", { ascending: true });
     if (data) setTodosTareas(data);
   }
+
+  // ===================== 📲 ENRUTAR LEADS POR NÚMERO =====================
+  // Los leads de la publicidad van dirigidos al número del WhatsApp API
+  // (conversaciones.fuente = "meta_business" = grupo Templo). Si un webhook
+  // los clasifica en el personal (ej: "No Contesta"), aquí se corrigen y caen
+  // en "Nuevo Lead" del Templo. Los leads del WhatsApp personal no se tocan.
+  const enrutarEnCurso = useRef(false);
+  async function enrutarLeadsPorNumero() {
+    if (enrutarEnCurso.current) return;
+    if (conversaciones.length === 0 || pipelineEtapas.length === 0) return;
+    enrutarEnCurso.current = true;
+    try {
+      const clavesPersonales = new Set(pipelineEtapas.filter(e => e.grupo === "personal").map(e => e.clave));
+      // ¿Cuántas conversaciones tiene cada cliente en cada número?
+      const statsPorCliente = new Map<string, { meta: number; otras: number }>();
+      conversaciones.forEach(c => {
+        if (!c.cliente_id) return;
+        const stat = statsPorCliente.get(c.cliente_id) || { meta: 0, otras: 0 };
+        if (c.fuente === "meta_business") stat.meta++; else stat.otras++;
+        statsPorCliente.set(c.cliente_id, stat);
+      });
+
+      const tareasFix: any[] = [];
+      const fixes: { id: string; grupo?: string; estado?: string }[] = [];
+      statsPorCliente.forEach((stat, clienteId) => {
+        if (stat.meta === 0) return; // lead del WhatsApp personal: no se toca
+        const cliente = todosClientes.find(c => c.id === clienteId)
+          || conversaciones.find(c => c.cliente_id === clienteId)?.clientes;
+        if (!cliente) return;
+        const grupoActual = cliente.grupo || "";
+        const estadoActual = cliente.estado || "";
+        // Grupo: Templo si TODAS sus conversaciones son del número API
+        const grupoNuevo = stat.otras === 0 ? "templo" : grupoActual;
+        // Estado: etapas del pipeline personal (o vacía) → equivalente Templo
+        let estadoNuevo = estadoActual;
+        if (grupoNuevo === "templo" && (!estadoActual || clavesPersonales.has(estadoActual))) {
+          estadoNuevo = ESTADO_PERSONAL_A_TEMPLO[estadoActual] || "nuevo_lead_templo";
+        }
+        const cambios: any = { actualizado_en: new Date().toISOString() };
+        if (grupoNuevo && grupoNuevo !== grupoActual) cambios.grupo = grupoNuevo;
+        if (estadoNuevo !== estadoActual) cambios.estado = estadoNuevo || null;
+        if (Object.keys(cambios).length === 1) return; // solo actualizado_en → nada que arreglar
+        tareasFix.push(supabase.from("clientes").update(cambios).eq("id", clienteId));
+        fixes.push({ id: clienteId, ...(cambios.grupo ? { grupo: cambios.grupo } : {}), ...(cambios.estado !== undefined ? { estado: cambios.estado } : {}) });
+      });
+
+      if (tareasFix.length === 0) return;
+      console.log(`📲 Re-enrutando ${tareasFix.length} lead(s) al número correcto (WhatsApp API Templo)`);
+      await Promise.all(tareasFix);
+      // Actualizar el estado local sin esperar el refetch del realtime
+      setTodosClientes(prev => prev.map(c => { const f = fixes.find(x => x.id === c.id); return f ? { ...c, ...(f.grupo ? { grupo: f.grupo } : {}), ...(f.estado !== undefined ? { estado: f.estado } : {}) } : c; }));
+      setConversaciones(prev => prev.map(c => {
+        const f = c.cliente_id ? fixes.find(x => x.id === c.cliente_id) : undefined;
+        return f ? { ...c, clientes: { ...c.clientes, ...(f.grupo ? { grupo: f.grupo } : {}), ...(f.estado !== undefined ? { estado: f.estado } : {}) } } : c;
+      }));
+    } finally {
+      enrutarEnCurso.current = false;
+    }
+  }
+
+  // Re-enrutar cada vez que llega data nueva (mensajes, leads, etapas)
+  useEffect(() => {
+    void enrutarLeadsPorNumero();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversaciones, pipelineEtapas]);
 
   // ===================== META ADS =====================
   async function fetchCampanasAds() {
@@ -802,18 +930,32 @@ export default function CRMApp() {
   }, [mensajes]);
 
   async function guardarNuevoNombre() {
-    if (!clienteActual || !tempNombre.trim()) return;
+    if (!clienteActual) return;
     const nuevoNombre = tempNombre.trim();
+    // Vaciar el campo = quitar el nombre manual y volver a mostrar solo el número
+    if (!nuevoNombre && !getNombreManual(clienteActual)) { setIsEditingNombre(false); return; }
     const { error } = await supabase
       .from("clientes")
-      .update({ nombre: nuevoNombre, actualizado_en: new Date().toISOString() })
+      .update({
+        nombre_manual: nuevoNombre || null,
+        // Se sincroniza "nombre" por compatibilidad con otras herramientas (Cerebro IA),
+        // pero la interfaz SOLO muestra nombre_manual.
+        nombre: nuevoNombre || "Sin Nombre",
+        actualizado_en: new Date().toISOString(),
+      })
       .eq("id", clienteActual.id);
-    if (!error) {
-      setClienteActual({ ...clienteActual, nombre: nuevoNombre });
-      setConversaciones(prev => prev.map(c => c.cliente_id === clienteActual.id ? { ...c, clientes: { ...c.clientes, nombre: nuevoNombre } } : c));
-      setTodosClientes(prev => prev.map(c => c.id === clienteActual.id ? { ...c, nombre: nuevoNombre } : c));
-      setIsEditingNombre(false);
+    if (error) {
+      console.error("Error guardando nombre:", error);
+      const faltaColumna = /nombre_manual/i.test(error.message || "");
+      alert(faltaColumna
+        ? "Falta aplicar la migración en Supabase: supabase/migrations/20260829_nombre_manual_prioridad_telefono.sql (columna nombre_manual)."
+        : "Error guardando nombre: " + (error.message || "desconocido"));
+      return;
     }
+    setClienteActual({ ...clienteActual, nombre_manual: nuevoNombre || null, nombre: nuevoNombre || "Sin Nombre" });
+    setConversaciones(prev => prev.map(c => c.cliente_id === clienteActual.id ? { ...c, clientes: { ...c.clientes, nombre_manual: nuevoNombre || null, nombre: nuevoNombre || "Sin Nombre" } } : c));
+    setTodosClientes(prev => prev.map(c => c.id === clienteActual.id ? { ...c, nombre_manual: nuevoNombre || null, nombre: nuevoNombre || "Sin Nombre" } : c));
+    setIsEditingNombre(false);
   }
 
   async function guardarNotasPersonales() {
@@ -1124,12 +1266,22 @@ export default function CRMApp() {
     // Al pasar por "Consulta Hecha" el cliente queda marcado como atendido para
     // siempre, aunque después salga del pipeline (perdido, abandono, etc.)
     const pasaConsultaHecha = nuevoEstado.startsWith("consulta_hecha");
+    // El grupo del cliente sigue a la etapa: si lo mueves a una etapa del
+    // Templo cae en esa bandeja (y viceversa con el Personal).
+    const etapaDestino = pipelineEtapas.find(e => e.clave === nuevoEstado);
+    const grupoDestino = etapaDestino?.grupo === "templo" ? "templo" : (etapaDestino?.grupo === "personal" ? "personal" : undefined);
     await supabase.from("clientes").update({
       estado: nuevoEstado,
+      ...(grupoDestino ? { grupo: grupoDestino } : {}),
       ...(pasaConsultaHecha ? { atendido: true } : {}),
       actualizado_en: new Date().toISOString(),
     }).eq("id", clienteId);
-    if (clienteActual?.id === clienteId) setClienteActual({ ...clienteActual, estado: nuevoEstado, ...(pasaConsultaHecha ? { atendido: true } : {}) });
+    if (clienteActual?.id === clienteId) setClienteActual({
+      ...clienteActual,
+      estado: nuevoEstado,
+      ...(grupoDestino ? { grupo: grupoDestino } : {}),
+      ...(pasaConsultaHecha ? { atendido: true } : {}),
+    });
     fetchConversaciones(); fetchTodosClientes();
   }
 
@@ -1319,6 +1471,16 @@ export default function CRMApp() {
   }
 
   // ===================== RENDER Y FILTROS =====================
+  // Chats con mensajes pendientes por leer, de TODAS las categorías del grupo activo
+  const conversacionesPorLeer = conversaciones.filter((c) => {
+    if ((c as any).archivada === true) return false;
+    if (c.clientes?.es_spam === true) return false;
+    const grupoCliente = c.clientes?.grupo || (c.fuente === "meta_business" ? "templo" : "personal");
+    if (grupoCliente !== grupoActivo) return false;
+    return (c.no_leidos || 0) > 0;
+  });
+  const totalMensajesPorLeer = conversacionesPorLeer.reduce((s, c) => s + (c.no_leidos || 0), 0);
+
   const conversacionesFiltradas = conversaciones.filter((c) => {
     const esSpam = c.clientes?.es_spam === true;
     const isArchivada = (c as any).archivada === true;
@@ -1326,15 +1488,25 @@ export default function CRMApp() {
     const grupoCliente = c.clientes?.grupo || (c.fuente === "meta_business" ? "templo" : "personal");
     if (grupoCliente !== grupoActivo) return false;
     if (isArchivada) return false;
-    // Spam es una categoría más del pipeline (chip negro, sin agente ni recordatorios)
-    if (esSpam) return chatCategoria === "spam";
-    // Filtrar por subcategoría seleccionada (por defecto: solo Nuevos Leads)
-    const estadoCliente = c.clientes?.estado || (grupoActivo === "templo" ? "nuevo_lead_templo" : "nuevo_lead");
-    if (chatCategoria !== "spam" && estadoCliente !== chatCategoria) return false;
+    // 📬 "Por leer": chats de TODAS las categorías con mensajes sin leer
+    if (chatCategoria === CATEGORIA_POR_LEER) {
+      if (esSpam) return false;
+      if (!(c.no_leidos > 0)) return false;
+    } else {
+      // Spam es una categoría más del pipeline (chip negro, sin agente ni recordatorios)
+      if (esSpam) return chatCategoria === "spam";
+      // Filtrar por subcategoría seleccionada (por defecto: solo Nuevos Leads)
+      const estadoCliente = c.clientes?.estado || (grupoActivo === "templo" ? "nuevo_lead_templo" : "nuevo_lead");
+      if (chatCategoria !== "spam" && estadoCliente !== chatCategoria) return false;
+    }
+    // Búsqueda: nombre manual, número tal cual o dígitos del número (aunque se escriba con espacios)
+    const q = searchChats.toLowerCase();
+    const qDigits = q.replace(/\D/g, "");
+    const tel = getTelefonoE164(c.clientes, c);
     const matchSearch = !searchChats ||
-      getDisplayName(c.clientes, c).toLowerCase().includes(searchChats.toLowerCase()) ||
-      (c.numero_whatsapp || "").includes(searchChats) ||
-      (c.clientes?.telefono_display || "").includes(searchChats);
+      getDisplayName(c.clientes, c).toLowerCase().includes(q) ||
+      tel.includes(searchChats) ||
+      (!!qDigits && tel.replace("+", "").includes(qDigits));
     return matchSearch;
   });
 
@@ -1345,10 +1517,12 @@ export default function CRMApp() {
     if (grupoCliente !== grupoActivo) return false;
     if (!isArchivada || esSpam) return false;
     const q = searchArchivados.toLowerCase();
+    const qDigits = q.replace(/\D/g, "");
+    const tel = getTelefonoE164(c.clientes, c);
     const matchSearch = !searchArchivados ||
       getDisplayName(c.clientes, c).toLowerCase().includes(q) ||
-      (c.numero_whatsapp || "").includes(searchArchivados) ||
-      (c.clientes?.telefono_display || "").includes(searchArchivados) ||
+      tel.includes(searchArchivados) ||
+      (!!qDigits && tel.replace("+", "").includes(qDigits)) ||
       (c.ultimo_mensaje || "").toLowerCase().includes(q);
     return matchSearch;
   });
@@ -1403,8 +1577,9 @@ export default function CRMApp() {
       const q = searchCartera.trim().toLowerCase();
       if (!q) return true;
       const nombre = getDisplayName(r.cliente).toLowerCase();
-      const tel = (r.cliente.telefono_display || r.cliente.telefono || "").toLowerCase();
-      return nombre.includes(q) || tel.includes(q);
+      const tel = getTelefonoE164(r.cliente).replace("+", "");
+      const qDigits = q.replace(/\D/g, "");
+      return nombre.includes(q) || (!!qDigits && tel.includes(qDigits)) || tel.includes(q);
     })
     .sort((a, b) => {
       // Vencidos primero, luego por próxima fecha de pago (el más urgente arriba)
@@ -1627,31 +1802,60 @@ export default function CRMApp() {
                 {/* SUBPESTAÑAS DE CATEGORÍA: por defecto solo Nuevos Leads */}
                 {tab === "chats" && (
                   <div className="flex gap-1.5 overflow-x-auto -mx-1 px-1 pb-0.5">
-                    {pipelineEtapas.filter(e => e.grupo === grupoActivo && !e.es_spam && !e.es_archivado).sort((a, b) => a.orden - b.orden).map((etapa) => {
-                      const activa = chatCategoria === etapa.clave;
-                      const conteo = conversaciones.filter((c) => {
-                        if (c.clientes?.es_spam || (c as any).archivada) return false;
-                        const grupoCliente = c.clientes?.grupo || (c.fuente === "meta_business" ? "templo" : "personal");
-                        if (grupoCliente !== grupoActivo) return false;
-                        const est = c.clientes?.estado || (grupoActivo === "templo" ? "nuevo_lead_templo" : "nuevo_lead");
-                        return est === etapa.clave;
-                      }).length;
-                      return (
-                        <button
-                          key={etapa.id}
-                          onClick={() => setChatCategoria(etapa.clave)}
-                          className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-bold border transition-all ${
-                            activa
-                              ? "bg-purple-600 text-white border-purple-500 shadow-md shadow-purple-900/30"
-                              : "bg-surface border-border text-gray-500 hover:text-gray-300 hover:border-purple-500/40"
-                          }`}
-                          title={`Mostrar chats en "${etapa.nombre}"`}
-                        >
-                          {etapa.nombre}
-                          <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-semibold ${activa ? "bg-white/20 text-white" : "bg-background text-gray-500"}`}>{conteo}</span>
-                        </button>
-                      );
-                    })}
+                    {(() => {
+                      const etapasChats = pipelineEtapas.filter(e => e.grupo === grupoActivo && !e.es_spam && !e.es_archivado).sort((a, b) => a.orden - b.orden);
+                      const claveNL = grupoActivo === "templo" ? "nuevo_lead_templo" : "nuevo_lead";
+                      const idxNL = etapasChats.findIndex(e => e.clave === claveNL);
+                      const idxPorLeer = idxNL >= 0 ? idxNL : 0; // "Por leer" va al lado de Leads Nuevos
+                      return etapasChats.map((etapa, idx) => {
+                        const activa = chatCategoria === etapa.clave;
+                        const conteo = conversaciones.filter((c) => {
+                          if (c.clientes?.es_spam || (c as any).archivada) return false;
+                          const grupoCliente = c.clientes?.grupo || (c.fuente === "meta_business" ? "templo" : "personal");
+                          if (grupoCliente !== grupoActivo) return false;
+                          const est = c.clientes?.estado || (grupoActivo === "templo" ? "nuevo_lead_templo" : "nuevo_lead");
+                          return est === etapa.clave;
+                        }).length;
+                        const chipEtapa = (
+                          <button
+                            key={etapa.id}
+                            onClick={() => setChatCategoria(etapa.clave)}
+                            className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-bold border transition-all ${
+                              activa
+                                ? "bg-purple-600 text-white border-purple-500 shadow-md shadow-purple-900/30"
+                                : "bg-surface border-border text-gray-500 hover:text-gray-300 hover:border-purple-500/40"
+                            }`}
+                            title={`Mostrar chats en "${etapa.nombre}"`}
+                          >
+                            {etapa.nombre}
+                            <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-semibold ${activa ? "bg-white/20 text-white" : "bg-background text-gray-500"}`}>{conteo}</span>
+                          </button>
+                        );
+                        // 📬 Pestaña "Por leer": chats de TODAS las categorías con mensajes sin leer
+                        if (idx !== idxPorLeer) return chipEtapa;
+                        const chipPorLeer = (
+                          <button
+                            key="chip-por-leer"
+                            onClick={() => setChatCategoria(CATEGORIA_POR_LEER)}
+                            className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-bold border transition-all ${
+                              chatCategoria === CATEGORIA_POR_LEER
+                                ? "bg-red-600 text-white border-red-500 shadow-md shadow-red-900/30"
+                                : "bg-red-950/30 border-red-900/50 text-red-300 hover:text-red-200 hover:border-red-600/60"
+                            }`}
+                            title={`Chats de todas las categorías con mensajes pendientes por leer (${totalMensajesPorLeer} mensaje(s) en ${conversacionesPorLeer.length} chat(s))`}
+                          >
+                            <MailOpen className="w-3 h-3" /> Por leer
+                            <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-semibold ${chatCategoria === CATEGORIA_POR_LEER ? "bg-white/20 text-white" : "bg-background text-red-300"}`}>{conversacionesPorLeer.length}</span>
+                          </button>
+                        );
+                        return (
+                          <React.Fragment key={etapa.id}>
+                            {chipEtapa}
+                            {chipPorLeer}
+                          </React.Fragment>
+                        );
+                      });
+                    })()}
                     {/* Chip de Spam: pipeline fijo de color negro, no editable ni eliminable */}
                     <button
                       onClick={() => setChatCategoria("spam")}
@@ -1677,7 +1881,7 @@ export default function CRMApp() {
               <div className="flex-1 overflow-y-auto divide-y divide-border/50">
                 {loadingChats ? <div className="p-6 text-center text-sm text-gray-500">Cargando...</div>
                   : conversacionesFiltradas.length === 0
-                  ? <div className="p-6 text-center text-sm text-gray-500">Bandeja vacía</div>
+                  ? <div className="p-6 text-center text-sm text-gray-500">{chatCategoria === CATEGORIA_POR_LEER ? "No hay chats pendientes por leer 🎉" : "Bandeja vacía"}</div>
                   : conversacionesFiltradas.map((conv) => {
                     const cliente = conv.clientes;
                     const displayName = getDisplayName(cliente, conv);
@@ -1704,7 +1908,7 @@ export default function CRMApp() {
                           </div>
                           <div className="flex-1 min-w-0">
                             <div className="flex justify-between mb-1 gap-2">
-                              <h2 className={`text-sm font-semibold truncate flex items-center gap-1 ${etapaText}`}>{displayName}{tieneNotas && <StickyNote className="w-3 h-3 text-amber-400" />}</h2>
+                              <h2 className={`text-sm font-semibold truncate flex items-center gap-1 ${etapaText} ${displayName.startsWith("+") ? "font-mono tracking-tight" : ""}`}>{displayName}{tieneNotas && <StickyNote className="w-3 h-3 text-amber-400" />}</h2>
                               <div className="flex flex-col items-end gap-1 flex-shrink-0">
                                 <span className="text-[10px] text-gray-500">{new Date(conv.ultimo_mensaje_en).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
                                 {conv.no_leidos > 0 && (
@@ -1746,17 +1950,17 @@ export default function CRMApp() {
                       <div className="w-10 h-10 rounded-full bg-surface border border-border flex items-center justify-center text-purple-400 font-bold overflow-hidden">
                         {clienteActual.foto_url
                           ? <img src={clienteActual.foto_url} className="w-full h-full object-cover" alt="" />
-                          : (clienteActual.nombre && clienteActual.nombre !== "Sin Nombre" && clienteActual.nombre.trim())
-                            ? <span>{clienteActual.nombre.charAt(0).toUpperCase()}</span>
+                          : getNombreManual(clienteActual)
+                            ? <span>{getNombreManual(clienteActual).charAt(0).toUpperCase()}</span>
                             : <Phone className="w-4 h-4 text-purple-400" />}
                       </div>
                       <div className="flex flex-col cursor-pointer" onClick={() => setShowMobileDetails(true)}>
-                        <h2 className="text-sm font-bold text-gray-100 flex items-center gap-1">
+                        <h2 className={`text-sm font-bold text-gray-100 flex items-center gap-1 ${getDisplayName(clienteActual, selectedConv).startsWith("+") ? "font-mono" : ""}`}>
                           {getDisplayName(clienteActual, selectedConv)}
                           {clienteActual.notas_personales && <StickyNote className="w-3 h-3 text-amber-400" />}
                         </h2>
-                        <span className="text-[10px] text-gray-400 flex items-center gap-1">
-                          <Phone className="w-3 h-3" /> {clienteActual.telefono_display || clienteActual.telefono}
+                        <span className="text-[10px] text-gray-400 flex items-center gap-1 font-mono">
+                          <Phone className="w-3 h-3" /> {getTelefonoE164(clienteActual, selectedConv) || "Sin número"}
                         </span>
                       </div>
                     </div>
@@ -1843,8 +2047,8 @@ export default function CRMApp() {
                       <div className="w-20 h-20 mx-auto rounded-full bg-surface border-2 border-purple-500 flex items-center justify-center text-2xl font-bold text-purple-300 mb-3 overflow-hidden shadow-lg shadow-purple-900/20">
                         {clienteActual.foto_url
                           ? <img src={clienteActual.foto_url} alt="" className="w-full h-full object-cover" />
-                          : (clienteActual.nombre && clienteActual.nombre.trim() && clienteActual.nombre !== "Sin Nombre")
-                            ? <span>{clienteActual.nombre.charAt(0).toUpperCase()}</span>
+                          : getNombreManual(clienteActual)
+                            ? <span>{getNombreManual(clienteActual).charAt(0).toUpperCase()}</span>
                             : <Phone className="w-7 h-7 text-purple-400" />}
                       </div>
                       {isEditingNombre ? (
@@ -1853,13 +2057,13 @@ export default function CRMApp() {
                             type="text"
                             value={tempNombre}
                             onChange={(e) => setTempNombre(e.target.value)}
-                            placeholder="Nombre personalizado..."
+                            placeholder="Nombre personalizado (vacío = solo número)"
                             className="bg-background border border-purple-500 rounded-lg px-2.5 py-1 text-sm text-gray-100 focus:outline-none w-full text-center"
                             autoFocus
-                            onKeyDown={(e) => { if (e.key === "Enter") guardarNuevoNombre(); }}
+                            onKeyDown={(e) => { if (e.key === "Enter") guardarNuevoNombre(); if (e.key === "Escape") setIsEditingNombre(false); }}
                           />
-                          <button onClick={guardarNuevoNombre} className="p-1.5 text-emerald-400 hover:text-emerald-300"><CheckCircle2 className="w-4 h-4" /></button>
-                          <button onClick={() => setIsEditingNombre(false)} className="p-1.5 text-gray-400 hover:text-red-400"><X className="w-4 h-4" /></button>
+                          <button onClick={guardarNuevoNombre} className="p-1.5 text-emerald-400 hover:text-emerald-300" title="Guardar nombre"><CheckCircle2 className="w-4 h-4" /></button>
+                          <button onClick={() => setIsEditingNombre(false)} className="p-1.5 text-gray-400 hover:text-red-400" title="Cancelar"><X className="w-4 h-4" /></button>
                         </div>
                       ) : (
                         <div className="flex items-center justify-center gap-2 group">
@@ -1867,18 +2071,21 @@ export default function CRMApp() {
                             {getDisplayName(clienteActual, selectedConv)}
                           </h3>
                           <button
-                            onClick={() => { setTempNombre(clienteActual.nombre || ""); setIsEditingNombre(true); }}
+                            onClick={() => { setTempNombre(getNombreManual(clienteActual)); setIsEditingNombre(true); }}
                             className="text-gray-500 hover:text-purple-300 transition-colors"
-                            title="Asignar nombre personalizado"
+                            title={getNombreManual(clienteActual) ? "Editar o quitar nombre manual" : "Asignar nombre personalizado"}
                           >
                             <Edit2 className="w-3.5 h-3.5" />
                           </button>
                         </div>
                       )}
-                      {!clienteActual.nombre || clienteActual.nombre === "Sin Nombre" ? (
-                        <p className="text-[10px] text-gray-500 mt-1 italic">Sin nombre asignado — toca ✏️ para ponerle uno</p>
-                      ) : (
-                        <p className="text-xs text-gray-400 mt-0.5">{clienteActual.telefono_display || clienteActual.telefono}</p>
+                      {/* El número del cliente SIEMPRE visible en la tarjeta (formato +país) */}
+                      <p className="text-xs text-gray-300 mt-1 flex items-center justify-center gap-1.5 font-mono bg-background border border-border rounded-lg py-1.5 px-2">
+                        <Phone className="w-3 h-3 text-purple-400 flex-shrink-0" />
+                        {getTelefonoE164(clienteActual, selectedConv) || "Sin número"}
+                      </p>
+                      {!getNombreManual(clienteActual) && (
+                        <p className="text-[10px] text-gray-500 mt-1.5 italic">Sin nombre asignado — toca ✏️ para ponerle uno</p>
                       )}
                     </div>
 
@@ -2159,7 +2366,7 @@ export default function CRMApp() {
                     <div className="flex items-center gap-3">
                       <button onClick={() => setSelectedConv(null)} className="md:hidden p-2 -ml-2 text-gray-400 hover:text-white"><ArrowLeft className="w-5 h-5" /></button>
                       <div className="w-10 h-10 rounded-full bg-surface border border-amber-800/50 flex items-center justify-center text-amber-400 font-bold overflow-hidden">{clienteActual.foto_url ? <img src={clienteActual.foto_url} className="w-full h-full object-cover" alt="" /> : (() => { const dn = getDisplayName(clienteActual, selectedConv); return dn.startsWith("+") ? <Phone className="w-5 h-5" /> : <span>{dn.charAt(0) || "W"}</span>; })()}</div>
-                      <div className="flex flex-col"><h2 className="text-sm font-bold text-gray-100 flex items-center gap-2">{getDisplayName(clienteActual, selectedConv)}<span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-900/50 text-amber-300 border border-amber-800/50">ARCHIVADO</span></h2><span className="text-[10px] text-gray-400 flex items-center gap-1"><Phone className="w-3 h-3" /> {clienteActual.telefono_display || clienteActual.telefono}</span></div>
+                      <div className="flex flex-col"><h2 className="text-sm font-bold text-gray-100 flex items-center gap-2">{getDisplayName(clienteActual, selectedConv)}<span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-900/50 text-amber-300 border border-amber-800/50">ARCHIVADO</span></h2><span className="text-[10px] text-gray-400 flex items-center gap-1 font-mono"><Phone className="w-3 h-3" /> {getTelefonoE164(clienteActual, selectedConv) || "Sin número"}</span></div>
                     </div>
                     <div className="flex items-center gap-2">
                       <button onClick={() => archivarConversacion(selectedConv.id, false)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-900/30 border border-emerald-800/50 text-emerald-300 hover:bg-emerald-900/50 text-xs font-medium transition-colors"><ArchiveRestore className="w-4 h-4" /> Restaurar</button>
@@ -2188,7 +2395,7 @@ export default function CRMApp() {
                 <aside className={`w-full md:w-80 lg:w-96 border-l border-border bg-surface/95 overflow-y-auto absolute inset-0 z-30 md:relative flex flex-col ${!showMobileDetails ? "hidden md:flex" : "flex"}`}>
                   <header className="md:hidden flex items-center p-4 border-b border-border bg-background sticky top-0 z-10"><button onClick={() => setShowMobileDetails(false)} className="p-2 -ml-2 text-gray-400"><ArrowLeft className="w-5 h-5" /></button><h2 className="font-bold ml-2">Ficha Archivada</h2></header>
                   <div className="p-5 space-y-5">
-                    <div className="text-center"><div className="w-20 h-20 mx-auto rounded-full bg-surface border-2 border-amber-700 flex items-center justify-center text-2xl font-bold text-amber-300 mb-3 overflow-hidden shadow-lg">{clienteActual.foto_url ? <img src={clienteActual.foto_url} alt="" className="w-full h-full object-cover" /> : (() => { const dn = getDisplayName(clienteActual, selectedConv); return dn.startsWith("+") ? <Phone className="w-8 h-8" /> : <span>{dn.charAt(0) || "W"}</span>; })()}</div><h3 className="text-base font-bold text-gray-100">{getDisplayName(clienteActual, selectedConv)}</h3><p className="text-xs text-gray-400 mt-0.5">{clienteActual.telefono_display || clienteActual.telefono}</p></div>
+                    <div className="text-center"><div className="w-20 h-20 mx-auto rounded-full bg-surface border-2 border-amber-700 flex items-center justify-center text-2xl font-bold text-amber-300 mb-3 overflow-hidden shadow-lg">{clienteActual.foto_url ? <img src={clienteActual.foto_url} alt="" className="w-full h-full object-cover" /> : (() => { const dn = getDisplayName(clienteActual, selectedConv); return dn.startsWith("+") ? <Phone className="w-8 h-8" /> : <span>{dn.charAt(0) || "W"}</span>; })()}</div><h3 className="text-base font-bold text-gray-100">{getDisplayName(clienteActual, selectedConv)}</h3><p className="text-xs text-gray-400 mt-0.5 font-mono flex items-center justify-center gap-1"><Phone className="w-3 h-3" /> {getTelefonoE164(clienteActual, selectedConv) || "Sin número"}</p></div>
                     <button onClick={() => archivarConversacion(selectedConv.id, false)} className="w-full flex justify-center items-center gap-1.5 py-2.5 rounded-lg bg-emerald-900/30 border border-emerald-800 text-emerald-300 hover:bg-emerald-900/50 text-xs font-bold transition-all"><ArchiveRestore className="w-4 h-4" /> Restaurar a bandeja</button>
                     {/* Notas en archivados también */}
                     {(clienteActual.notas_personales || clienteActual.detalles_caso) && (
@@ -2303,9 +2510,10 @@ export default function CRMApp() {
                           onClick={() => { selectConversation(c); setTab("chats"); }}
                           className="p-3 bg-surface/80 backdrop-blur rounded-xl border border-border/60 hover:border-white/30 cursor-pointer shadow-sm group"
                         >
-                          <h3 className={`text-xs font-bold ${col.text_color} truncate`}>
+                          <h3 className={`text-xs font-bold ${col.text_color} truncate ${getDisplayName(c.clientes, c).startsWith("+") ? "font-mono" : ""}`}>
                             {getDisplayName(c.clientes, c)}
                           </h3>
+                          <p className="text-[10px] text-gray-500 font-mono mt-0.5 truncate">{getTelefonoE164(c.clientes, c) || "Sin número"}</p>
                           <p className="text-[11px] text-gray-400 mt-1 truncate">
                             {c.clientes?.tipo_trabajo || "Sin clasificar"}
                             {c.clientes?.notas_personales ? " • 📝" : ""}
@@ -2361,9 +2569,9 @@ export default function CRMApp() {
           <div className="flex-1 p-4 md:p-8 overflow-y-auto bg-background">
             <header className="mb-6"><h1 className="text-xl md:text-2xl font-bold text-gray-100 flex items-center gap-2"><ListTodo className="text-purple-400 w-6 h-6" /> Panel de Tareas</h1><p className="text-xs md:text-sm text-gray-400">Pendientes del día y checklist de clientes</p></header>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6 items-start">
-              <div className="bg-surface/50 border border-border rounded-2xl p-4 md:p-5 flex flex-col gap-4"><h2 className="text-sm font-bold text-amber-400 flex items-center gap-2 border-b border-border pb-2"><Clock className="w-4 h-4" /> Pendientes / Vencidas</h2><div className="space-y-2">{todasTareas.filter((t) => !t.completada && t.fecha_vencimiento && new Date(t.fecha_vencimiento) <= ahora).length === 0 && <p className="text-xs text-gray-500 italic">Todo al día ✅</p>}{todasTareas.filter((t) => !t.completada && t.fecha_vencimiento && new Date(t.fecha_vencimiento) <= ahora).map((t) => { const nombreT = (() => { const c: any = t.clientes; if (!c) return "Cliente"; if (c.nombre && c.nombre.trim() && c.nombre.trim().toLowerCase() !== "sin nombre") return c.nombre; const num = c.telefono_display || c.telefono || ""; return num ? (num.startsWith("+") ? num : `+${num.replace(/^0+/, "")}`) : "Cliente"; })(); return (<div key={t.id} className="bg-background border border-amber-900/30 p-3 rounded-xl"><div className="flex justify-between items-start mb-1"><span className="text-[10px] bg-amber-950/50 text-amber-500 px-1.5 rounded border border-amber-900">{t.fecha_vencimiento}</span><span className="text-[10px] text-gray-400 truncate max-w-[120px]">{nombreT}</span></div><p className="text-xs text-gray-200 font-medium">{t.titulo}</p><button onClick={() => toggleTarea(t.id, false)} className="mt-2 text-[10px] text-purple-400 hover:text-purple-300">Marcar hecha ✓</button></div>); })}</div></div>
-              <div className="bg-surface/50 border border-border rounded-2xl p-4 md:p-5 flex flex-col gap-4"><h2 className="text-sm font-bold text-blue-400 flex items-center gap-2 border-b border-border pb-2"><Calendar className="w-4 h-4" /> Próximas / Sin fecha</h2><div className="space-y-2">{todasTareas.filter((t) => !t.completada && (!t.fecha_vencimiento || new Date(t.fecha_vencimiento) > ahora)).map((t) => { const nombreT = (() => { const c: any = t.clientes; if (!c) return "Cliente"; if (c.nombre && c.nombre.trim() && c.nombre.trim().toLowerCase() !== "sin nombre") return c.nombre; const num = c.telefono_display || c.telefono || ""; return num ? (num.startsWith("+") ? num : `+${num.replace(/^0+/, "")}`) : "Cliente"; })(); return (<div key={t.id} className="bg-background border border-border p-3 rounded-xl"><div className="flex justify-between items-start mb-1"><span className="text-[10px] text-blue-400">{t.fecha_vencimiento || "Sin fecha"}</span><span className="text-[10px] text-gray-400 truncate max-w-[120px]">{nombreT}</span></div><p className="text-xs text-gray-200">{t.titulo}</p><button onClick={() => toggleTarea(t.id, false)} className="mt-2 text-[10px] text-purple-400 hover:text-purple-300">Marcar hecha ✓</button></div>); })}</div></div>
-              <div className="bg-surface/50 border border-border rounded-2xl p-4 md:p-5 flex flex-col gap-4"><h2 className="text-sm font-bold text-emerald-400 flex items-center gap-2 border-b border-border pb-2"><CheckCircle2 className="w-4 h-4" /> Completadas</h2><div className="space-y-2">{todasTareas.filter((t) => t.completada).slice(-15).reverse().map((t) => { const nombreT = (() => { const c: any = t.clientes; if (!c) return ""; if (c.nombre && c.nombre.trim() && c.nombre.trim().toLowerCase() !== "sin nombre") return c.nombre; const num = c.telefono_display || c.telefono || ""; return num ? (num.startsWith("+") ? num : `+${num.replace(/^0+/, "")}`) : ""; })(); return (<div key={t.id} className="bg-background border border-border p-3 rounded-xl opacity-60"><div className="flex justify-between items-start"><span className="text-[10px] text-gray-500 line-through">{t.titulo}</span><span className="text-[10px] text-gray-600">{nombreT}</span></div></div>); })}</div></div>
+              <div className="bg-surface/50 border border-border rounded-2xl p-4 md:p-5 flex flex-col gap-4"><h2 className="text-sm font-bold text-amber-400 flex items-center gap-2 border-b border-border pb-2"><Clock className="w-4 h-4" /> Pendientes / Vencidas</h2><div className="space-y-2">{todasTareas.filter((t) => !t.completada && t.fecha_vencimiento && new Date(t.fecha_vencimiento) <= ahora).length === 0 && <p className="text-xs text-gray-500 italic">Todo al día ✅</p>}{todasTareas.filter((t) => !t.completada && t.fecha_vencimiento && new Date(t.fecha_vencimiento) <= ahora).map((t) => { const nombreT = getNombreTarea(t); return (<div key={t.id} className="bg-background border border-amber-900/30 p-3 rounded-xl"><div className="flex justify-between items-start mb-1"><span className="text-[10px] bg-amber-950/50 text-amber-500 px-1.5 rounded border border-amber-900">{t.fecha_vencimiento}</span><span className="text-[10px] text-gray-400 truncate max-w-[120px]">{nombreT}</span></div><p className="text-xs text-gray-200 font-medium">{t.titulo}</p><button onClick={() => toggleTarea(t.id, false)} className="mt-2 text-[10px] text-purple-400 hover:text-purple-300">Marcar hecha ✓</button></div>); })}</div></div>
+              <div className="bg-surface/50 border border-border rounded-2xl p-4 md:p-5 flex flex-col gap-4"><h2 className="text-sm font-bold text-blue-400 flex items-center gap-2 border-b border-border pb-2"><Calendar className="w-4 h-4" /> Próximas / Sin fecha</h2><div className="space-y-2">{todasTareas.filter((t) => !t.completada && (!t.fecha_vencimiento || new Date(t.fecha_vencimiento) > ahora)).map((t) => { const nombreT = getNombreTarea(t); return (<div key={t.id} className="bg-background border border-border p-3 rounded-xl"><div className="flex justify-between items-start mb-1"><span className="text-[10px] text-blue-400">{t.fecha_vencimiento || "Sin fecha"}</span><span className="text-[10px] text-gray-400 truncate max-w-[120px]">{nombreT}</span></div><p className="text-xs text-gray-200">{t.titulo}</p><button onClick={() => toggleTarea(t.id, false)} className="mt-2 text-[10px] text-purple-400 hover:text-purple-300">Marcar hecha ✓</button></div>); })}</div></div>
+              <div className="bg-surface/50 border border-border rounded-2xl p-4 md:p-5 flex flex-col gap-4"><h2 className="text-sm font-bold text-emerald-400 flex items-center gap-2 border-b border-border pb-2"><CheckCircle2 className="w-4 h-4" /> Completadas</h2><div className="space-y-2">{todasTareas.filter((t) => t.completada).slice(-15).reverse().map((t) => { const nombreT = getNombreTarea(t); return (<div key={t.id} className="bg-background border border-border p-3 rounded-xl opacity-60"><div className="flex justify-between items-start"><span className="text-[10px] text-gray-500 line-through">{t.titulo}</span><span className="text-[10px] text-gray-600">{nombreT}</span></div></div>); })}</div></div>
             </div>
           </div>
         )}
@@ -2454,7 +2662,7 @@ export default function CRMApp() {
                   {clientesCartera.map((row) => {
                     const cliente = row.cliente;
                     const nombre = getDisplayName(cliente);
-                    const telefono = cliente.telefono_display || cliente.telefono || "Sin teléfono";
+                    const telefono = getTelefonoE164(cliente) || "Sin teléfono";
                     const pp = row.proximoPago;
                     const monedaPP = pp?.moneda || "COP";
                     const expandido = expandedCarteraCliente === cliente.id;
@@ -2669,7 +2877,7 @@ export default function CRMApp() {
                   </div>
                   <div className="bg-background border border-border rounded-xl p-3 text-xs space-y-1">
                     <p className="text-gray-200 font-bold">{getDisplayName(abonoModalCliente.cliente)}</p>
-                    <p className="text-gray-400">{abonoModalCliente.cliente.telefono_display || abonoModalCliente.cliente.telefono}</p>
+                    <p className="text-gray-400 font-mono">{getTelefonoE164(abonoModalCliente.cliente) || "Sin teléfono"}</p>
                     {abonoModalCliente.proximoPago ? (
                       <>
                         <p className="text-amber-300 mt-1">Próximo pago: {formatearMoneda(Number(abonoModalCliente.proximoPago.monto), abonoModalCliente.proximoPago.moneda || "COP")} <span className="text-gray-500">• vence {abonoModalCliente.proximoPago.fecha_vencimiento}</span></p>

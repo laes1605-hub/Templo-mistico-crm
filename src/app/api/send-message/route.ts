@@ -34,11 +34,14 @@ export async function POST(req: Request) {
     const cleanNumber = String(numeroWhatsApp).replace(/[^\d]/g, "");
     const pureBase64 = cleanBase64(fileBase64);
     const mime = String(fileMime || "application/octet-stream").split(";")[0];
-    const isAudio = Boolean(pureBase64 && (mime.startsWith("audio/") || String(fileName || "").includes("nota_de_voz")));
-    // Lo que se guarda en el historial del chat. Si el audio se convierte a
-    // OGG/Opus más abajo, se guarda la versión convertida: Safari no reproduce
-    // el WebM crudo del navegador, así la nota de voz se escucha en todos los
-    // dispositivos del equipo.
+    const isAudio = Boolean(
+      pureBase64 && (
+        mime.startsWith("audio/") ||
+        String(fileName || "").toLowerCase().includes("nota_de_voz") ||
+        String(fileName || "").toLowerCase().includes("audio")
+      )
+    );
+
     let storedFileBase64: string | null = typeof fileBase64 === "string" ? fileBase64 : null;
 
     let fuente = "meta_business";
@@ -59,8 +62,6 @@ export async function POST(req: Request) {
 
     let tipoGuardado = isAudio ? "audio" : "texto";
 
-    // Meta Cloud API is connected through Chatwoot. A text-only payload drops the
-    // attachment, so files must be sent as multipart/form-data using attachments[].
     if (fuente === "meta_business" && chatwootConvId) {
       if (!chatwootToken) {
         return NextResponse.json({ error: "Falta CHATWOOT_API_TOKEN para enviar por WhatsApp Business." }, { status: 500 });
@@ -79,16 +80,11 @@ export async function POST(req: Request) {
 
         let outgoingMime = mime;
         let outgoingName = safeFileName(fileName, mime);
-        // WhatsApp Cloud API (Meta) rejects WebM voice notes: it only accepts
-        // OGG/Opus (`audio/ogg; codecs=opus`). Browsers record Opus inside a
-        // WebM container, so rewrap the packets losslessly into OGG before
-        // uploading the attachment to Chatwoot.
-        if (isAudio && mime.startsWith("audio/webm")) {
+
+        const isWebmBuffer = bytes.length >= 4 && bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3;
+        if (isAudio && (mime.includes("webm") || isWebmBuffer)) {
           try {
             bytes = remuxWebmToOgg(bytes, { prerollMs: WEBM_OGG_PREROLL_MS });
-            // Chatwoot 4.15+ requires the exact `audio/ogg` content type to
-            // recognize the attachment as a voice message and add
-            // `voice: true` to the WhatsApp Cloud API payload.
             outgoingMime = "audio/ogg";
             outgoingName = /\.webm$/i.test(outgoingName) ? outgoingName.replace(/\.webm$/i, ".ogg") : `${outgoingName}.ogg`;
             storedFileBase64 = `data:${outgoingMime};base64,${bytes.toString("base64")}`;
@@ -102,15 +98,15 @@ export async function POST(req: Request) {
         form.set("content", texto?.trim() || (isAudio ? "🎤 Nota de voz" : "Archivo enviado"));
         form.set("message_type", "outgoing");
         form.set("private", "false");
-        // Chatwoot 4.15+ stores this marker on the audio attachment and sends
-        // `audio.voice: true` to Meta, which makes WhatsApp render it as a
-        // native voice note instead of a regular downloadable audio file.
-        if (isAudio && outgoingMime === "audio/ogg") {
+        
+        // WhatsApp Business Cloud API requires is_voice_message = true and audio/ogg; codecs=opus
+        if (isAudio) {
           form.set("is_voice_message", "true");
         }
-        // Copy into a browser-compatible typed array; Buffer's ArrayBufferLike type
-        // is not accepted by the Web Blob type used by Next's fetch implementation.
-        form.append("attachments[]", new Blob([new Uint8Array(bytes)], { type: outgoingMime }), outgoingName);
+        
+        const attachmentMime = outgoingMime === "audio/ogg" ? "audio/ogg; codecs=opus" : outgoingMime;
+        form.append("attachments[]", new Blob([new Uint8Array(bytes)], { type: attachmentMime }), outgoingName);
+        
         response = await fetch(endpoint, {
           method: "POST",
           headers: { api_access_token: chatwootToken },
@@ -141,13 +137,17 @@ export async function POST(req: Request) {
         endpoint = `${evoUrl}/message/sendWhatsAppAudio/personal`;
         let audioMime = mime;
         let audioBase64 = pureBase64;
+        let bytes: Buffer | null = null;
+        try {
+          bytes = Buffer.from(pureBase64, "base64");
+        } catch {
+          // ignore
+        }
 
-        // Igual que en WhatsApp Business: si el celular grabó WebM/Opus, lo
-        // reempaquetamos a OGG/Opus y le agregamos un preroll silencioso. Esto
-        // evita que Evolution/WhatsApp recorten la primera palabra del audio.
-        if (mime.startsWith("audio/webm")) {
+        const isWebmBuffer = Boolean(bytes && bytes.length >= 4 && bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3);
+        if (mime.includes("webm") || isWebmBuffer) {
           try {
-            const converted = remuxWebmToOgg(Buffer.from(pureBase64, "base64"), { prerollMs: WEBM_OGG_PREROLL_MS });
+            const converted = remuxWebmToOgg(bytes!, { prerollMs: WEBM_OGG_PREROLL_MS });
             audioMime = "audio/ogg";
             audioBase64 = converted.toString("base64");
             storedFileBase64 = `data:${audioMime};base64,${audioBase64}`;
@@ -158,7 +158,19 @@ export async function POST(req: Request) {
         }
 
         const audioDataUri = `data:${audioMime};base64,${audioBase64}`;
-        payload = { number: cleanNumber, audio: audioDataUri, encoding: true };
+        // ptt: true tells Evolution API / Baileys to send as a native Push-To-Talk voice note
+        payload = {
+          number: cleanNumber,
+          audio: audioDataUri,
+          encoding: true,
+          ptt: true,
+          options: {
+            delay: 1200,
+            presence: "recording",
+            encoding: true,
+            ptt: true,
+          },
+        };
       } else if (pureBase64) {
         let mediatype = "document";
         if (mime.startsWith("image/")) { mediatype = "image"; tipoGuardado = "imagen"; }
@@ -180,10 +192,22 @@ export async function POST(req: Request) {
 
     if (conversacionId) {
       const contenidoFinal = texto?.trim() || (pureBase64 ? `[${tipoGuardado}]` : "");
-      const { error: messageError } = await supabase.from("mensajes").insert([{ conversacion_id: conversacionId, tipo: "enviado", contenido: contenidoFinal, tipo_contenido: tipoGuardado, url_archivo: storedFileBase64, creado_en: new Date().toISOString() }]);
+      const { error: messageError } = await supabase.from("mensajes").insert([
+        {
+          conversacion_id: conversacionId,
+          tipo: "enviado",
+          contenido: contenidoFinal,
+          tipo_contenido: tipoGuardado,
+          url_archivo: storedFileBase64,
+          creado_en: new Date().toISOString()
+        }
+      ]);
       if (messageError) console.error("Could not save outgoing message:", messageError.message);
 
-      await supabase.from("conversaciones").update({ ultimo_mensaje: contenidoFinal, ultimo_mensaje_en: new Date().toISOString() }).eq("id", conversacionId);
+      await supabase.from("conversaciones").update({
+        ultimo_mensaje: contenidoFinal,
+        ultimo_mensaje_en: new Date().toISOString()
+      }).eq("id", conversacionId);
     }
 
     return NextResponse.json({ success: true });

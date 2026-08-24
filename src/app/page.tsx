@@ -711,7 +711,7 @@ export default function CRMApp() {
                         </div>
                         <div className="flex-1 min-w-0">
                           <div className="flex justify-between mb-1"><h2 className="text-sm font-semibold text-gray-200 truncate">{displayName}</h2><span className="text-[10px] text-gray-500">{new Date(conv.ultimo_mensaje_en).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span></div>
-                          <p className="text-xs text-gray-400 truncate flex items-center gap-1">{conv.ultimo_mensaje === "[audio]" ? (<><Mic className="w-3.5 h-3.5 text-purple-400 flex-shrink-0" /><span>Nota de voz</span></>) : (conv.ultimo_mensaje || "Sin mensajes")}</p>
+                          <p className="text-xs text-gray-400 truncate flex items-center gap-1">{(conv.ultimo_mensaje === "[audio]" || conv.ultimo_mensaje === "[nota_de_voz]" || (conv.ultimo_mensaje && /\[audio\]|nota_de_voz|Nota de voz/i.test(conv.ultimo_mensaje))) ? (<><Mic className="w-3.5 h-3.5 text-purple-400 flex-shrink-0" /><span>Nota de voz</span></>) : (conv.ultimo_mensaje || "Sin mensajes")}</p>
                         </div>
                       </button>
                     );
@@ -750,7 +750,16 @@ export default function CRMApp() {
                       return (
                         <div key={msg.id} className={`flex ${isMe ? "justify-end" : "justify-start"}`}>
                           <div className={`max-w-[85%] md:max-w-[70%] rounded-2xl px-3 py-2 shadow-sm ${isMe ? "bg-purple-600 text-white rounded-br-none" : "bg-surface border border-border text-gray-200 rounded-bl-none"}`}>
-                            {msg.tipo_contenido === "audio" && msg.url_archivo ? <VoiceNotePlayer src={msg.url_archivo} isMe={isMe} /> : msg.tipo_contenido === "imagen" && msg.url_archivo ? <img src={msg.url_archivo} alt="" className="rounded-lg max-h-60 object-cover" /> : <p className="text-sm whitespace-pre-wrap leading-relaxed">{msg.contenido}</p>}
+                            {(() => {
+                              const isAudioMsg = msg.tipo_contenido === "audio" || msg.contenido === "[audio]" || msg.contenido === "[nota_de_voz]" || (msg.url_archivo && (msg.url_archivo.startsWith("data:audio/") || /\.(ogg|opus|webm|mp3|wav|m4a|aac)($|\?)/i.test(msg.url_archivo)));
+                              if (isAudioMsg && msg.url_archivo) {
+                                return <VoiceNotePlayer src={msg.url_archivo} isMe={isMe} />;
+                              }
+                              if (msg.tipo_contenido === "imagen" && msg.url_archivo) {
+                                return <img src={msg.url_archivo} alt="" className="rounded-lg max-h-60 object-cover" />;
+                              }
+                              return <p className="text-sm whitespace-pre-wrap leading-relaxed">{msg.contenido}</p>;
+                            })()}
                             <span className={`block text-[9px] mt-1 ${isMe ? "text-purple-200 text-right" : "text-gray-500"}`}>{new Date(msg.creado_en).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
                           </div>
                         </div>

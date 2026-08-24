@@ -186,13 +186,15 @@ export async function POST(req: Request) {
           }
         }
 
-        const audioDataUri = `data:${audioMime};base64,${audioBase64}`;
+        // Evolution acepta una URL o base64 puro. Algunas versiones anuncian
+        // soporte para data URI pero su validador de "Owned media" la rechaza
+        // antes de decodificarla con el error 400. Enviar únicamente el contenido
+        // base64 también evita que el MIME forme parte de lo que intenta validar.
+        const normalizedAudioBase64 = audioBase64.replace(/\s+/g, "");
         payload = {
           number: cleanNumber,
-          audio: audioDataUri,
-          encoding: true,
+          audio: normalizedAudioBase64,
           delay: 1200,
-          presence: "recording",
         };
         envioAudioVia = "evolution";
       } else if (pureBase64) {

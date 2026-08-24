@@ -178,6 +178,21 @@ npx cap add android
 <uses-permission android:name="android.permission.INTERNET" />
 ```
 
+**No aparece el permiso de micrófono / cámara / galería / memoria**
+- Los permisos se declaran en `android/app/src/main/AndroidManifest.xml`. Si un permiso no está
+  declarado ahí, Android no lo muestra en *Ajustes > Apps > Templo Místico CRM > Permisos* y la
+  app no puede pedirlo (las notas de voz con `getUserMedia` no funcionan sin `RECORD_AUDIO`).
+- Este repo ya declara: `RECORD_AUDIO`, `MODIFY_AUDIO_SETTINGS`, `CAMERA`,
+  `READ_MEDIA_IMAGES/VIDEO/AUDIO` (Android 13+), `READ/WRITE_EXTERNAL_STORAGE` (Android 12-/9-),
+  `POST_NOTIFICATIONS`, `SCHEDULE_EXACT_ALARM`, `USE_EXACT_ALARM` y `VIBRATE`.
+- Tras cambiar el manifest **hay que recompilar el APK** y reinstalarlo; los permisos no se
+  actualizan en el APK ya instalado.
+- Con el APK nuevo: la app pide cada permiso en el momento de usarlo (notas de voz → micrófono,
+  foto/cámara, notificaciones en Ajustes). También puedes concederlos a mano en
+  *Ajustes > Apps > Templo Místico CRM > Permisos*.
+- Nota: reproducir sonidos no requiere permiso en Android; solo grabar audio (`RECORD_AUDIO`) y
+  notificaciones en Android 13+ (`POST_NOTIFICATIONS`).
+
 **Archivados no aparecen**
 - Ejecuta la migración SQL en Supabase: `supabase/migrations/20260824_archivado_eliminado.sql`
 - Ve a Supabase > SQL Editor > Pega el contenido > Run

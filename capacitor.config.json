@@ -5,26 +5,3 @@
   "server": {
     "url": "https://templo-mistico-crm.vercel.app",
     "cleartext": true,
-    "androidScheme": "https",
-    "iosScheme": "https"
-  },
-  "plugins": {
-    "SplashScreen": {
-      "launchShowDuration": 2000,
-      "backgroundColor": "#090d16"
-    },
-    "StatusBar": {
-      "style": "DARK",
-      "backgroundColor": "#090d16"
-    },
-    "LocalNotifications": {
-      "smallIcon": "ic_launcher_foreground",
-      "iconColor": "#8b5cf6"
-    }
-  },
-  "android": {
-    "allowMixedContent": true,
-    "captureInput": true,
-    "webContentsDebuggingEnabled": false
-  }
-}

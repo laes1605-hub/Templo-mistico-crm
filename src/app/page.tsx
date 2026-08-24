@@ -24,7 +24,7 @@ import {
 } from "lucide-react";
 
 export default function CRMApp() {
-  const [tab, setTab] = useState<"chats" | "spam" | "pipeline" | "cartera" | "tareas" | "ads" | "cerebro" | "archivados">("chats");
+  const [tab, setTab] = useState<"chats" | "pipeline" | "cartera" | "tareas" | "ads" | "cerebro" | "archivados">("chats");
   
   const [conversaciones, setConversaciones] = useState<any[]>([]);
   const [selectedConv, setSelectedConv] = useState<any | null>(null);
@@ -76,7 +76,7 @@ export default function CRMApp() {
   const [sendError, setSendError] = useState("");
   const [sendNotice, setSendNotice] = useState("");
   const [loadingChats, setLoadingChats] = useState(true);
-  const [filtroCanal, setFiltroCanal] = useState<"todos" | "evolution" | "meta_business" | "spam">("todos");
+  const [filtroCanal, setFiltroCanal] = useState<"todos" | "evolution" | "meta_business">("todos");
   const [showMobileDetails, setShowMobileDetails] = useState(false);
   
   // ARCHIVADOS & ELIMINAR
@@ -158,6 +158,8 @@ export default function CRMApp() {
     fetchCampanasAds();
     cargarConfigDivisas();
     cargarConfigGeneral();
+    // Recalcular mensajes no leídos (cubre los que llegaron con la app cerrada)
+    sincronizarNoLeidos();
 
     const convSub = supabase.channel("r-conv").on("postgres_changes", { event: "*", schema: "public", table: "conversaciones" }, fetchConversaciones).subscribe();
     const cliSub = supabase.channel("r-cli").on("postgres_changes", { event: "*", schema: "public", table: "clientes" }, () => { fetchConversaciones(); fetchTodosClientes(); }).subscribe();
@@ -196,6 +198,17 @@ export default function CRMApp() {
     if (!existe && chatCategoria !== claveNuevoLead) setChatCategoria(claveNuevoLead);
   }, [grupoActivo, pipelineEtapas]);
 
+  // Al volver a la app con un chat abierto, ese chat cuenta como revisado
+  useEffect(() => {
+    const onVis = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible" && selectedConvRef.current) {
+        marcarLeido(selectedConvRef.current.id);
+      }
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, []);
+
   // ===================== NOTIFICACIONES DE MENSAJES ENTRANTES =====================
   const conversacionesRef = useRef<any[]>([]);
   const selectedConvRef = useRef<any | null>(null);
@@ -207,10 +220,17 @@ export default function CRMApp() {
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "mensajes" }, (payload) => {
         const msg = payload.new as any;
         if (!msg || msg.tipo === "enviado") return; // solo mensajes entrantes
-        // Si el chat está abierto y la app visible, no molestar
-        const abierta = typeof document !== "undefined" && document.visibilityState === "visible";
-        if (abierta && selectedConvRef.current?.id === msg.conversacion_id) return;
         const conv = conversacionesRef.current.find((c) => c.id === msg.conversacion_id);
+        // Spam: ni recordatorios ni notificaciones
+        if (conv?.clientes?.es_spam) return;
+        // Si el chat está abierto y la app visible, se marca como leído al vuelo
+        const abierta = typeof document !== "undefined" && document.visibilityState === "visible";
+        if (abierta && selectedConvRef.current?.id === msg.conversacion_id) {
+          marcarLeido(msg.conversacion_id);
+          return;
+        }
+        // Si no, se suma al contador de no leídos (solo lo limpia el operador al revisar)
+        sincronizarNoLeidos();
         const nombre = (() => {
           const c = conv?.clientes;
           if (c?.nombre && c.nombre.trim() && c.nombre.trim().toLowerCase() !== "sin nombre") return c.nombre;
@@ -554,6 +574,19 @@ export default function CRMApp() {
     fetchConversaciones();
   }
 
+  // ===================== MENSAJES NO LEÍDOS =====================
+  // El contador solo se limpia cuando el operador abre/revisa el chat.
+  // La respuesta de la agente (tipo "enviado") no cuenta y no lo limpia.
+  async function marcarLeido(convId: string) {
+    try { await supabase.rpc("marcar_leido", { p_conv_id: convId }); } catch {}
+    setConversaciones(prev => prev.map(c => (c.id === convId ? { ...c, no_leidos: 0 } : c)));
+  }
+
+  async function sincronizarNoLeidos() {
+    try { await supabase.rpc("sincronizar_no_leidos"); } catch {}
+    fetchConversaciones();
+  }
+
   async function fetchConversaciones() {
     const { data } = await supabase.from("conversaciones").select("*, clientes(*)").order("ultimo_mensaje_en", { ascending: false });
     if (data) setConversaciones(data);
@@ -707,8 +740,13 @@ export default function CRMApp() {
     setSelectedConv(conv);
     setClienteActual(conv.clientes);
     // Al abrir un chat, mostrar su categoría en la subpestaña correspondiente
-    const estCliente = conv.clientes?.estado || (conv.clientes?.grupo === "templo" || conv.fuente === "meta_business" ? "nuevo_lead_templo" : "nuevo_lead");
+    const esSpamCliente = conv.clientes?.es_spam === true;
+    const estCliente = esSpamCliente
+      ? "spam"
+      : (conv.clientes?.estado || (conv.clientes?.grupo === "templo" || conv.fuente === "meta_business" ? "nuevo_lead_templo" : "nuevo_lead"));
     setChatCategoria(estCliente);
+    // Revisar el chat limpia el contador de mensajes no leídos
+    marcarLeido(conv.id);
     setIsEditingNombre(false);
     setIsEditingNotas(false);
     setTempNotas(conv.clientes?.notas_personales || "");
@@ -1078,13 +1116,20 @@ export default function CRMApp() {
       setSelectedConv({ ...selectedConv, agente_activo: false });
     }
     setClienteActual({ ...clienteActual, es_spam: est });
-    if (est && filtroCanal !== "spam") setSelectedConv(null);
+    if (est) setSelectedConv(null);
     fetchConversaciones();
   }
 
   async function actualizarEstadoCliente(clienteId: string, nuevoEstado: string) {
-    await supabase.from("clientes").update({ estado: nuevoEstado, actualizado_en: new Date().toISOString() }).eq("id", clienteId);
-    if (clienteActual?.id === clienteId) setClienteActual({ ...clienteActual, estado: nuevoEstado });
+    // Al pasar por "Consulta Hecha" el cliente queda marcado como atendido para
+    // siempre, aunque después salga del pipeline (perdido, abandono, etc.)
+    const pasaConsultaHecha = nuevoEstado.startsWith("consulta_hecha");
+    await supabase.from("clientes").update({
+      estado: nuevoEstado,
+      ...(pasaConsultaHecha ? { atendido: true } : {}),
+      actualizado_en: new Date().toISOString(),
+    }).eq("id", clienteId);
+    if (clienteActual?.id === clienteId) setClienteActual({ ...clienteActual, estado: nuevoEstado, ...(pasaConsultaHecha ? { atendido: true } : {}) });
     fetchConversaciones(); fetchTodosClientes();
   }
 
@@ -1281,11 +1326,11 @@ export default function CRMApp() {
     const grupoCliente = c.clientes?.grupo || (c.fuente === "meta_business" ? "templo" : "personal");
     if (grupoCliente !== grupoActivo) return false;
     if (isArchivada) return false;
-    if (filtroCanal === "spam") return esSpam;
-    if (esSpam) return false;
+    // Spam es una categoría más del pipeline (chip negro, sin agente ni recordatorios)
+    if (esSpam) return chatCategoria === "spam";
     // Filtrar por subcategoría seleccionada (por defecto: solo Nuevos Leads)
     const estadoCliente = c.clientes?.estado || (grupoActivo === "templo" ? "nuevo_lead_templo" : "nuevo_lead");
-    if (tab === "chats" && estadoCliente !== chatCategoria) return false;
+    if (chatCategoria !== "spam" && estadoCliente !== chatCategoria) return false;
     const matchSearch = !searchChats ||
       getDisplayName(c.clientes, c).toLowerCase().includes(searchChats.toLowerCase()) ||
       (c.numero_whatsapp || "").includes(searchChats) ||
@@ -1375,8 +1420,15 @@ export default function CRMApp() {
 
   // Rendimiento y finanzas filtrados por el grupo de cartera seleccionado
   const clientesNoSpam = todosClientes.filter((c) => !c.es_spam && carteraGrupoOk(c));
-  const totalAtendidos = clientesNoSpam.length;
-  const totalConvertidos = clientesNoSpam.filter((c) => ["pago_recibido", "trabajo_proceso", "trabajo_completado"].includes(c.estado)).length;
+  // "Clientes atendidos" = clientes que PASARON por "Consulta Hecha" alguna vez.
+  // El flag atendido se mantiene aunque después salgan del pipeline.
+  const totalAtendidos = clientesNoSpam.filter((c) => c.atendido).length;
+  // "Convertidos" = de esos atendidos, cuántos pasaron a pago (estado de pago o con pago cobrado)
+  const clienteIdsPagados = new Set(todosPagos.filter((p) => p.estado === "pagado").map((p) => p.cliente_id));
+  const totalConvertidos = clientesNoSpam.filter((c) => c.atendido && (
+    ["pago_recibido", "pago_recibido_templo", "trabajo_proceso", "trabajo_proceso_templo", "trabajo_completado", "trabajo_completado_templo"].includes(c.estado) ||
+    clienteIdsPagados.has(c.id)
+  )).length;
   const efectividad = totalAtendidos > 0 ? ((totalConvertidos / totalAtendidos) * 100).toFixed(1) : "0";
 
   // Calculos de cartera con conversión a COP
@@ -1410,7 +1462,6 @@ export default function CRMApp() {
 
   const menuItems = [
     { id: "chats", icon: MessageSquare, label: "Chats" },
-    { id: "spam", icon: Ban, label: "Spam" },
     { id: "archivados", icon: Archive, label: "Archivados" },
     { id: "pipeline", icon: Users, label: "Pipeline" },
     { id: "tareas", icon: ListTodo, label: "Tareas" },
@@ -1468,7 +1519,7 @@ export default function CRMApp() {
       <main className="flex-1 flex overflow-hidden mb-16 md:mb-0 relative">
         
         {/* ================= CHATS ================= */}
-        {(tab === "chats" || tab === "spam") && (
+        {tab === "chats" && (
           <>
             <section className={`w-full md:w-80 border-r border-border bg-surface/50 flex-col ${selectedConv ? "hidden md:flex" : "flex"}`}>
               <div className="p-4 border-b border-border flex flex-col gap-3 pt-6 md:pt-4">
@@ -1549,12 +1600,10 @@ export default function CRMApp() {
                 </button>
 
                 <div className="flex items-center justify-between">
-                  <h1 className="text-lg font-bold text-gray-100">
-                    {tab === "spam" ? "🚫 Spam" : "Bandeja"}
-                  </h1>
+                  <h1 className="text-lg font-bold text-gray-100">Bandeja</h1>
                   <div className="flex items-center gap-2">
                     <span className="text-xs px-2 py-0.5 rounded-full bg-purple-900/50 text-purple-300 font-medium">
-                      {tab === "spam" ? conversacionesSpam.length : conversacionesFiltradas.length}
+                      {conversacionesFiltradas.length}
                     </span>
                     <button className="md:hidden text-gray-500" onClick={() => setShowAdmin(true)}><Shield className="w-4 h-4" /></button>
                   </div>
@@ -1603,6 +1652,19 @@ export default function CRMApp() {
                         </button>
                       );
                     })}
+                    {/* Chip de Spam: pipeline fijo de color negro, no editable ni eliminable */}
+                    <button
+                      onClick={() => setChatCategoria("spam")}
+                      className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-bold border transition-all ${
+                        chatCategoria === "spam"
+                          ? "bg-black text-white border-gray-700 shadow-md"
+                          : "bg-surface border-border text-gray-500 hover:text-gray-300"
+                      }`}
+                      title="Chats marcados como spam (sin agente ni recordatorios)"
+                    >
+                      <Ban className="w-3 h-3" /> Spam
+                      <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-semibold ${chatCategoria === "spam" ? "bg-white/20 text-white" : "bg-background text-gray-500"}`}>{conversacionesSpam.length}</span>
+                    </button>
                   </div>
                 )}
 
@@ -1614,16 +1676,17 @@ export default function CRMApp() {
               </div>
               <div className="flex-1 overflow-y-auto divide-y divide-border/50">
                 {loadingChats ? <div className="p-6 text-center text-sm text-gray-500">Cargando...</div>
-                  : (tab === "spam" ? conversacionesSpam : conversacionesFiltradas).length === 0
-                  ? <div className="p-6 text-center text-sm text-gray-500">{tab === "spam" ? "No hay spam en este grupo" : "Bandeja vacía"}</div>
-                  : (tab === "spam" ? conversacionesSpam : conversacionesFiltradas).map((conv) => {
+                  : conversacionesFiltradas.length === 0
+                  ? <div className="p-6 text-center text-sm text-gray-500">Bandeja vacía</div>
+                  : conversacionesFiltradas.map((conv) => {
                     const cliente = conv.clientes;
                     const displayName = getDisplayName(cliente, conv);
                     const tieneNotas = cliente?.notas_personales || cliente?.detalles_caso;
+                    const esSpamChat = cliente?.es_spam === true;
                     const etapaCliente = getEtapa(cliente?.estado);
-                    const etapaColor = etapaCliente?.color || "border-transparent";
-                    const etapaBg = etapaCliente?.bg_color || "";
-                    const etapaText = etapaCliente?.text_color || "text-gray-400";
+                    const etapaColor = esSpamChat ? "border-black" : (etapaCliente?.color || "border-transparent");
+                    const etapaBg = esSpamChat ? "bg-black/20" : (etapaCliente?.bg_color || "");
+                    const etapaText = esSpamChat ? "text-gray-300" : (etapaCliente?.text_color || "text-gray-400");
                     return (
                       <div key={conv.id} className={`group relative w-full flex items-start gap-3 text-left hover:bg-surfaceHover transition-colors ${selectedConv?.id === conv.id ? `bg-surfaceHover border-l-4 ${etapaColor}` : `border-l-4 ${etapaColor} ${etapaBg}`}`}>
                         <button onClick={() => selectConversation(conv)} className="flex-1 p-4 flex items-start gap-3 text-left">
@@ -1640,9 +1703,16 @@ export default function CRMApp() {
                             {tieneNotas && <span className="absolute -top-1 -left-1 w-4 h-4 rounded-full bg-amber-600 border-2 border-surface flex items-center justify-center"><StickyNote className="w-2.5 h-2.5 text-white" /></span>}
                           </div>
                           <div className="flex-1 min-w-0">
-                            <div className="flex justify-between mb-1">
+                            <div className="flex justify-between mb-1 gap-2">
                               <h2 className={`text-sm font-semibold truncate flex items-center gap-1 ${etapaText}`}>{displayName}{tieneNotas && <StickyNote className="w-3 h-3 text-amber-400" />}</h2>
-                              <span className="text-[10px] text-gray-500">{new Date(conv.ultimo_mensaje_en).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                              <div className="flex flex-col items-end gap-1 flex-shrink-0">
+                                <span className="text-[10px] text-gray-500">{new Date(conv.ultimo_mensaje_en).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                                {conv.no_leidos > 0 && (
+                                  <span className="bg-red-600 text-white text-[9px] min-w-[18px] h-[18px] px-1 rounded-full flex items-center justify-center font-bold" title={`${conv.no_leidos} mensaje(s) sin revisar`}>
+                                    {conv.no_leidos > 99 ? "99+" : conv.no_leidos}
+                                  </span>
+                                )}
+                              </div>
                             </div>
                             {etapaCliente && !cliente?.es_spam && (
                               <span className={`inline-block text-[9px] px-1.5 py-0 rounded ${etapaBg} ${etapaText} border ${etapaColor} mb-1`}>
@@ -2250,16 +2320,17 @@ export default function CRMApp() {
                 );
               })}
 
-              {/* Columna de Spam */}
-              <div className="w-64 flex-shrink-0 bg-red-950/20 border-2 border-red-800/50 rounded-2xl p-4 flex flex-col gap-3 min-h-full">
-                <div className="flex items-center justify-between pb-2 border-b-2 border-red-700">
-                  <h2 className="text-xs font-bold text-red-300 flex items-center gap-1"><Ban className="w-3 h-3" /> Spam</h2>
-                  <span className="text-xs px-2 py-0.5 rounded-full bg-red-900/50 text-red-300 font-semibold">{conversacionesSpam.length}</span>
+              {/* Columna de Spam: pipeline fijo, color negro, no editable ni eliminable */}
+              <div className="w-64 flex-shrink-0 bg-black/30 border-2 border-gray-800 rounded-2xl p-4 flex flex-col gap-3 min-h-full">
+                <div className="flex items-center justify-between pb-2 border-b-2 border-black">
+                  <h2 className="text-xs font-bold text-gray-300 flex items-center gap-1"><Ban className="w-3 h-3" /> Spam</h2>
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-black/60 text-gray-300 font-semibold">{conversacionesSpam.length}</span>
                 </div>
                 <div className="space-y-2 overflow-y-auto flex-1">
                   {conversacionesSpam.map((c) => (
-                    <div key={c.id} onClick={() => { selectConversation(c); setTab("spam"); }} className="p-3 bg-surface/70 rounded-xl border border-red-900/30 cursor-pointer hover:border-red-500/50">
-                      <h3 className="text-xs font-bold text-red-300 truncate">{getDisplayName(c.clientes, c)}</h3>
+                    <div key={c.id} onClick={() => { selectConversation(c); setTab("chats"); }} className="p-3 bg-surface/70 rounded-xl border border-gray-800 cursor-pointer hover:border-gray-600">
+                      <h3 className="text-xs font-bold text-gray-300 truncate">{getDisplayName(c.clientes, c)}</h3>
+                      {c.no_leidos > 0 && <span className="mt-1 inline-flex bg-red-600 text-white text-[9px] min-w-[18px] h-[18px] px-1 rounded-full items-center justify-center font-bold">{c.no_leidos > 99 ? "99+" : c.no_leidos}</span>}
                     </div>
                   ))}
                   {conversacionesSpam.length === 0 && <p className="text-[11px] text-gray-500 italic text-center py-4">Sin spam 🎉</p>}
@@ -2387,6 +2458,9 @@ export default function CRMApp() {
                     const pp = row.proximoPago;
                     const monedaPP = pp?.moneda || "COP";
                     const expandido = expandedCarteraCliente === cliente.id;
+                    // Conversación del cliente para saltar al chat y mostrar no leídos
+                    const convCliente = conversaciones.find((c) => c.cliente_id === cliente.id && !(c as any).archivada) || conversaciones.find((c) => c.cliente_id === cliente.id);
+                    const noLeidosCliente = convCliente?.no_leidos || 0;
                     const estadoPill = row.vencido
                       ? { txt: `⚠️ Vencido hace ${Math.abs(row.diasRest!)}d`, cls: "bg-red-950/60 text-red-300 border-red-800" }
                       : row.venceHoy
@@ -2395,16 +2469,26 @@ export default function CRMApp() {
                     return (
                       <div key={cliente.id} className={`transition-colors ${row.vencido ? "bg-red-950/15" : ""}`}>
                         <div
-                          onClick={() => setExpandedCarteraCliente(expandido ? null : cliente.id)}
+                          onClick={() => {
+                            // Click en la fila: salta al chat del cliente
+                            if (convCliente) {
+                              selectConversation(convCliente);
+                              setTab("chats");
+                            } else {
+                              setExpandedCarteraCliente(expandido ? null : cliente.id);
+                            }
+                          }}
                           className={`p-3 md:p-4 flex flex-col md:flex-row md:items-center gap-3 cursor-pointer hover:bg-surface/40 transition-colors border-l-4 ${row.vencido ? "border-red-500" : "border-transparent"}`}
                         >
                           <div className="flex items-center gap-3 flex-1 min-w-0">
-                            <div className={`w-11 h-11 rounded-full bg-surface border ${row.vencido ? "border-red-700" : "border-emerald-800/60"} flex items-center justify-center font-bold ${row.vencido ? "text-red-300" : "text-emerald-300"} flex-shrink-0 overflow-hidden`}>
+                            <div className={`relative w-11 h-11 rounded-full bg-surface border ${row.vencido ? "border-red-700" : "border-emerald-800/60"} flex items-center justify-center font-bold ${row.vencido ? "text-red-300" : "text-emerald-300"} flex-shrink-0 overflow-hidden`}>
                               {cliente.foto_url ? <img src={cliente.foto_url} alt="" className="w-full h-full object-cover" /> : nombre.startsWith("+") ? <Phone className="w-4 h-4" /> : <span>{nombre.charAt(0).toUpperCase()}</span>}
+                              {noLeidosCliente > 0 && <span className="absolute -top-1 -right-1 bg-red-600 text-white text-[9px] min-w-[18px] h-[18px] px-1 rounded-full flex items-center justify-center font-bold border-2 border-surface">{noLeidosCliente > 99 ? "99+" : noLeidosCliente}</span>}
                             </div>
                             <div className="flex-1 min-w-0">
                               <div className="flex items-center gap-2 flex-wrap">
                                 <h3 className={`text-sm font-bold truncate ${row.vencido ? "text-red-200" : "text-gray-100"}`}>{nombre}</h3>
+                                {noLeidosCliente > 0 && <span className="bg-red-600 text-white text-[9px] min-w-[18px] h-[18px] px-1 rounded-full flex items-center justify-center font-bold">{noLeidosCliente > 99 ? "99+" : noLeidosCliente}</span>}
                                 <span className={`text-[9px] px-1.5 py-0.5 rounded-full border font-semibold ${estadoPill.cls}`}>{estadoPill.txt}</span>
                               </div>
                               <p className="text-[11px] text-gray-400 flex items-center gap-1 mt-0.5"><Phone className="w-3 h-3" /> {telefono}</p>
@@ -2423,7 +2507,7 @@ export default function CRMApp() {
                                   <p className={`text-xs font-bold ${row.vencido ? "text-red-300" : "text-amber-300"}`}>
                                     {new Date(pp.fecha_vencimiento + "T00:00:00").toLocaleDateString("es-CO", { day: "2-digit", month: "short" })}
                                   </p>
-                                  <p className="text-[10px] text-gray-400">{formatearMoneda(Number(pp.monto), monedaPP)}</p>
+                                  <p className={`text-sm font-extrabold ${row.vencido ? "text-red-200" : "text-gray-100"}`}>{formatearMoneda(Number(pp.monto), monedaPP)}</p>
                                   <p className="text-[9px] text-emerald-400">≈ ${Math.round(calcularCOP(pp)).toLocaleString("es-CO")} COP</p>
                                 </>
                               ) : (

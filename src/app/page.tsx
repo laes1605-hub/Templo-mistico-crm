@@ -39,6 +39,8 @@ export default function CRMApp() {
   const [showAiModal, setShowAiModal] = useState(false);
   const [adsNote, setAdsNote] = useState("");
   const [expandedCamp, setExpandedCamp] = useState<string | null>(null);
+  const [adsQuery, setAdsQuery] = useState("");
+  const [adsStatusFilter, setAdsStatusFilter] = useState<"all" | "ACTIVE" | "PAUSED">("all");
 
   const [isEditingNombre, setIsEditingNombre] = useState(false);
   const [tempNombre, setTempNombre] = useState("");
@@ -648,6 +650,17 @@ export default function CRMApp() {
   const leadsPerdidos = clientesNoSpam.filter((c) => c.estado === "perdido").length;
   const leadsNuevos = clientesNoSpam.filter((c) => c.estado === "nuevo_lead" || !c.estado).length;
 
+  const adsSpend = campanas.reduce((sum, c) => sum + Number(c.spend || 0), 0);
+  const adsLeads = campanas.reduce((sum, c) => sum + Number(c.leads || 0), 0);
+  const adsCpl = adsLeads ? adsSpend / adsLeads : 0;
+  const adsCtr = campanas.reduce((sum, c) => sum + Number(c.impressions || 0), 0) > 0
+    ? campanas.reduce((sum, c) => sum + Number(c.clicks || 0), 0) / campanas.reduce((sum, c) => sum + Number(c.impressions || 0), 0) * 100 : 0;
+  const campanasVisibles = campanas.filter(c =>
+    (adsStatusFilter === "all" || c.status === adsStatusFilter) &&
+    (c.name || "").toLowerCase().includes(adsQuery.toLowerCase())
+  );
+  const mejorCampana = [...campanas].filter(c => Number(c.leads || 0) > 0).sort((a, b) => Number(a.cpl || 0) - Number(b.cpl || 0))[0];
+
   const menuItems = [
     { id: "chats", icon: MessageSquare, label: "Chats" },
     { id: "pipeline", icon: Users, label: "Pipeline" },
@@ -1187,7 +1200,7 @@ export default function CRMApp() {
                   <h1 className="text-xl md:text-2xl font-bold text-gray-100 flex items-center gap-2"><TrendingUp className="text-purple-400 w-6 h-6" /> Gestor de Meta Ads (COP)</h1>
                   <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold border ${isLiveAds ? 'bg-emerald-950/60 text-emerald-400 border-emerald-800' : 'bg-amber-950/60 text-amber-400 border-amber-800'}`}>{isLiveAds ? 'Meta Live API' : 'Modo Demo'}</span>
                 </div>
-                <p className="text-xs md:text-sm text-gray-400">Control de campañas y costo por lead. Haz clic en una campaña para ver detalles.</p>
+                <p className="text-xs md:text-sm text-gray-400">Decisiones rápidas para proteger presupuesto y escalar lo que convierte.</p>
               </div>
               <div className="flex items-center gap-2">
                 <button onClick={fetchCampanasAds} disabled={loadingAds} className="bg-surface hover:bg-surfaceHover border border-border text-gray-300 px-3 py-2 rounded-xl text-xs font-medium flex items-center gap-1.5 transition-all">
@@ -1222,13 +1235,21 @@ export default function CRMApp() {
               </div>
             </div>
 
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+              <div className="lg:col-span-2 p-5 rounded-2xl border border-purple-800/40 bg-gradient-to-br from-purple-950/50 to-surface">
+                <div className="flex items-start justify-between gap-4"><div><p className="text-[10px] uppercase tracking-widest font-bold text-purple-300">Recomendación operativa</p><h3 className="mt-2 text-base font-bold text-white">{mejorCampana ? `Prioriza ${mejorCampana.name}` : "Conecta Meta para activar recomendaciones"}</h3><p className="text-xs text-gray-400 mt-1">{mejorCampana ? `Tiene el CPL más eficiente: $${Math.round(Number(mejorCampana.cpl || 0)).toLocaleString("es-CO")} COP. Valida calidad de leads antes de aumentar presupuesto.` : "El panel está listo para analizar tus campañas, presupuesto y conversiones."}</p></div><Sparkles className="w-6 h-6 text-purple-300 shrink-0" /></div>
+                <div className="mt-4 flex flex-wrap gap-2 text-[11px] text-gray-300"><span className="px-2.5 py-1 rounded-lg bg-white/5">CTR global: {adsCtr.toFixed(2)}%</span><span className="px-2.5 py-1 rounded-lg bg-white/5">CPL: ${Math.round(adsCpl).toLocaleString("es-CO")} COP</span><span className="px-2.5 py-1 rounded-lg bg-white/5">Revisa cada 24 h</span></div>
+              </div>
+              <div className="p-5 rounded-2xl border border-border bg-surface"><p className="text-[10px] uppercase tracking-widest font-bold text-gray-500">Checklist de optimización</p><div className="mt-3 space-y-2 text-xs text-gray-300"><p>✓ Comparar CPL por campaña</p><p>✓ Confirmar calidad en Chats</p><p>✓ Pausar anuncios sin señales</p><p>✓ Escalar gradualmente, no de golpe</p></div></div>
+            </div>
+
             <div className="bg-surface/50 border border-border rounded-2xl overflow-hidden shadow-sm">
-              <div className="p-4 border-b border-border bg-surface/80 flex justify-between items-center">
-                <h3 className="text-sm font-bold text-gray-200 uppercase tracking-wider">Campañas</h3>
-                <span className="text-xs text-gray-400">{campanas.length} en lista</span>
+              <div className="p-4 border-b border-border bg-surface/80 flex flex-col md:flex-row md:items-center justify-between gap-3">
+                <div><h3 className="text-sm font-bold text-gray-200 uppercase tracking-wider">Campañas</h3><p className="text-[11px] text-gray-500 mt-1">Ordena tu atención por estado y encuentra una campaña.</p></div>
+                <div className="flex items-center gap-2"><input value={adsQuery} onChange={e => setAdsQuery(e.target.value)} placeholder="Buscar campaña..." className="w-40 bg-background border border-border rounded-lg px-3 py-2 text-xs text-gray-200 outline-none focus:border-purple-500" /><select value={adsStatusFilter} onChange={e => setAdsStatusFilter(e.target.value as any)} className="bg-background border border-border rounded-lg px-2 py-2 text-xs text-gray-300"><option value="all">Todas</option><option value="ACTIVE">Activas</option><option value="PAUSED">Pausadas</option></select></div>
               </div>
               <div className="divide-y divide-border/40">
-                {campanas.map((c) => {
+                {campanasVisibles.map((c) => {
                   const isActive = c.status === "ACTIVE";
                   const isExpanded = expandedCamp === c.id;
                   return (

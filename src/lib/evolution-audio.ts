@@ -1,34 +1,39 @@
 /**
  * Envío de notas de voz por Evolution API (WhatsApp Personal / Baileys).
  *
- * Evolution v2 valida así el endpoint POST /message/sendWhatsAppAudio/:instance:
+ * El endpoint de audio cambió entre versiones/plantillas de Evolution:
  *
- *   if (file?.buffer || isURL(data.audio) || isBase64(data.audio)) { ... }
- *   else throw BadRequestException(
- *     "Owned media must be a url, base64, or valid file with buffer"
- *   );
+ *   - v2 clásico:  { number, audio, encoding }
+ *   - builds usadas en n8n/docs nuevos: { number, options: { encoding }, audioMessage: { audio } }
+ *   - algunas instalaciones aceptan multipart con el archivo en `file`, otras
+ *     lo esperan en `audio`.
  *
- * `isBase64()` de class-validator es estricto: rechaza data URIs
- * (`data:audio/ogg;base64,...`) y, en varias versiones, también el base64
- * largo de una nota de voz (el regex explota / devuelve false). Por eso un
- * JSON `{ audio: "<base64>" }` termina en 400 aunque el contenido sea válido.
+ * El error que reporta Evolution cuando no encuentra la fuente es:
+ *   "Owned media must be a url, base64, or valid file with buffer"
  *
- * El camino fiable es multipart/form-data con el campo `file`: multer llena
- * `file.buffer` y el validador ni mira el base64. El JSON se deja como
- * fallback para instancias viejas sin multer en esta ruta.
+ * Por eso no dependemos de una sola forma: probamos primero los JSON conocidos
+ * (base64 puro y data URI) y luego multipart. Si todos fallan, devolvemos un
+ * detalle con todos los intentos para que no quede oculto el error real detrás
+ * del primer 400.
  */
 
 export type EvolutionAudioResult =
   | { ok: true; via: "evolution"; ptt: boolean; detail?: string }
   | { ok: false; status: number; detail: string };
 
-const OWNED_MEDIA_ERROR = /owned media must be a url/i;
+type EvolutionResponse = { ok: boolean; status: number; text: string };
+
+type Attempt = {
+  label: string;
+  run: () => Promise<EvolutionResponse>;
+  ptt: boolean;
+};
 
 const fetchEvolution = async (
   url: string,
   apiKey: string,
   init: { body: BodyInit; json?: boolean },
-): Promise<{ ok: boolean; status: number; text: string }> => {
+): Promise<EvolutionResponse> => {
   const headers: Record<string, string> = { apikey: apiKey };
   if (init.json) headers["Content-Type"] = "application/json";
   const response = await fetch(url, { method: "POST", headers, body: init.body });
@@ -39,19 +44,26 @@ const fetchEvolution = async (
 const audioBlob = (bytes: Buffer, mime: string) =>
   new Blob([new Uint8Array(bytes)], { type: mime || "application/octet-stream" });
 
-/** Multipart: `file` es lo que multer de Evolution espera (`upload.single("file")`). */
-const buildAudioForm = (number: string, bytes: Buffer, mime: string, fileName: string, rawBase64: string) => {
+const buildMultipart = (opts: {
+  number: string;
+  bytes: Buffer;
+  mime: string;
+  fileName: string;
+  rawBase64?: string;
+  fileField: "file" | "audio" | "attachment";
+}) => {
   const form = new FormData();
-  form.set("number", number);
-  // encoding=true pide a Evolution que deje el audio en PTT (ogg/opus). Como
-  // string, porque multipart no tiene booleanos; es truthy del lado de ellos.
+  form.set("number", opts.number);
   form.set("encoding", "true");
-  // Por si multer no rellena file.buffer (proxy, versión vieja): el campo
-  // `audio` del DTO sigue disponible. Base64 puro, nunca data URI.
-  form.set("audio", rawBase64);
-  form.append("file", audioBlob(bytes, mime), fileName);
+  // Compatibilidad con builds que leen `options` aun en multipart.
+  form.set("options", JSON.stringify({ encoding: true, presence: "recording" }));
+  // Si la instalación no usa multer para esta ruta, al menos queda el DTO.
+  if (opts.rawBase64) form.set("audio", opts.rawBase64);
+  form.append(opts.fileField, audioBlob(opts.bytes, opts.mime), opts.fileName);
   return form;
 };
+
+const short = (text: string) => text.replace(/\s+/g, " ").trim().slice(0, 260);
 
 export async function sendEvolutionVoiceNote(opts: {
   evoUrl: string;
@@ -66,56 +78,133 @@ export async function sendEvolutionVoiceNote(opts: {
   const base = opts.evoUrl.replace(/\/$/, "");
   const pttUrl = `${base}/message/sendWhatsAppAudio/${instance}`;
   const mediaUrl = `${base}/message/sendMedia/${instance}`;
+  const mime = opts.mime || "audio/ogg";
   const rawBase64 = opts.bytes.toString("base64").replace(/\s+/g, "");
-  const dataUri = `data:${opts.mime || "audio/ogg"};base64,${rawBase64}`;
+  const dataUri = `data:${mime};base64,${rawBase64}`;
 
   if (!rawBase64 || !opts.bytes.length) {
     return { ok: false, status: 400, detail: "El audio está vacío." };
   }
 
-  // 1) Multipart PTT — evita isBase64 por completo.
-  const multipart = await fetchEvolution(pttUrl, opts.evoKey, {
-    body: buildAudioForm(opts.number, opts.bytes, opts.mime, opts.fileName, rawBase64),
-  });
-  if (multipart.ok) return { ok: true, via: "evolution", ptt: true, detail: "multipart" };
+  const jsonBodies: Array<{ label: string; body: Record<string, unknown> }> = [
+    // Evolution v2 clásico.
+    {
+      label: "json-top-audio-base64",
+      body: { number: opts.number, audio: rawBase64, encoding: true },
+    },
+    {
+      label: "json-top-audio-data-uri",
+      body: { number: opts.number, audio: dataUri, encoding: true },
+    },
+    // Evolution builds/documentación nueva (usado frecuentemente desde n8n).
+    {
+      label: "json-audioMessage-base64",
+      body: {
+        number: opts.number,
+        options: { encoding: true, presence: "recording" },
+        audioMessage: { audio: rawBase64 },
+      },
+    },
+    {
+      label: "json-audioMessage-data-uri",
+      body: {
+        number: opts.number,
+        options: { encoding: true, presence: "recording" },
+        audioMessage: { audio: dataUri },
+      },
+    },
+    // Variantes defensivas vistas en integraciones no oficiales.
+    {
+      label: "json-audioMessage-audio-with-mimetype",
+      body: {
+        number: opts.number,
+        audio: rawBase64,
+        mimetype: mime === "audio/ogg" ? "audio/ogg; codecs=opus" : mime,
+        fileName: opts.fileName,
+        options: { encoding: true, presence: "recording" },
+        audioMessage: { audio: rawBase64, mimetype: mime === "audio/ogg" ? "audio/ogg; codecs=opus" : mime, ptt: true },
+      },
+    },
+  ];
 
-  console.error("[evolution-audio] multipart sendWhatsAppAudio falló:", multipart.status, multipart.text.slice(0, 400));
+  const attempts: Attempt[] = [
+    ...jsonBodies.map((candidate) => ({
+      label: candidate.label,
+      ptt: true,
+      run: () => fetchEvolution(pttUrl, opts.evoKey, {
+        json: true,
+        body: JSON.stringify(candidate.body),
+      }),
+    })),
+    // Multipart como fallback: en algunas versiones el interceptor de multer
+    // está enlazado a `file`; en otras instalaciones personalizadas, a `audio`.
+    ...(["file", "audio", "attachment"] as const).map((fileField) => ({
+      label: `multipart-${fileField}`,
+      ptt: true,
+      run: () => fetchEvolution(pttUrl, opts.evoKey, {
+        body: buildMultipart({
+          number: opts.number,
+          bytes: opts.bytes,
+          mime,
+          fileName: opts.fileName,
+          rawBase64,
+          fileField,
+        }),
+      }),
+    })),
+  ];
 
-  // 2) JSON con base64 puro (lo que Evolution realmente valida con isBase64).
-  const jsonRaw = await fetchEvolution(pttUrl, opts.evoKey, {
-    json: true,
-    body: JSON.stringify({ number: opts.number, audio: rawBase64, encoding: true }),
-  });
-  if (jsonRaw.ok) return { ok: true, via: "evolution", ptt: true, detail: "json-base64" };
-
-  console.error("[evolution-audio] JSON base64 sendWhatsAppAudio falló:", jsonRaw.status, jsonRaw.text.slice(0, 400));
-
-  // 3) JSON con data URI — es lo que muestra la documentación, y algunas
-  //    versiones lo aceptan aunque isBase64 oficialmente no.
-  if (!OWNED_MEDIA_ERROR.test(jsonRaw.text)) {
-    const jsonUri = await fetchEvolution(pttUrl, opts.evoKey, {
-      json: true,
-      body: JSON.stringify({ number: opts.number, audio: dataUri, encoding: true }),
-    });
-    if (jsonUri.ok) return { ok: true, via: "evolution", ptt: true, detail: "json-data-uri" };
-    console.error("[evolution-audio] JSON data-URI sendWhatsAppAudio falló:", jsonUri.status, jsonUri.text.slice(0, 400));
+  const failures: string[] = [];
+  for (const attempt of attempts) {
+    const result = await attempt.run();
+    if (result.ok) {
+      return { ok: true, via: "evolution", ptt: attempt.ptt, detail: attempt.label };
+    }
+    const failure = `${attempt.label}: HTTP ${result.status}${result.text ? ` ${short(result.text)}` : ""}`;
+    failures.push(failure);
+    console.error(`[evolution-audio] ${failure}`);
   }
 
-  // 4) Último recurso: sendMedia multipart. Llega como archivo de audio, no
-  //    como burbuja PTT, pero al menos no se pierde la nota.
-  const mediaForm = new FormData();
-  mediaForm.set("number", opts.number);
-  mediaForm.set("mediatype", "audio");
-  mediaForm.set("mimetype", opts.mime || "audio/ogg");
-  mediaForm.set("fileName", opts.fileName);
-  mediaForm.set("media", rawBase64);
-  mediaForm.append("file", audioBlob(opts.bytes, opts.mime), opts.fileName);
+  // Último recurso: sendMedia. Llega como archivo de audio, no como burbuja PTT,
+  // pero evita perder la nota si la ruta PTT de la instancia está rota.
+  const mediaBodies: Array<{ label: string; body: Record<string, unknown> }> = [
+    {
+      label: "sendMedia-media-base64",
+      body: {
+        number: opts.number,
+        mediatype: "audio",
+        mimetype: mime,
+        fileName: opts.fileName,
+        media: rawBase64,
+      },
+    },
+    {
+      label: "sendMedia-media-data-uri",
+      body: {
+        number: opts.number,
+        mediatype: "audio",
+        mimetype: mime,
+        fileName: opts.fileName,
+        media: dataUri,
+      },
+    },
+  ];
 
-  const media = await fetchEvolution(mediaUrl, opts.evoKey, { body: mediaForm });
-  if (media.ok) return { ok: true, via: "evolution", ptt: false, detail: "sendMedia" };
+  for (const candidate of mediaBodies) {
+    const media = await fetchEvolution(mediaUrl, opts.evoKey, {
+      json: true,
+      body: JSON.stringify(candidate.body),
+    });
+    if (media.ok) return { ok: true, via: "evolution", ptt: false, detail: candidate.label };
+    const failure = `${candidate.label}: HTTP ${media.status}${media.text ? ` ${short(media.text)}` : ""}`;
+    failures.push(failure);
+    console.error(`[evolution-audio] ${failure}`);
+  }
 
-  const detail = (multipart.text || jsonRaw.text || media.text).slice(0, 500);
-  const status = multipart.status || jsonRaw.status || media.status || 502;
-  console.error("[evolution-audio] todos los intentos fallaron:", status, detail);
-  return { ok: false, status, detail };
+  const lastStatus = Number((failures[failures.length - 1] || "").match(/HTTP (\d+)/)?.[1] || 502);
+  return {
+    ok: false,
+    status: lastStatus,
+    detail: failures.slice(0, 10).join(" | ").slice(0, 1200),
+  };
 }

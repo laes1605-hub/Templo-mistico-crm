@@ -274,7 +274,7 @@ export default function CRMApp() {
       // audio simple en vez de burbuja de nota de voz.
       const esNotaDeVoz = Boolean(fileBase64 && ((fileMime || "").startsWith("audio/") || String(fileName || "").toLowerCase().includes("nota_de_voz")));
       if (esNotaDeVoz && result.voiceNote === false) {
-        setSendNotice("La nota se envió, pero llegó como audio simple en vez de nota de voz (el token de Chatwoot debe ser de administrador, o Meta rechazó el modo nota de voz).");
+        setSendNotice("La nota se envió, pero llegó como audio simple en vez de nota de voz nativa.");
       }
     } catch (error: any) {
       const message = error.message || "No se pudo enviar el mensaje.";

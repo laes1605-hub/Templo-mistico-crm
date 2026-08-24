@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { supabase } from "../../../lib/supabase";
 import { remuxWebmToOgg } from "../../../lib/webm-to-ogg";
 import { sendVoiceNoteViaMeta } from "../../../lib/meta-voice-note";
+import { sendEvolutionVoiceNote } from "../../../lib/evolution-audio";
 
 const cleanBase64 = (value: unknown) => {
   if (!value) return null;
@@ -69,6 +70,7 @@ export async function POST(req: Request) {
     // "chatwoot" = adjunto de Chatwoot (nota de voz sólo si su versión la soporta),
     // "evolution" = sendWhatsAppAudio (PTT nativo de Baileys).
     let envioAudioVia: "meta_direct" | "chatwoot" | "evolution" | null = null;
+    let evolutionIsPtt = false;
 
     if (fuente === "meta_business" && chatwootConvId) {
       if (!chatwootToken) {
@@ -158,61 +160,83 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: "Falta EVOLUTION_API_KEY para enviar por WhatsApp Personal." }, { status: 500 });
       }
 
-      let endpoint = `${evoUrl}/message/sendText/personal`;
-      let payload: Record<string, unknown> = { number: cleanNumber, text: texto || "" };
       if (pureBase64 && isAudio) {
         tipoGuardado = "audio";
-        // /message/sendWhatsAppAudio es el endpoint PTT de Evolution: sale como
-        // nota de voz nativa (Baileys ptt). Sólo campos documentados del DTO.
-        endpoint = `${evoUrl}/message/sendWhatsAppAudio/personal`;
         let audioMime = mime;
-        let audioBase64 = pureBase64;
-        let bytes: Buffer | null = null;
+        let outgoingName = safeFileName(fileName, mime);
+        let bytes: Buffer;
         try {
           bytes = Buffer.from(pureBase64, "base64");
         } catch {
-          // ignore
+          return NextResponse.json({ error: "El archivo de audio no tiene un formato válido." }, { status: 400 });
+        }
+        if (!bytes.length) {
+          return NextResponse.json({ error: "El archivo de audio está vacío." }, { status: 400 });
         }
 
         if (mime.includes("webm") || isWebmBuffer(bytes)) {
           try {
-            const converted = remuxWebmToOgg(bytes!, { prerollMs: WEBM_OGG_PREROLL_MS });
+            bytes = remuxWebmToOgg(bytes, { prerollMs: WEBM_OGG_PREROLL_MS });
             audioMime = "audio/ogg";
-            audioBase64 = converted.toString("base64");
-            storedFileBase64 = `data:${audioMime};base64,${audioBase64}`;
+            outgoingName = /\.webm$/i.test(outgoingName) ? outgoingName.replace(/\.webm$/i, ".ogg") : `${outgoingName.replace(/\.[^.]+$/, "")}.ogg`;
+            storedFileBase64 = `data:${audioMime};base64,${bytes.toString("base64")}`;
           } catch (conversionError: any) {
             console.error("WebM a OGG para Evolution falló:", conversionError?.message || conversionError);
             return NextResponse.json({ error: `No se pudo preparar la nota de voz para WhatsApp (${conversionError?.message || "formato inválido"}).` }, { status: 500 });
           }
         }
 
-        // Evolution acepta una URL o base64 puro. Algunas versiones anuncian
-        // soporte para data URI pero su validador de "Owned media" la rechaza
-        // antes de decodificarla con el error 400. Enviar únicamente el contenido
-        // base64 también evita que el MIME forme parte de lo que intenta validar.
-        const normalizedAudioBase64 = audioBase64.replace(/\s+/g, "");
-        payload = {
+        const sent = await sendEvolutionVoiceNote({
+          evoUrl,
+          evoKey,
+          instance: "personal",
           number: cleanNumber,
-          audio: normalizedAudioBase64,
-          delay: 1200,
-        };
+          bytes,
+          mime: audioMime,
+          fileName: outgoingName,
+        });
+        if (sent.ok === false) {
+          return NextResponse.json({
+            error: `WhatsApp Personal no aceptó el audio (${sent.status}). ${sent.detail}`,
+          }, { status: 502 });
+        }
         envioAudioVia = "evolution";
+        evolutionIsPtt = sent.ptt;
+        if (!sent.ptt) {
+          console.warn("[send-message] Evolution aceptó el audio por sendMedia (no PTT):", sent.detail);
+        }
       } else if (pureBase64) {
         let mediatype = "document";
         if (mime.startsWith("image/")) { mediatype = "image"; tipoGuardado = "imagen"; }
         else if (mime.startsWith("video/")) { mediatype = "video"; tipoGuardado = "video"; }
-        payload = { number: cleanNumber, mediatype, mimetype: mime, fileName: safeFileName(fileName, mime), caption: texto || "", media: pureBase64 };
-      }
-
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", apikey: evoKey },
-        body: JSON.stringify(payload),
-      });
-      if (!response.ok) {
-        const detail = (await response.text()).slice(0, 500);
-        console.error("Evolution rejected outgoing message:", response.status, detail);
-        return NextResponse.json({ error: `WhatsApp Personal no aceptó el ${isAudio ? "audio" : "mensaje"} (${response.status}). ${detail}` }, { status: 502 });
+        const response = await fetch(`${evoUrl}/message/sendMedia/personal`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", apikey: evoKey },
+          body: JSON.stringify({
+            number: cleanNumber,
+            mediatype,
+            mimetype: mime,
+            fileName: safeFileName(fileName, mime),
+            caption: texto || "",
+            media: pureBase64,
+          }),
+        });
+        if (!response.ok) {
+          const detail = (await response.text()).slice(0, 500);
+          console.error("Evolution rejected outgoing media:", response.status, detail);
+          return NextResponse.json({ error: `WhatsApp Personal no aceptó el mensaje (${response.status}). ${detail}` }, { status: 502 });
+        }
+      } else {
+        const response = await fetch(`${evoUrl}/message/sendText/personal`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", apikey: evoKey },
+          body: JSON.stringify({ number: cleanNumber, text: texto || "" }),
+        });
+        if (!response.ok) {
+          const detail = (await response.text()).slice(0, 500);
+          console.error("Evolution rejected outgoing message:", response.status, detail);
+          return NextResponse.json({ error: `WhatsApp Personal no aceptó el mensaje (${response.status}). ${detail}` }, { status: 502 });
+        }
       }
     }
 
@@ -239,7 +263,7 @@ export async function POST(req: Request) {
     // `voiceNote` = sabemos con certeza que salió como nota de voz nativa
     // (envío directo a Meta o PTT de Evolution). Con el fallback de Chatwoot no
     // podemos saberlo: depende de la versión instalada (>= 4.15.0).
-    const voiceNote = envioAudioVia === "meta_direct" || envioAudioVia === "evolution";
+    const voiceNote = envioAudioVia === "meta_direct" || (envioAudioVia === "evolution" && evolutionIsPtt);
 
     return NextResponse.json({ success: true, voiceNote, via: envioAudioVia });
   } catch (error: any) {

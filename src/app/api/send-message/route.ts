@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { supabase } from "../../../lib/supabase";
 import { remuxWebmToOgg } from "../../../lib/webm-to-ogg";
+import { sendVoiceNoteViaMeta } from "../../../lib/meta-voice-note";
 
 const cleanBase64 = (value: unknown) => {
   if (!value) return null;
@@ -17,6 +18,9 @@ const safeFileName = (name: unknown, mime: string) => {
   const cleaned = String(name || `audio.${fallbackExtension}`).replace(/[^a-zA-Z0-9._-]/g, "_");
   return cleaned || `archivo.${fallbackExtension}`;
 };
+
+const isWebmBuffer = (bytes: Buffer | null) =>
+  Boolean(bytes && bytes.length >= 4 && bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3);
 
 export async function POST(req: Request) {
   try {
@@ -61,6 +65,10 @@ export async function POST(req: Request) {
     }
 
     let tipoGuardado = isAudio ? "audio" : "texto";
+    // Cómo terminó saliendo el audio: "meta_direct" = nota de voz nativa vía Graph API,
+    // "chatwoot" = adjunto de Chatwoot (nota de voz sólo si su versión la soporta),
+    // "evolution" = sendWhatsAppAudio (PTT nativo de Baileys).
+    let envioAudioVia: "meta_direct" | "chatwoot" | "evolution" | null = null;
 
     if (fuente === "meta_business" && chatwootConvId) {
       if (!chatwootToken) {
@@ -68,7 +76,7 @@ export async function POST(req: Request) {
       }
 
       const endpoint = `${chatwootUrl}/api/v1/accounts/1/conversations/${chatwootConvId}/messages`;
-      let response: Response;
+      let response: Response | null = null;
       if (pureBase64) {
         let bytes: Buffer;
         try {
@@ -81,8 +89,7 @@ export async function POST(req: Request) {
         let outgoingMime = mime;
         let outgoingName = safeFileName(fileName, mime);
 
-        const isWebmBuffer = bytes.length >= 4 && bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3;
-        if (isAudio && (mime.includes("webm") || isWebmBuffer)) {
+        if (isAudio && (mime.includes("webm") || isWebmBuffer(bytes))) {
           try {
             bytes = remuxWebmToOgg(bytes, { prerollMs: WEBM_OGG_PREROLL_MS });
             outgoingMime = "audio/ogg";
@@ -94,24 +101,44 @@ export async function POST(req: Request) {
           }
         }
 
-        const form = new FormData();
-        form.set("content", texto?.trim() || (isAudio ? "🎤 Nota de voz" : "Archivo enviado"));
-        form.set("message_type", "outgoing");
-        form.set("private", "false");
-        
-        // WhatsApp Business Cloud API requires is_voice_message = true and audio/ogg; codecs=opus
-        if (isAudio) {
-          form.set("is_voice_message", "true");
+        if (isAudio && outgoingMime === "audio/ogg") {
+          const direct = await sendVoiceNoteViaMeta({
+            chatwootUrl,
+            chatwootToken,
+            chatwootConversationId: chatwootConvId,
+            fallbackToDigits: cleanNumber,
+            ogg: bytes,
+          });
+          if (direct.ok) {
+            envioAudioVia = "meta_direct";
+          } else {
+            // No es fatal: reintentamos por el camino del adjunto de Chatwoot,
+            // que en versiones >= 4.15.0 también manda notas de voz nativas.
+            const reason = (direct as { reason?: string }).reason || "sin detalle";
+            console.error("[send-message] Envío directo a Meta falló, se reintenta por Chatwoot:", reason);
+          }
         }
-        
-        const attachmentMime = outgoingMime === "audio/ogg" ? "audio/ogg; codecs=opus" : outgoingMime;
-        form.append("attachments[]", new Blob([new Uint8Array(bytes)], { type: attachmentMime }), outgoingName);
-        
-        response = await fetch(endpoint, {
-          method: "POST",
-          headers: { api_access_token: chatwootToken },
-          body: form,
-        });
+
+        if (!envioAudioVia) {
+          const form = new FormData();
+          form.set("content", texto?.trim() || (isAudio ? "🎤 Nota de voz" : "Archivo enviado"));
+          form.set("message_type", "outgoing");
+          form.set("private", "false");
+
+          // WhatsApp Business Cloud API requires is_voice_message = true and audio/ogg; codecs=opus
+          if (isAudio) {
+            form.set("is_voice_message", "true");
+          }
+
+          const attachmentMime = outgoingMime === "audio/ogg" ? "audio/ogg; codecs=opus" : outgoingMime;
+          form.append("attachments[]", new Blob([new Uint8Array(bytes)], { type: attachmentMime }), outgoingName);
+
+          response = await fetch(endpoint, {
+            method: "POST",
+            headers: { api_access_token: chatwootToken },
+            body: form,
+          });
+        }
       } else {
         response = await fetch(endpoint, {
           method: "POST",
@@ -120,11 +147,12 @@ export async function POST(req: Request) {
         });
       }
 
-      if (!response.ok) {
+      if (response && !response.ok) {
         const detail = (await response.text()).slice(0, 500);
         console.error("Chatwoot rejected outgoing message:", response.status, detail);
         return NextResponse.json({ error: `WhatsApp Business no aceptó el ${isAudio ? "audio" : "mensaje"} (${response.status}). ${detail}` }, { status: 502 });
       }
+      if (!envioAudioVia && isAudio && pureBase64) envioAudioVia = "chatwoot";
     } else {
       if (!evoKey) {
         return NextResponse.json({ error: "Falta EVOLUTION_API_KEY para enviar por WhatsApp Personal." }, { status: 500 });
@@ -134,6 +162,8 @@ export async function POST(req: Request) {
       let payload: Record<string, unknown> = { number: cleanNumber, text: texto || "" };
       if (pureBase64 && isAudio) {
         tipoGuardado = "audio";
+        // /message/sendWhatsAppAudio es el endpoint PTT de Evolution: sale como
+        // nota de voz nativa (Baileys ptt). Sólo campos documentados del DTO.
         endpoint = `${evoUrl}/message/sendWhatsAppAudio/personal`;
         let audioMime = mime;
         let audioBase64 = pureBase64;
@@ -144,8 +174,7 @@ export async function POST(req: Request) {
           // ignore
         }
 
-        const isWebmBuffer = Boolean(bytes && bytes.length >= 4 && bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3);
-        if (mime.includes("webm") || isWebmBuffer) {
+        if (mime.includes("webm") || isWebmBuffer(bytes)) {
           try {
             const converted = remuxWebmToOgg(bytes!, { prerollMs: WEBM_OGG_PREROLL_MS });
             audioMime = "audio/ogg";
@@ -158,19 +187,14 @@ export async function POST(req: Request) {
         }
 
         const audioDataUri = `data:${audioMime};base64,${audioBase64}`;
-        // ptt: true tells Evolution API / Baileys to send as a native Push-To-Talk voice note
         payload = {
           number: cleanNumber,
           audio: audioDataUri,
           encoding: true,
-          ptt: true,
-          options: {
-            delay: 1200,
-            presence: "recording",
-            encoding: true,
-            ptt: true,
-          },
+          delay: 1200,
+          presence: "recording",
         };
+        envioAudioVia = "evolution";
       } else if (pureBase64) {
         let mediatype = "document";
         if (mime.startsWith("image/")) { mediatype = "image"; tipoGuardado = "imagen"; }
@@ -205,12 +229,17 @@ export async function POST(req: Request) {
       if (messageError) console.error("Could not save outgoing message:", messageError.message);
 
       await supabase.from("conversaciones").update({
-        ultimo_mensaje: contenidoFinal,
+        ultimo_mensaje: contenidoFinal === "[audio]" ? "🎤 Nota de voz" : contenidoFinal,
         ultimo_mensaje_en: new Date().toISOString()
       }).eq("id", conversacionId);
     }
 
-    return NextResponse.json({ success: true });
+    // `voiceNote` = sabemos con certeza que salió como nota de voz nativa
+    // (envío directo a Meta o PTT de Evolution). Con el fallback de Chatwoot no
+    // podemos saberlo: depende de la versión instalada (>= 4.15.0).
+    const voiceNote = envioAudioVia === "meta_direct" || envioAudioVia === "evolution";
+
+    return NextResponse.json({ success: true, voiceNote, via: envioAudioVia });
   } catch (error: any) {
     console.error("Error en send-message:", error);
     return NextResponse.json({ error: error.message || "No se pudo enviar el mensaje." }, { status: 500 });

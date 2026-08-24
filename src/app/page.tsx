@@ -45,6 +45,7 @@ export default function CRMApp() {
   const [nuevoMensaje, setNuevoMensaje] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [sendError, setSendError] = useState("");
+  const [sendNotice, setSendNotice] = useState("");
   const [loadingChats, setLoadingChats] = useState(true);
   const [filtroCanal, setFiltroCanal] = useState<"todos" | "evolution" | "meta_business" | "spam">("todos");
   const [showMobileDetails, setShowMobileDetails] = useState(false);
@@ -255,6 +256,7 @@ export default function CRMApp() {
     if (!selectedConv) return;
     setIsSending(true);
     setSendError("");
+    setSendNotice("");
     try {
       const response = await fetch("/api/send-message", {
         method: "POST",
@@ -268,6 +270,12 @@ export default function CRMApp() {
       });
       const result = await response.json().catch(() => ({}));
       if (!response.ok || !result.success) throw new Error(result.error || "No se pudo enviar el mensaje.");
+      // Aviso no bloqueante: la nota salió, pero WhatsApp la va a mostrar como
+      // audio simple en vez de burbuja de nota de voz.
+      const esNotaDeVoz = Boolean(fileBase64 && ((fileMime || "").startsWith("audio/") || String(fileName || "").toLowerCase().includes("nota_de_voz")));
+      if (esNotaDeVoz && result.voiceNote === false) {
+        setSendNotice("La nota se envió, pero llegó como audio simple en vez de nota de voz (el token de Chatwoot debe ser de administrador, o Meta rechazó el modo nota de voz).");
+      }
     } catch (error: any) {
       const message = error.message || "No se pudo enviar el mensaje.";
       setSendError(message);
@@ -794,6 +802,7 @@ export default function CRMApp() {
                         ) : (
                           <button type="button" onClick={startRecording} disabled={clienteActual.es_spam || isSending || isPreparingRecording} className="bg-surface border border-border text-purple-400 hover:bg-purple-600 hover:text-white hover:border-purple-600 p-2.5 rounded-full transition-colors disabled:opacity-50"><Mic className="w-5 h-5" /></button>
                         )}
+                        {sendNotice && <p className="w-full text-xs text-amber-400 px-2">{sendNotice}</p>}
                         {sendError && <p className="w-full text-xs text-red-400 px-2">{sendError}</p>}
                       </form>
                     )}

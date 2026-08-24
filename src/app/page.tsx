@@ -106,6 +106,19 @@ export default function CRMApp() {
   const [comisionDefault, setComisionDefault] = useState(7);
   const [showDivisaConfig, setShowDivisaConfig] = useState(false);
 
+  // SUBCATEGORÍAS CHATS: filtro por etapa del pipeline (Nuevo Lead por defecto)
+  const [chatCategoria, setChatCategoria] = useState<string>("nuevo_lead");
+
+  // CARTERA POR COBRAR (control de próximos pagos)
+  const [carteraGrupoFiltro, setCarteraGrupoFiltro] = useState<"personal" | "templo" | "todas">("personal");
+  const [nowTick, setNowTick] = useState<number>(Date.now());
+  const [expandedCarteraCliente, setExpandedCarteraCliente] = useState<string | null>(null);
+  const [abonoModalCliente, setAbonoModalCliente] = useState<any | null>(null); // { cliente, proximoPago }
+  const [abonoMonto, setAbonoMonto] = useState("");
+  const [reprogramarModal, setReprogramarModal] = useState<any | null>(null); // { pago, nombre }
+  const [nuevaFechaPago, setNuevaFechaPago] = useState("");
+  const [searchCartera, setSearchCartera] = useState("");
+
   const [nuevaTareaTitulo, setNuevaTareaTitulo] = useState("");
   const [nuevaTareaFecha, setNuevaTareaFecha] = useState("");
 
@@ -164,6 +177,24 @@ export default function CRMApp() {
     const cleanup = initTheme();
     return cleanup;
   }, []);
+
+  // TICKER: mantiene la cartera y los días restantes actualizados día a día
+  useEffect(() => {
+    const t = setInterval(() => setNowTick(Date.now()), 60_000);
+    return () => clearInterval(t);
+  }, []);
+
+  // Mantener el filtro de cartera sincronizado con el grupo activo (Personal/Templo)
+  useEffect(() => {
+    setCarteraGrupoFiltro(grupoActivo);
+  }, [grupoActivo]);
+
+  // Si la subcategoría de chat seleccionada no existe en el grupo activo, volver a Nuevos Leads
+  useEffect(() => {
+    const claveNuevoLead = grupoActivo === "templo" ? "nuevo_lead_templo" : "nuevo_lead";
+    const existe = pipelineEtapas.find((e) => e.grupo === grupoActivo && e.clave === chatCategoria);
+    if (!existe && chatCategoria !== claveNuevoLead) setChatCategoria(claveNuevoLead);
+  }, [grupoActivo, pipelineEtapas]);
 
   // ===================== NOTIFICACIONES DE MENSAJES ENTRANTES =====================
   const conversacionesRef = useRef<any[]>([]);
@@ -324,6 +355,7 @@ export default function CRMApp() {
 
   function cambiarGrupo(grupo: "personal" | "templo") {
     setGrupoActivo(grupo);
+    setChatCategoria(grupo === "templo" ? "nuevo_lead_templo" : "nuevo_lead");
     setSelectedConv(null);
     setFiltroCanal("todos");
     setSearchChats("");
@@ -421,6 +453,105 @@ export default function CRMApp() {
     const simbolos: any = { COP: "$", PYG: "₲", USD: "US$", EUR: "€", BRL: "R$", MXN: "$" };
     const simbolo = simbolos[moneda] || moneda;
     return `${simbolo} ${Number(monto).toLocaleString("es-CO")} ${moneda}`;
+  }
+
+  // ===================== CARTERA POR COBRAR: HELPERS =====================
+  function diasHasta(fechaISO: string): number {
+    if (!fechaISO) return 9999;
+    const hoy = new Date();
+    hoy.setHours(0, 0, 0, 0);
+    const f = new Date(fechaISO.length <= 10 ? `${fechaISO}T00:00:00` : fechaISO);
+    f.setHours(0, 0, 0, 0);
+    return Math.round((f.getTime() - hoy.getTime()) / 86400000);
+  }
+
+  function getGrupoCliente(cliente: any): "personal" | "templo" {
+    if (!cliente) return "personal";
+    if (cliente.grupo === "templo" || cliente.grupo === "personal") return cliente.grupo;
+    // Fallback: si el cliente no tiene grupo, deducirlo de su conversación
+    const conv = conversaciones.find((c) => c.cliente_id === cliente.id);
+    if (conv?.fuente === "meta_business") return "templo";
+    return "personal";
+  }
+
+  const clientePorId = (id: string) => todosClientes.find((c) => c.id === id);
+
+  // Registrar un abono: se descuenta del/los pagos pendientes más antiguos y
+  // se actualiza automáticamente la fecha del siguiente pago.
+  async function registrarAbono(clienteId: string, montoAbono: number) {
+    if (!(montoAbono > 0)) return;
+    const pendientes = todosPagos
+      .filter((p) => p.cliente_id === clienteId && p.estado === "pendiente")
+      .sort((a, b) => new Date(a.fecha_vencimiento).getTime() - new Date(b.fecha_vencimiento).getTime());
+    if (pendientes.length === 0) return;
+    // El abono se aplica solo en la divisa del pago más antiguo (no se mezclan divisas)
+    const monedaAbono = pendientes[0].moneda || "COP";
+    let restante = montoAbono;
+    const tareas: any[] = [];
+    for (const pago of pendientes) {
+      if (restante <= 0) break;
+      if ((pago.moneda || "COP") !== monedaAbono) break;
+      const montoPago = Number(pago.monto) || 0;
+      if (restante >= montoPago) {
+        // Se paga la cuota completa
+        tareas.push(
+          supabase
+            .from("pagos")
+            .update({ estado: "pagado", fecha_pago: new Date().toISOString().split("T")[0] })
+            .eq("id", pago.id)
+        );
+        restante -= montoPago;
+      } else {
+        // Abono parcial: se reduce el monto pendiente de la cuota
+        const nuevoMonto = Math.round((montoPago - restante) * 100) / 100;
+        const factor = montoPago > 0 ? nuevoMonto / montoPago : 0;
+        const nuevoConvertido = pago.monto_convertido_cop != null ? Math.round(Number(pago.monto_convertido_cop) * factor) : null;
+        tareas.push(
+          supabase
+            .from("pagos")
+            .update({ monto: nuevoMonto, monto_convertido_cop: nuevoConvertido })
+            .eq("id", pago.id)
+        );
+        restante = 0;
+      }
+    }
+    await Promise.all(tareas);
+    fetchTodosPagos();
+    setAbonoModalCliente(null);
+    setAbonoMonto("");
+  }
+
+  // Reprogramar la fecha de vencimiento de un pago
+  async function reprogramarPago(pagoId: string, nuevaFecha: string) {
+    if (!nuevaFecha) return;
+    await supabase.from("pagos").update({ fecha_vencimiento: nuevaFecha }).eq("id", pagoId);
+    setReprogramarModal(null);
+    setNuevaFechaPago("");
+    fetchTodosPagos();
+  }
+
+  // Eliminar de la cartera por abandono: cancela/borra los pendientes y marca perdido
+  async function abandonarCartera(cliente: any) {
+    const nombre = getDisplayName(cliente);
+    if (!confirm(`¿Eliminar a "${nombre}" de la cartera por abandono?\n\nSe eliminarán sus pagos pendientes y el cliente pasará a estado "Perdido".`)) return;
+    const pendientes = todosPagos.filter((p) => p.cliente_id === cliente.id && p.estado === "pendiente");
+    let fallbackDelete = false;
+    for (const p of pendientes) {
+      const { error } = await supabase.from("pagos").update({ estado: "cancelado" }).eq("id", p.id);
+      if (error) fallbackDelete = true;
+    }
+    if (fallbackDelete) {
+      await supabase.from("pagos").delete().eq("cliente_id", cliente.id).eq("estado", "pendiente");
+    }
+    const grupoCli = getGrupoCliente(cliente);
+    await supabase.from("clientes").update({
+      estado: grupoCli === "templo" ? "perdido_templo" : "perdido",
+      notas_personales: `${cliente.notas_personales ? cliente.notas_personales + "\n" : ""}[${new Date().toLocaleDateString("es-CO")}] ⚠️ Abandonó cartera (pagos pendientes eliminados)`,
+      actualizado_en: new Date().toISOString(),
+    }).eq("id", cliente.id);
+    fetchTodosPagos();
+    fetchTodosClientes();
+    fetchConversaciones();
   }
 
   async function fetchConversaciones() {
@@ -575,6 +706,9 @@ export default function CRMApp() {
   async function selectConversation(conv: any) {
     setSelectedConv(conv);
     setClienteActual(conv.clientes);
+    // Al abrir un chat, mostrar su categoría en la subpestaña correspondiente
+    const estCliente = conv.clientes?.estado || (conv.clientes?.grupo === "templo" || conv.fuente === "meta_business" ? "nuevo_lead_templo" : "nuevo_lead");
+    setChatCategoria(estCliente);
     setIsEditingNombre(false);
     setIsEditingNotas(false);
     setTempNotas(conv.clientes?.notas_personales || "");
@@ -1149,6 +1283,9 @@ export default function CRMApp() {
     if (isArchivada) return false;
     if (filtroCanal === "spam") return esSpam;
     if (esSpam) return false;
+    // Filtrar por subcategoría seleccionada (por defecto: solo Nuevos Leads)
+    const estadoCliente = c.clientes?.estado || (grupoActivo === "templo" ? "nuevo_lead_templo" : "nuevo_lead");
+    if (tab === "chats" && estadoCliente !== chatCategoria) return false;
     const matchSearch = !searchChats ||
       getDisplayName(c.clientes, c).toLowerCase().includes(searchChats.toLowerCase()) ||
       (c.numero_whatsapp || "").includes(searchChats) ||
@@ -1178,13 +1315,6 @@ export default function CRMApp() {
   });
 
   const ahora = new Date(); const inicioMes = new Date(ahora.getFullYear(), ahora.getMonth(), 1);
-  const clientesNoSpam = todosClientes.filter((c) => !c.es_spam);
-  const totalAtendidos = clientesNoSpam.length;
-  const totalConvertidos = clientesNoSpam.filter((c) => ["pago_recibido", "trabajo_proceso", "trabajo_completado"].includes(c.estado)).length;
-  const efectividad = totalAtendidos > 0 ? ((totalConvertidos / totalAtendidos) * 100).toFixed(1) : "0";
-
-  // Calculos de cartera con conversión a COP
-  const pagosDelMes = todosPagos.filter((p) => p.estado === "pagado" && p.fecha_pago && new Date(p.fecha_pago) >= inicioMes);
   
   function calcularCOP(pago: any) {
     if (pago.monto_convertido_cop != null) return Number(pago.monto_convertido_cop);
@@ -1194,10 +1324,68 @@ export default function CRMApp() {
     return convertirACOP(Number(pago.monto), moneda, tasa, comision);
   }
 
+  // ===== CARTERA REAL POR COBRAR (control de próximos pagos) =====
+  // Cada fila = cliente con al menos un pago pendiente. De aquí salen TODAS las estadísticas.
+  const carteraGrupoOk = (cliente: any) => carteraGrupoFiltro === "todas" || getGrupoCliente(cliente) === carteraGrupoFiltro;
+
+  const clientesCartera = todosClientes
+    .filter((c) => !c.es_spam && carteraGrupoOk(c))
+    .map((cliente) => {
+      const pagosCliente = todosPagos.filter((p) => p.cliente_id === cliente.id);
+      const pendientes = pagosCliente
+        .filter((p) => p.estado === "pendiente")
+        .sort((a, b) => new Date(a.fecha_vencimiento).getTime() - new Date(b.fecha_vencimiento).getTime());
+      const proximoPago = pendientes[0] || null;
+      const diasRest = proximoPago ? diasHasta(proximoPago.fecha_vencimiento) : null;
+      const totalServicioCOP = pagosCliente.filter((p) => p.estado !== "cancelado").reduce((s, p) => s + calcularCOP(p), 0);
+      const pendienteCOP = pendientes.reduce((s, p) => s + calcularCOP(p), 0);
+      const pagadoCOP = pagosCliente.filter((p) => p.estado === "pagado").reduce((s, p) => s + calcularCOP(p), 0);
+      return {
+        cliente,
+        pagos: pagosCliente,
+        pendientes,
+        proximoPago,
+        diasRest,
+        vencido: diasRest !== null && diasRest < 0,
+        venceHoy: diasRest === 0,
+        totalServicioCOP,
+        pendienteCOP,
+        pagadoCOP,
+      };
+    })
+    .filter((r) => r.pendientes.length > 0) // Solo los que deben = cartera real por cobrar
+    .filter((r) => {
+      const q = searchCartera.trim().toLowerCase();
+      if (!q) return true;
+      const nombre = getDisplayName(r.cliente).toLowerCase();
+      const tel = (r.cliente.telefono_display || r.cliente.telefono || "").toLowerCase();
+      return nombre.includes(q) || tel.includes(q);
+    })
+    .sort((a, b) => {
+      // Vencidos primero, luego por próxima fecha de pago (el más urgente arriba)
+      if (a.vencido !== b.vencido) return a.vencido ? -1 : 1;
+      return (a.diasRest ?? 9999) - (b.diasRest ?? 9999);
+    });
+
+  const totalCarteraCOP = clientesCartera.reduce((s, r) => s + r.pendienteCOP, 0);
+  const totalVencidoCarteraCOP = clientesCartera.filter((r) => r.vencido).reduce((s, r) => s + r.pendienteCOP, 0);
+  const clientesVencidos = clientesCartera.filter((r) => r.vencido);
+  const proximos7dias = clientesCartera.filter((r) => !r.vencido && r.diasRest !== null && r.diasRest <= 7);
+  const totalProximos7diasCOP = proximos7dias.reduce((s, r) => s + r.pendienteCOP, 0);
+
+  // Rendimiento y finanzas filtrados por el grupo de cartera seleccionado
+  const clientesNoSpam = todosClientes.filter((c) => !c.es_spam && carteraGrupoOk(c));
+  const totalAtendidos = clientesNoSpam.length;
+  const totalConvertidos = clientesNoSpam.filter((c) => ["pago_recibido", "trabajo_proceso", "trabajo_completado"].includes(c.estado)).length;
+  const efectividad = totalAtendidos > 0 ? ((totalConvertidos / totalAtendidos) * 100).toFixed(1) : "0";
+
+  // Calculos de cartera con conversión a COP
+  const pagosDelMes = todosPagos.filter((p) => p.estado === "pagado" && p.fecha_pago && new Date(p.fecha_pago) >= inicioMes && carteraGrupoOk(clientePorId(p.cliente_id)));
+
   const totalCobradoMesCOP = pagosDelMes.reduce((sum, p) => sum + calcularCOP(p), 0);
-  const totalCobradoHistoricoCOP = todosPagos.filter((p) => p.estado === "pagado").reduce((sum, p) => sum + calcularCOP(p), 0);
-  const totalPendienteCOP = todosPagos.filter((p) => p.estado === "pendiente").reduce((sum, p) => sum + calcularCOP(p), 0);
-  const totalVencidoCOP = todosPagos.filter((p) => p.estado === "pendiente" && new Date(p.fecha_vencimiento) < ahora).reduce((sum, p) => sum + calcularCOP(p), 0);
+  const totalCobradoHistoricoCOP = todosPagos.filter((p) => p.estado === "pagado" && carteraGrupoOk(clientePorId(p.cliente_id))).reduce((sum, p) => sum + calcularCOP(p), 0);
+  const totalPendienteCOP = totalCarteraCOP;
+  const totalVencidoCOP = totalVencidoCarteraCOP;
 
   // Para compatibilidad, mantener totales antiguos también
   const totalCobradoMes = totalCobradoMesCOP;
@@ -1386,6 +1574,37 @@ export default function CRMApp() {
                     </button>
                   )}
                 </div>
+
+                {/* SUBPESTAÑAS DE CATEGORÍA: por defecto solo Nuevos Leads */}
+                {tab === "chats" && (
+                  <div className="flex gap-1.5 overflow-x-auto -mx-1 px-1 pb-0.5">
+                    {pipelineEtapas.filter(e => e.grupo === grupoActivo && !e.es_spam && !e.es_archivado).sort((a, b) => a.orden - b.orden).map((etapa) => {
+                      const activa = chatCategoria === etapa.clave;
+                      const conteo = conversaciones.filter((c) => {
+                        if (c.clientes?.es_spam || (c as any).archivada) return false;
+                        const grupoCliente = c.clientes?.grupo || (c.fuente === "meta_business" ? "templo" : "personal");
+                        if (grupoCliente !== grupoActivo) return false;
+                        const est = c.clientes?.estado || (grupoActivo === "templo" ? "nuevo_lead_templo" : "nuevo_lead");
+                        return est === etapa.clave;
+                      }).length;
+                      return (
+                        <button
+                          key={etapa.id}
+                          onClick={() => setChatCategoria(etapa.clave)}
+                          className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-bold border transition-all ${
+                            activa
+                              ? "bg-purple-600 text-white border-purple-500 shadow-md shadow-purple-900/30"
+                              : "bg-surface border-border text-gray-500 hover:text-gray-300 hover:border-purple-500/40"
+                          }`}
+                          title={`Mostrar chats en "${etapa.nombre}"`}
+                        >
+                          {etapa.nombre}
+                          <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-semibold ${activa ? "bg-white/20 text-white" : "bg-background text-gray-500"}`}>{conteo}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
 
                 {tab === "chats" && (
                   <button onClick={autoArchivarInactivos} className="w-full flex items-center justify-center gap-2 py-2 rounded-lg bg-amber-950/30 border border-amber-900/50 text-amber-400 hover:bg-amber-900/30 text-xs font-medium transition-colors">
@@ -1719,7 +1938,7 @@ export default function CRMApp() {
                       <div className="flex items-center justify-between">
                         <h4 className="text-[10px] font-bold text-gray-500 uppercase flex items-center gap-1.5"><Wallet className="w-3.5 h-3.5" /> Cobros</h4>
                         <span className="text-[10px] text-emerald-400 font-bold border border-emerald-900/50 bg-emerald-950/30 px-1.5 py-0.5 rounded">
-                          ${pagosCliente.reduce((acc, p) => acc + (p.estado === "pagado" ? calcularCOP(p) : 0), 0).toLocaleString()} COP / ${pagosCliente.reduce((acc, p) => acc + calcularCOP(p), 0).toLocaleString()} COP
+                          ${pagosCliente.reduce((acc, p) => acc + (p.estado === "pagado" ? calcularCOP(p) : 0), 0).toLocaleString()} COP / ${pagosCliente.filter((p) => p.estado !== "cancelado").reduce((acc, p) => acc + calcularCOP(p), 0).toLocaleString()} COP
                         </span>
                       </div>
                       {pagosCliente.length > 0 && (
@@ -1727,14 +1946,20 @@ export default function CRMApp() {
                           {pagosCliente.map((pago) => {
                             const moneda = pago.moneda || "COP";
                             const cop = calcularCOP(pago);
+                            const esCancelado = pago.estado === "cancelado";
                             return (
-                              <div key={pago.id} className={`flex items-center justify-between p-2 rounded-lg border text-xs ${pago.estado === "pagado" ? "bg-emerald-950/20 border-emerald-900/40" : "bg-surface border-border"}`}>
-                                <button onClick={() => marcarPago(pago.id, pago.estado)} className="mr-2 flex-shrink-0">{pago.estado === "pagado" ? <CheckCircle2 className="w-4 h-4 text-emerald-500" /> : <Clock className="w-4 h-4 text-amber-500" />}</button>
+                              <div key={pago.id} className={`flex items-center justify-between p-2 rounded-lg border text-xs ${pago.estado === "pagado" ? "bg-emerald-950/20 border-emerald-900/40" : esCancelado ? "bg-gray-900/40 border-border opacity-60" : "bg-surface border-border"}`}>
+                                {esCancelado ? (
+                                  <span className="mr-2 flex-shrink-0 text-gray-600"><Ban className="w-4 h-4" /></span>
+                                ) : (
+                                  <button onClick={() => marcarPago(pago.id, pago.estado)} className="mr-2 flex-shrink-0">{pago.estado === "pagado" ? <CheckCircle2 className="w-4 h-4 text-emerald-500" /> : <Clock className="w-4 h-4 text-amber-500" />}</button>
+                                )}
                                 <div className="flex-1 min-w-0">
                                   <div className="flex items-center gap-1.5">
-                                    <span className={pago.estado === "pagado" ? "line-through text-gray-500" : "text-gray-200"}>{formatearMoneda(pago.monto, moneda)}</span>
+                                    <span className={pago.estado === "pagado" || esCancelado ? "line-through text-gray-500" : "text-gray-200"}>{formatearMoneda(pago.monto, moneda)}</span>
                                     {moneda !== "COP" && <span className="text-[9px] text-emerald-400">→ ${Math.round(cop).toLocaleString()} COP</span>}
                                     <span className={`text-[8px] px-1 py-0.5 rounded font-bold ${moneda === "PYG" ? "bg-amber-900/30 text-amber-400" : moneda === "USD" ? "bg-green-900/30 text-green-400" : "bg-gray-800 text-gray-400"}`}>{moneda}</span>
+                                    {esCancelado && <span className="text-[8px] px-1 py-0.5 rounded bg-gray-800 text-gray-500 font-bold">ABANDONADO</span>}
                                   </div>
                                   <div className="text-[9px] text-gray-500 truncate">{pago.notas} • {pago.fecha_vencimiento} {pago.comision_porcentaje ? `• com ${pago.comision_porcentaje}%` : ""}</div>
                                 </div>
@@ -2072,17 +2297,25 @@ export default function CRMApp() {
           </div>
         )}
 
-        {/* ==================== CARTERA CON DIVISAS ==================== */}
+        {/* ==================== CARTERA POR COBRAR (CONTROL DE PRÓXIMOS PAGOS) ==================== */}
         {tab === "cartera" && (
           <div className="flex-1 p-4 md:p-8 overflow-y-auto space-y-6 bg-background">
             <header className="flex flex-col md:flex-row md:items-center justify-between gap-4">
               <div>
-                <h1 className="text-xl md:text-2xl font-bold text-gray-100 flex items-center gap-2"><DollarSign className="text-emerald-400 w-6 h-6" /> Cartera y Métricas</h1>
-                <p className="text-xs md:text-sm text-gray-400">Rendimiento, divisas y conversión a COP</p>
+                <h1 className="text-xl md:text-2xl font-bold text-gray-100 flex items-center gap-2"><DollarSign className="text-emerald-400 w-6 h-6" /> Cartera por Cobrar</h1>
+                <p className="text-xs md:text-sm text-gray-400">Control de próximos pagos — se actualiza día a día. Al recibir un abono, el saldo pendiente se descuenta y el siguiente pago se recalcula automáticamente.</p>
               </div>
-              <button onClick={() => setShowDivisaConfig(!showDivisaConfig)} className="flex items-center gap-2 px-3 py-2 rounded-xl bg-surface border border-border text-xs font-medium hover:bg-surfaceHover">
-                <Coins className="w-4 h-4 text-amber-400" /> Config Divisas
-              </button>
+              <div className="flex items-center gap-2 flex-wrap">
+                {/* Selector de grupo para la cartera */}
+                <div className="flex bg-surface border border-border rounded-lg p-0.5">
+                  <button onClick={() => setCarteraGrupoFiltro("personal")} className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all flex items-center gap-1 ${carteraGrupoFiltro === "personal" ? "bg-blue-600 text-white" : "text-gray-400"}`}><User className="w-3 h-3" /> {personalLabel}</button>
+                  <button onClick={() => setCarteraGrupoFiltro("templo")} className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all flex items-center gap-1 ${carteraGrupoFiltro === "templo" ? "bg-purple-600 text-white" : "text-gray-400"}`}><Landmark className="w-3 h-3" /> {temploLabel}</button>
+                  <button onClick={() => setCarteraGrupoFiltro("todas")} className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all flex items-center gap-1 ${carteraGrupoFiltro === "todas" ? "bg-emerald-600 text-white" : "text-gray-400"}`}><Users className="w-3 h-3" /> Todas</button>
+                </div>
+                <button onClick={() => setShowDivisaConfig(!showDivisaConfig)} className="flex items-center gap-2 px-3 py-2 rounded-xl bg-surface border border-border text-xs font-medium hover:bg-surfaceHover">
+                  <Coins className="w-4 h-4 text-amber-400" /> Config Divisas
+                </button>
+              </div>
             </header>
 
             {showDivisaConfig && (
@@ -2100,6 +2333,185 @@ export default function CRMApp() {
                 <div className="flex gap-2"><button onClick={guardarConfigDivisas} className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-xs font-bold">Guardar</button><button onClick={() => setShowDivisaConfig(false)} className="px-4 py-2 bg-surface border border-border rounded-lg text-xs">Cerrar</button></div>
               </div>
             )}
+
+            {/* ===== RESUMEN RÁPIDO (derivado 100% de la lista de cartera) ===== */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
+              <div className="p-4 md:p-5 bg-gradient-to-br from-emerald-950/40 to-surface border border-emerald-900/30 rounded-2xl">
+                <p className="text-xl md:text-2xl font-extrabold text-emerald-400">${Math.round(totalCarteraCOP).toLocaleString("es-CO")}</p>
+                <p className="text-[11px] text-gray-400 mt-1">Por cobrar (pendiente)</p>
+                <p className="text-[9px] text-gray-500 mt-0.5">{clientesCartera.length} clientes en cartera</p>
+              </div>
+              <div className={`p-4 md:p-5 bg-surface border rounded-2xl ${clientesVencidos.length > 0 ? "border-red-800/60 bg-red-950/20" : "border-border"}`}>
+                <p className="text-xl md:text-2xl font-extrabold text-red-400">${Math.round(totalVencidoCarteraCOP).toLocaleString("es-CO")}</p>
+                <p className="text-[11px] text-gray-400 mt-1">Vencido</p>
+                <p className={`text-[9px] mt-0.5 ${clientesVencidos.length > 0 ? "text-red-400 font-bold" : "text-gray-500"}`}>{clientesVencidos.length > 0 ? `⚠️ ${clientesVencidos.length} cliente(s) con pago vencido` : "Nada vencido 🎉"}</p>
+              </div>
+              <div className="p-4 md:p-5 bg-surface border border-border rounded-2xl">
+                <p className="text-xl md:text-2xl font-extrabold text-amber-400">${Math.round(totalProximos7diasCOP).toLocaleString("es-CO")}</p>
+                <p className="text-[11px] text-gray-400 mt-1">Próximos 7 días</p>
+                <p className="text-[9px] text-gray-500 mt-0.5">{proximos7dias.length} pago(s) esta semana</p>
+              </div>
+              <div className="p-4 md:p-5 bg-surface border border-border rounded-2xl">
+                <p className="text-xl md:text-2xl font-extrabold text-gray-100">{clientesCartera.length}</p>
+                <p className="text-[11px] text-gray-400 mt-1">Clientes por cobrar</p>
+                <p className="text-[9px] text-gray-500 mt-0.5">Hoy: {new Date(nowTick).toLocaleDateString("es-CO", { weekday: "long", day: "numeric", month: "long" })}</p>
+              </div>
+            </div>
+
+            {/* ===== LISTA: CONTROL DE PRÓXIMOS PAGOS ===== */}
+            <div className="bg-surface/50 border border-border rounded-2xl overflow-hidden shadow-sm">
+              <div className="p-4 border-b border-border bg-surface/80 flex flex-col md:flex-row md:items-center justify-between gap-3">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h2 className="text-sm font-bold text-gray-200 uppercase tracking-wider">📋 Control de Próximos Pagos</h2>
+                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-900/30 text-emerald-300 border border-emerald-800/50">{clientesCartera.length}</span>
+                </div>
+                <div className="relative w-full md:w-60">
+                  <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
+                  <input value={searchCartera} onChange={e => setSearchCartera(e.target.value)} placeholder="Buscar por nombre o teléfono..." className="w-full bg-background border border-border rounded-lg pl-9 pr-3 py-2 text-xs text-gray-200 placeholder-gray-500 focus:outline-none focus:border-emerald-500" />
+                  {searchCartera && <button onClick={() => setSearchCartera("")} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white"><X className="w-3.5 h-3.5" /></button>}
+                </div>
+              </div>
+
+              {clientesCartera.length === 0 ? (
+                <div className="p-10 text-center">
+                  <Wallet className="w-12 h-12 mx-auto text-gray-600 mb-3" />
+                  <p className="text-sm text-gray-400 font-medium">Cartera al día ✨</p>
+                  <p className="text-xs text-gray-500 mt-1">No hay pagos pendientes. Cuando agendes un cobro en la ficha de un cliente, aparecerá aquí.</p>
+                </div>
+              ) : (
+                <div className="divide-y divide-border/40">
+                  {clientesCartera.map((row) => {
+                    const cliente = row.cliente;
+                    const nombre = getDisplayName(cliente);
+                    const telefono = cliente.telefono_display || cliente.telefono || "Sin teléfono";
+                    const pp = row.proximoPago;
+                    const monedaPP = pp?.moneda || "COP";
+                    const expandido = expandedCarteraCliente === cliente.id;
+                    const estadoPill = row.vencido
+                      ? { txt: `⚠️ Vencido hace ${Math.abs(row.diasRest!)}d`, cls: "bg-red-950/60 text-red-300 border-red-800" }
+                      : row.venceHoy
+                      ? { txt: "🔔 Vence HOY", cls: "bg-amber-950/60 text-amber-300 border-amber-800" }
+                      : { txt: row.diasRest === 1 ? "⏳ Vence mañana" : `📅 En ${row.diasRest} días`, cls: "bg-surfaceHover text-gray-300 border-border" };
+                    return (
+                      <div key={cliente.id} className={`transition-colors ${row.vencido ? "bg-red-950/15" : ""}`}>
+                        <div
+                          onClick={() => setExpandedCarteraCliente(expandido ? null : cliente.id)}
+                          className={`p-3 md:p-4 flex flex-col md:flex-row md:items-center gap-3 cursor-pointer hover:bg-surface/40 transition-colors border-l-4 ${row.vencido ? "border-red-500" : "border-transparent"}`}
+                        >
+                          <div className="flex items-center gap-3 flex-1 min-w-0">
+                            <div className={`w-11 h-11 rounded-full bg-surface border ${row.vencido ? "border-red-700" : "border-emerald-800/60"} flex items-center justify-center font-bold ${row.vencido ? "text-red-300" : "text-emerald-300"} flex-shrink-0 overflow-hidden`}>
+                              {cliente.foto_url ? <img src={cliente.foto_url} alt="" className="w-full h-full object-cover" /> : nombre.startsWith("+") ? <Phone className="w-4 h-4" /> : <span>{nombre.charAt(0).toUpperCase()}</span>}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <h3 className={`text-sm font-bold truncate ${row.vencido ? "text-red-200" : "text-gray-100"}`}>{nombre}</h3>
+                                <span className={`text-[9px] px-1.5 py-0.5 rounded-full border font-semibold ${estadoPill.cls}`}>{estadoPill.txt}</span>
+                              </div>
+                              <p className="text-[11px] text-gray-400 flex items-center gap-1 mt-0.5"><Phone className="w-3 h-3" /> {telefono}</p>
+                              <div className="flex items-center gap-2 mt-1 flex-wrap">
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-950/40 text-emerald-300 border border-emerald-900/40 font-semibold">Pendiente: ${Math.round(row.pendienteCOP).toLocaleString("es-CO")} COP</span>
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-surfaceHover text-gray-400 border border-border">Servicio: ${Math.round(row.totalServicioCOP).toLocaleString("es-CO")} COP</span>
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-surfaceHover text-gray-400 border border-border">{row.pendientes.length} pago(s)</span>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-3 md:gap-4 pl-14 md:pl-0">
+                            <div className="text-left md:text-right min-w-0">
+                              {pp ? (
+                                <>
+                                  <p className={`text-xs font-bold ${row.vencido ? "text-red-300" : "text-amber-300"}`}>
+                                    {new Date(pp.fecha_vencimiento + "T00:00:00").toLocaleDateString("es-CO", { day: "2-digit", month: "short" })}
+                                  </p>
+                                  <p className="text-[10px] text-gray-400">{formatearMoneda(Number(pp.monto), monedaPP)}</p>
+                                  <p className="text-[9px] text-emerald-400">≈ ${Math.round(calcularCOP(pp)).toLocaleString("es-CO")} COP</p>
+                                </>
+                              ) : (
+                                <p className="text-[10px] text-gray-500">Sin fecha</p>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-1.5 flex-shrink-0">
+                              <button
+                                onClick={(e) => { e.stopPropagation(); setAbonoModalCliente({ cliente, proximoPago: pp }); setAbonoMonto(pp ? String(Number(pp.monto) || "") : ""); }}
+                                className="p-2 rounded-lg bg-emerald-950/40 border border-emerald-800/60 text-emerald-300 hover:bg-emerald-900/50 transition-colors"
+                                title="Registrar abono / pago"
+                              ><Coins className="w-4 h-4" /></button>
+                              <button
+                                onClick={(e) => { e.stopPropagation(); if (pp) { setReprogramarModal({ pago: pp, nombre }); setNuevaFechaPago(pp.fecha_vencimiento || ""); } }}
+                                disabled={!pp}
+                                className="p-2 rounded-lg bg-surfaceHover border border-border text-amber-300 hover:bg-amber-950/40 hover:border-amber-800/60 transition-colors disabled:opacity-40"
+                                title="Reprogramar próximo pago"
+                              ><Calendar className="w-4 h-4" /></button>
+                              <button
+                                onClick={(e) => { e.stopPropagation(); abandonarCartera(cliente); }}
+                                className="p-2 rounded-lg bg-red-950/30 border border-red-800/50 text-red-300 hover:bg-red-900/50 transition-colors"
+                                title="Eliminar de la cartera por abandono"
+                              ><Ban className="w-4 h-4" /></button>
+                              <button onClick={(e) => { e.stopPropagation(); setExpandedCarteraCliente(expandido ? null : cliente.id); }} className="p-2 rounded-lg text-gray-400 hover:text-white transition-colors" title="Ver detalle">
+                                {expandido ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* DETALLE DE LA CARTERA POR COBRAR */}
+                        {expandido && (
+                          <div className="px-4 md:px-12 pb-4">
+                            <div className="bg-background border border-border rounded-xl p-3 md:p-4 space-y-2">
+                              <div className="flex items-center justify-between flex-wrap gap-2">
+                                <h4 className="text-[10px] font-bold text-gray-400 uppercase tracking-wider flex items-center gap-1.5"><Wallet className="w-3.5 h-3.5 text-emerald-400" /> Detalle de pagos</h4>
+                                <div className="flex items-center gap-2 text-[10px] text-gray-400">
+                                  <span className="px-2 py-0.5 rounded bg-emerald-950/40 text-emerald-300 border border-emerald-900/50">Pagado: ${Math.round(row.pagadoCOP).toLocaleString("es-CO")} COP</span>
+                                  <span className="px-2 py-0.5 rounded bg-amber-950/40 text-amber-300 border border-amber-900/50">Pendiente: ${Math.round(row.pendienteCOP).toLocaleString("es-CO")} COP</span>
+                                </div>
+                              </div>
+                              <div className="space-y-1.5">
+                                {row.pagos
+                                  .slice()
+                                  .sort((a: any, b: any) => new Date(a.fecha_vencimiento).getTime() - new Date(b.fecha_vencimiento).getTime())
+                                  .map((pago: any) => {
+                                    const moneda = pago.moneda || "COP";
+                                    const esPagado = pago.estado === "pagado";
+                                    const esCancelado = pago.estado === "cancelado";
+                                    const pagoVencido = !esPagado && !esCancelado && diasHasta(pago.fecha_vencimiento) < 0;
+                                    return (
+                                      <div key={pago.id} className={`flex items-center gap-2 p-2 rounded-lg border text-xs ${esPagado ? "bg-emerald-950/20 border-emerald-900/40 opacity-70" : esCancelado ? "bg-gray-900/40 border-border opacity-50" : pagoVencido ? "bg-red-950/20 border-red-900/50" : "bg-surface border-border"}`}>
+                                        <div className="flex-1 min-w-0">
+                                          <div className="flex items-center gap-1.5 flex-wrap">
+                                            <span className={`text-[10px] font-bold ${esPagado ? "text-emerald-400" : esCancelado ? "text-gray-500" : pagoVencido ? "text-red-300" : "text-amber-300"}`}>
+                                              {new Date(pago.fecha_vencimiento + "T00:00:00").toLocaleDateString("es-CO", { day: "2-digit", month: "short", year: "numeric" })}
+                                            </span>
+                                            <span className={esPagado ? "line-through text-gray-500" : esCancelado ? "line-through text-gray-600" : "text-gray-200"}>{formatearMoneda(Number(pago.monto), moneda)}</span>
+                                            {moneda !== "COP" && <span className="text-[9px] text-emerald-400">→ ${Math.round(calcularCOP(pago)).toLocaleString("es-CO")} COP</span>}
+                                            {esPagado && <span className="text-[8px] px-1 py-0.5 rounded bg-emerald-900/40 text-emerald-300 font-bold">PAGADO {pago.fecha_pago ? `el ${pago.fecha_pago}` : ""}</span>}
+                                            {esCancelado && <span className="text-[8px] px-1 py-0.5 rounded bg-gray-800 text-gray-500 font-bold">ABANDONADO</span>}
+                                            {!esPagado && !esCancelado && pagoVencido && <span className="text-[8px] px-1 py-0.5 rounded bg-red-900/50 text-red-300 font-bold">VENCIDO</span>}
+                                          </div>
+                                          {pago.notas && <p className="text-[10px] text-gray-500 truncate mt-0.5">{pago.notas}</p>}
+                                        </div>
+                                        <div className="flex items-center gap-1 flex-shrink-0">
+                                          {!esPagado && !esCancelado && (
+                                            <button onClick={() => marcarPago(pago.id, pago.estado)} className="p-1.5 rounded-md text-emerald-400 hover:bg-emerald-900/40 transition-colors" title="Marcar como pagado"><CheckCircle2 className="w-4 h-4" /></button>
+                                          )}
+                                          {!esPagado && !esCancelado && (
+                                            <button onClick={() => { setReprogramarModal({ pago, nombre }); setNuevaFechaPago(pago.fecha_vencimiento || ""); }} className="p-1.5 rounded-md text-amber-300 hover:bg-amber-950/40 transition-colors" title="Reprogramar fecha"><Calendar className="w-4 h-4" /></button>
+                                          )}
+                                          <button onClick={() => { if (confirm(`¿Eliminar este pago de ${formatearMoneda(Number(pago.monto), moneda)}?`)) eliminarPago(pago.id); }} className="p-1.5 rounded-md text-red-400 hover:bg-red-950/40 transition-colors" title="Eliminar pago"><Trash2 className="w-4 h-4" /></button>
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                              </div>
+                              <p className="text-[9px] text-gray-600 pt-1">💡 Al registrar un abono se descuenta del pago más antiguo y se actualiza la fecha del siguiente pago automáticamente.</p>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
 
             <div>
               <h2 className="text-sm font-bold text-purple-300 mb-3 uppercase tracking-wider">Rendimiento</h2>
@@ -2122,7 +2534,7 @@ export default function CRMApp() {
                 <div className="p-4 md:p-5 bg-surface border border-border rounded-2xl">
                   <p className="text-xl md:text-2xl font-extrabold text-green-400">${Math.round(totalCobradoHistoricoCOP).toLocaleString("es-CO")}</p>
                   <p className="text-[11px] text-gray-400 mt-1">Total histórico en COP</p>
-                  <p className="text-[9px] text-gray-500 mt-1">Suma de {todosPagos.filter(p => p.estado === "pagado").length} pagos</p>
+                  <p className="text-[9px] text-gray-500 mt-1">Suma de {todosPagos.filter(p => p.estado === "pagado" && carteraGrupoOk(clientePorId(p.cliente_id))).length} pagos</p>
                 </div>
                 <div className="p-4 md:p-5 bg-surface border border-border rounded-2xl">
                   <p className="text-xl md:text-2xl font-extrabold text-amber-400">${Math.round(totalPendienteCOP).toLocaleString("es-CO")}</p>
@@ -2163,26 +2575,66 @@ export default function CRMApp() {
               </div>
             </div>
 
-            {todosPagos.filter((p) => p.estado === "pendiente" && new Date(p.fecha_vencimiento) < ahora).length > 0 && (
-              <div>
-                <h2 className="text-sm font-bold text-red-300 mb-3 uppercase tracking-wider">⚠️ Pagos Vencidos</h2>
-                <div className="bg-surface border border-red-800/50 rounded-2xl divide-y divide-border">
-                  {todosPagos.filter((p) => p.estado === "pendiente" && new Date(p.fecha_vencimiento) < ahora).map((pago) => {
-                    const cliente = todosClientes.find((c) => c.id === pago.cliente_id);
-                    const moneda = pago.moneda || "COP";
-                    const nombreCliente = (() => {
-                      if (!cliente) return "Cliente";
-                      if (cliente.nombre && cliente.nombre.trim() && cliente.nombre.trim().toLowerCase() !== "sin nombre") return cliente.nombre;
-                      const num = cliente.telefono_display || cliente.telefono || "";
-                      return num ? (num.startsWith("+") ? num : `+${num.replace(/^0+/, "")}`) : "Cliente";
-                    })();
-                    return (
-                      <div key={pago.id} className="p-4 flex items-center justify-between">
-                        <div><div className="text-sm font-medium text-gray-200 flex items-center gap-2">{nombreCliente}<span className="text-[9px] px-1 py-0.5 rounded bg-surfaceHover text-gray-400">{moneda}</span></div><div className="text-xs text-gray-400">{pago.notas} • Vencía: {pago.fecha_vencimiento}</div></div>
-                        <div className="text-right"><div className="text-sm font-bold text-red-400">{formatearMoneda(pago.monto, moneda)}</div><div className="text-[11px] text-emerald-400">${Math.round(calcularCOP(pago)).toLocaleString()} COP</div></div>
-                      </div>
-                    );
-                  })}
+            {/* MODAL ABONO */}
+            {abonoModalCliente && (
+              <div className="fixed inset-0 z-[70] bg-black/70 flex items-center justify-center p-4 backdrop-blur-md">
+                <div className="w-full max-w-sm bg-surface border border-emerald-900/40 rounded-2xl p-6 space-y-4 shadow-2xl">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-emerald-400"><Coins className="w-5 h-5" /><h3 className="text-base font-bold text-gray-100">Registrar abono</h3></div>
+                    <button onClick={() => setAbonoModalCliente(null)} className="text-gray-400 hover:text-white"><X className="w-5 h-5" /></button>
+                  </div>
+                  <div className="bg-background border border-border rounded-xl p-3 text-xs space-y-1">
+                    <p className="text-gray-200 font-bold">{getDisplayName(abonoModalCliente.cliente)}</p>
+                    <p className="text-gray-400">{abonoModalCliente.cliente.telefono_display || abonoModalCliente.cliente.telefono}</p>
+                    {abonoModalCliente.proximoPago ? (
+                      <>
+                        <p className="text-amber-300 mt-1">Próximo pago: {formatearMoneda(Number(abonoModalCliente.proximoPago.monto), abonoModalCliente.proximoPago.moneda || "COP")} <span className="text-gray-500">• vence {abonoModalCliente.proximoPago.fecha_vencimiento}</span></p>
+                        <p className="text-emerald-400">Pendiente total: ${Math.round(todosPagos.filter((p) => p.cliente_id === abonoModalCliente.cliente.id && p.estado === "pendiente").reduce((s, p) => s + calcularCOP(p), 0)).toLocaleString("es-CO")} COP</p>
+                      </>
+                    ) : <p className="text-gray-500">Sin pagos pendientes</p>}
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-gray-500 uppercase font-bold block mb-1">Monto del abono {abonoModalCliente.proximoPago ? `(${abonoModalCliente.proximoPago.moneda || "COP"})` : ""}</label>
+                    <input type="number" min="0.01" step="0.01" value={abonoMonto} onChange={(e) => setAbonoMonto(e.target.value)} autoFocus className="w-full bg-background border border-emerald-900/40 rounded-lg px-3 py-2.5 text-sm text-gray-100 focus:outline-none focus:border-emerald-500" placeholder="0.00" />
+                    <p className="text-[9px] text-gray-500 mt-1.5">Se descuenta del pago más antiguo en esa divisa. Si cubre más de una cuota, se pagan en orden y la fecha del siguiente pago se actualiza sola.</p>
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={() => setAbonoModalCliente(null)} className="flex-1 py-2.5 rounded-xl bg-surface border border-border text-gray-300 hover:bg-surfaceHover text-sm font-medium transition-colors">Cancelar</button>
+                    <button
+                      onClick={() => registrarAbono(abonoModalCliente.cliente.id, parseFloat(abonoMonto))}
+                      disabled={!(parseFloat(abonoMonto) > 0)}
+                      className="flex-1 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+                    ><CheckCircle2 className="w-4 h-4" /> Abonar</button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* MODAL REPROGRAMAR PAGO */}
+            {reprogramarModal && (
+              <div className="fixed inset-0 z-[70] bg-black/70 flex items-center justify-center p-4 backdrop-blur-md">
+                <div className="w-full max-w-sm bg-surface border border-amber-900/40 rounded-2xl p-6 space-y-4 shadow-2xl">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-amber-300"><Calendar className="w-5 h-5" /><h3 className="text-base font-bold text-gray-100">Reprogramar pago</h3></div>
+                    <button onClick={() => setReprogramarModal(null)} className="text-gray-400 hover:text-white"><X className="w-5 h-5" /></button>
+                  </div>
+                  <div className="bg-background border border-border rounded-xl p-3 text-xs space-y-1">
+                    <p className="text-gray-200 font-bold">{reprogramarModal.nombre}</p>
+                    <p className="text-amber-300">{formatearMoneda(Number(reprogramarModal.pago.monto), reprogramarModal.pago.moneda || "COP")}</p>
+                    <p className="text-gray-500">{reprogramarModal.pago.notas || "Sin nota"} • actual: {reprogramarModal.pago.fecha_vencimiento}</p>
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-gray-500 uppercase font-bold block mb-1">Nueva fecha de pago</label>
+                    <input type="date" value={nuevaFechaPago} onChange={(e) => setNuevaFechaPago(e.target.value)} className="w-full bg-background border border-amber-900/40 rounded-lg px-3 py-2.5 text-sm text-gray-100 focus:outline-none focus:border-amber-500" />
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={() => setReprogramarModal(null)} className="flex-1 py-2.5 rounded-xl bg-surface border border-border text-gray-300 hover:bg-surfaceHover text-sm font-medium transition-colors">Cancelar</button>
+                    <button
+                      onClick={() => reprogramarPago(reprogramarModal.pago.id, nuevaFechaPago)}
+                      disabled={!nuevaFechaPago}
+                      className="flex-1 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-sm font-bold transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+                    ><Save className="w-4 h-4" /> Guardar</button>
+                  </div>
                 </div>
               </div>
             )}

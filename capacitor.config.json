@@ -4,4 +4,9 @@
   "webDir": "out",
   "server": {
     "url": "https://templo-mistico-crm.vercel.app",
-    "cleartext": true,
+    "cleartext": false,
+    "allowNavigation": [
+      "templo-mistico-crm.vercel.app"
+    ]
+  }
+}

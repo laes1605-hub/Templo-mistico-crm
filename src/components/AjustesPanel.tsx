@@ -7,8 +7,13 @@ import {
   getSavedAccent, getSavedMode, saveTheme,
 } from "../lib/theme";
 import {
-  getNotifPref, setNotifPref, requestNotificationPermission,
-  notificationsSupported, notify, isNative,
+  getNotifPref,
+  setNotifPref,
+  requestNotificationPermission,
+  initializeNotificationChannels,
+  notificationsSupported,
+  notify,
+  isNative,
 } from "../lib/notifications";
 
 export default function AjustesPanel({ onClose }: { onClose: () => void }) {
@@ -21,6 +26,8 @@ export default function AjustesPanel({ onClose }: { onClose: () => void }) {
     setMode(getSavedMode());
     setAccent(getSavedAccent());
     setNotifs(getNotifPref());
+    // En Android registra las categorías aunque aún no se hayan activado los avisos.
+    void initializeNotificationChannels();
   }, []);
 
   function cambiarModo(m: ThemeMode) {
@@ -144,7 +151,7 @@ export default function AjustesPanel({ onClose }: { onClose: () => void }) {
         <p className="text-[10px] text-gray-500 mt-2 leading-relaxed">
           Recibirás un aviso cuando llegue un mensaje nuevo de un cliente
           {isNative() ? " y recordatorios de tus tareas pendientes" : ""}.
-          {isNative() ? " Funciona con la app abierta o en segundo plano." : ""}
+          {isNative() ? " Funciona con la app abierta o en segundo plano. En Ajustes del teléfono podrás administrar por separado Mensajes de clientes, Recordatorios de tareas y Avisos del CRM." : ""}
         </p>
         {notifError && <p className="text-[11px] text-red-400 mt-2">{notifError}</p>}
       </div>

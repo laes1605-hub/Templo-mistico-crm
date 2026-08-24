@@ -7,7 +7,12 @@ import VoiceNotePlayer from "../components/VoiceNotePlayer";
 import CerebroPanel from "../components/CerebroPanel";
 import AjustesPanel from "../components/AjustesPanel";
 import { initTheme } from "../lib/theme";
-import { notify, scheduleTaskReminders } from "../lib/notifications";
+import {
+  initializeNotificationChannels,
+  NOTIFICATION_CHANNELS,
+  notify,
+  scheduleTaskReminders,
+} from "../lib/notifications";
 import {
   MessageSquare, Users, DollarSign, TrendingUp, Brain, Send, Bot, Phone,
   CheckCircle2, Clock, Plus, Ban, Settings, Edit2, Trash2, ArrowUp, ArrowDown,
@@ -118,6 +123,9 @@ export default function CRMApp() {
 
   // ===================== CARGA INICIAL =====================
   useEffect(() => {
+    // Registra las categorías Android al abrir la APK, incluso antes de que
+    // llegue el primer mensaje o recordatorio.
+    void initializeNotificationChannels();
     fetchConversaciones();
     fetchPipelineEtapas();
     fetchTodosPagos();
@@ -165,7 +173,12 @@ export default function CRMApp() {
         if (msg.tipo_contenido === "audio" || /\[audio\]|\[nota_de_voz\]/i.test(preview)) preview = "🎤 Nota de voz";
         else if (msg.tipo_contenido === "imagen") preview = "📷 Imagen";
         if (preview.length > 90) preview = preview.slice(0, 90) + "…";
-        notify(`💬 ${nombre}`, preview || "Mensaje nuevo", `msg-${msg.conversacion_id}`);
+        notify(
+          `💬 ${nombre}`,
+          preview || "Mensaje nuevo",
+          `msg-${msg.conversacion_id}`,
+          NOTIFICATION_CHANNELS.MESSAGES,
+        );
       })
       .subscribe();
     return () => { supabase.removeChannel(notifSub); };

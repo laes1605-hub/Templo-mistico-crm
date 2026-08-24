@@ -33,9 +33,14 @@ export default function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
+  // Aplica el tema guardado ANTES de pintar para evitar parpadeos
+  const themeInit = `(function(){try{var m=localStorage.getItem("tm_theme_mode")||"dark";var a=localStorage.getItem("tm_theme_accent")||"purple";var l=m==="light"||(m==="system"&&window.matchMedia("(prefers-color-scheme: light)").matches);var r=document.documentElement;if(l)r.classList.add("light");r.setAttribute("data-accent",a);}catch(e){}})();`;
   return (
-    <html lang="es">
-      <body className="bg-background text-gray-100 antialiased">{children}</body>
+    <html lang="es" data-accent="purple" suppressHydrationWarning>
+      <body className="bg-background text-gray-100 antialiased">
+        <script dangerouslySetInnerHTML={{ __html: themeInit }} />
+        {children}
+      </body>
     </html>
   );
 }

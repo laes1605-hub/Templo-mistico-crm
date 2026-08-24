@@ -313,7 +313,7 @@ export default function CerebroPanel() {
         </div>
       )}
       {avisoEntrenamiento && (
-        <div className="p-3 rounded-xl border border-purple-800/40 bg-purple-950/20 text-purple-200 text-xs flex items-start gap-2">
+        <div className="p-3 rounded-xl border border-purple-800/40 bg-purple-950/20 text-purple-300 text-xs flex items-start gap-2">
           <Info className="w-4 h-4 mt-0.5 flex-shrink-0" /> <span>{avisoEntrenamiento}</span>
         </div>
       )}

@@ -5,6 +5,9 @@ import { flushSync } from "react-dom";
 import { supabase } from "../lib/supabase";
 import VoiceNotePlayer from "../components/VoiceNotePlayer";
 import CerebroPanel from "../components/CerebroPanel";
+import AjustesPanel from "../components/AjustesPanel";
+import { initTheme } from "../lib/theme";
+import { notify, scheduleTaskReminders } from "../lib/notifications";
 import {
   MessageSquare, Users, DollarSign, TrendingUp, Brain, Send, Bot, Phone,
   CheckCircle2, Clock, Plus, Ban, Settings, Edit2, Trash2, ArrowUp, ArrowDown,
@@ -12,7 +15,7 @@ import {
   Mic, Paperclip, ArrowLeft, Info, ListTodo, CheckSquare, Square,
   Sparkles, Play, Pause, RefreshCw, Image as ImageIcon, ChevronDown, ChevronRight,
   Archive, ArchiveRestore, Search, AlertTriangle,
-  StickyNote, FileText, Coins, Globe, Percent, Save, Eye, EyeOff
+  StickyNote, FileText, Coins, Globe, Percent, Save, Eye, EyeOff, Palette
 } from "lucide-react";
 
 export default function CRMApp() {
@@ -106,6 +109,7 @@ export default function CRMApp() {
   const liveBarsIntervalRef = useRef<any>(null);
 
   const [showAdmin, setShowAdmin] = useState(false);
+  const [showAjustes, setShowAjustes] = useState(false);
   const [adminSecret, setAdminSecret] = useState("");
   const [balances, setBalances] = useState<any>(null);
   const [loadingBal, setLoadingBal] = useState(false);
@@ -134,6 +138,43 @@ export default function CRMApp() {
       supabase.removeChannel(tarSub);
     };
   }, []);
+
+  // ===================== TEMA (claro/oscuro + acento) =====================
+  useEffect(() => {
+    const cleanup = initTheme();
+    return cleanup;
+  }, []);
+
+  // ===================== NOTIFICACIONES DE MENSAJES ENTRANTES =====================
+  const conversacionesRef = useRef<any[]>([]);
+  const selectedConvRef = useRef<any | null>(null);
+  useEffect(() => { conversacionesRef.current = conversaciones; }, [conversaciones]);
+  useEffect(() => { selectedConvRef.current = selectedConv; }, [selectedConv]);
+
+  useEffect(() => {
+    const notifSub = supabase.channel("r-msg-notif")
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "mensajes" }, (payload) => {
+        const msg = payload.new as any;
+        if (!msg || msg.tipo === "enviado") return; // solo mensajes entrantes
+        // Si el chat está abierto y la app visible, no molestar
+        const abierta = typeof document !== "undefined" && document.visibilityState === "visible";
+        if (abierta && selectedConvRef.current?.id === msg.conversacion_id) return;
+        const conv = conversacionesRef.current.find((c) => c.id === msg.conversacion_id);
+        const nombre = conv?.clientes?.nombre || conv?.clientes?.telefono_display || conv?.numero_whatsapp || "Cliente";
+        let preview = msg.contenido || "";
+        if (msg.tipo_contenido === "audio" || /\[audio\]|\[nota_de_voz\]/i.test(preview)) preview = "🎤 Nota de voz";
+        else if (msg.tipo_contenido === "imagen") preview = "📷 Imagen";
+        if (preview.length > 90) preview = preview.slice(0, 90) + "…";
+        notify(`💬 ${nombre}`, preview || "Mensaje nuevo", `msg-${msg.conversacion_id}`);
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(notifSub); };
+  }, []);
+
+  // Recordatorios de tareas pendientes (APK Android)
+  useEffect(() => {
+    if (todasTareas.length > 0) scheduleTaskReminders(todasTareas);
+  }, [todasTareas]);
 
   // Cargar config divisas de localStorage y de Supabase
   async function cargarConfigDivisas() {
@@ -1009,6 +1050,11 @@ export default function CRMApp() {
               )}
             </button>
           ))}
+          <button onClick={() => setShowAjustes(true)}
+            className="p-2 md:p-3.5 rounded-xl flex flex-col items-center gap-1 transition-all flex-1 md:flex-none text-gray-500 hover:text-gray-200">
+            <Palette className="w-5 h-5" />
+            <span className="text-[10px] font-medium">Tema</span>
+          </button>
         </nav>
         <div className="hidden md:flex flex-col items-center gap-3">
           <button onClick={() => setShowAdmin(true)} className="text-gray-500 hover:text-purple-300 p-1"><Shield className="w-4 h-4" /></button>
@@ -1673,7 +1719,7 @@ export default function CRMApp() {
               <div><div className="flex items-center gap-2"><h1 className="text-xl md:text-2xl font-bold text-gray-100 flex items-center gap-2"><TrendingUp className="text-purple-400 w-6 h-6" /> Gestor de Meta Ads (COP)</h1><span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold border ${isLiveAds ? 'bg-emerald-950/60 text-emerald-400 border-emerald-800' : 'bg-amber-950/60 text-amber-400 border-amber-800'}`}>{isLiveAds ? 'Meta Live API' : 'Modo Demo'}</span></div><p className="text-xs md:text-sm text-gray-400">Decisiones rápidas para proteger presupuesto y escalar lo que convierte.</p></div>
               <div className="flex items-center gap-2"><button onClick={fetchCampanasAds} disabled={loadingAds} className="bg-surface hover:bg-surfaceHover border border-border text-gray-300 px-3 py-2 rounded-xl text-xs font-medium flex items-center gap-1.5 transition-all"><RefreshCw className={`w-3.5 h-3.5 ${loadingAds ? 'animate-spin' : ''}`} /> Actualizar</button><button onClick={consultarAsesorIAAds} className="bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white px-4 py-2 rounded-xl text-xs font-bold shadow-lg shadow-purple-900/30 flex items-center gap-2 transition-all"><Sparkles className="w-4 h-4" /> Analizar con IA</button></div>
             </header>
-            {adsNote && !loadingAds && (<div className="p-3 rounded-xl border border-purple-800/40 bg-purple-950/20 text-purple-200 text-xs">{adsNote}</div>)}
+            {adsNote && !loadingAds && (<div className="p-3 rounded-xl border border-purple-800/40 bg-purple-950/20 text-purple-300 text-xs">{adsNote}</div>)}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
               <div className="p-4 md:p-5 bg-surface border border-border rounded-2xl"><span className="text-[10px] text-gray-500 font-bold uppercase tracking-wider">Inversión Total</span><p className="text-xl md:text-2xl font-extrabold text-gray-100 mt-1">${Math.round(campanas.reduce((acc, c) => acc + Number(c.spend || 0), 0)).toLocaleString("es-CO")} COP</p></div>
               <div className="p-4 md:p-5 bg-surface border border-border rounded-2xl"><span className="text-[10px] text-gray-500 font-bold uppercase tracking-wider">Leads de Ads</span><p className="text-xl md:text-2xl font-extrabold text-purple-400 mt-1">{campanas.reduce((acc, c) => acc + Number(c.leads || 0), 0)}</p></div>
@@ -1743,6 +1789,9 @@ export default function CRMApp() {
           </div>
         </div>
       )}
+
+      {/* MODAL AJUSTES: TEMA Y NOTIFICACIONES */}
+      {showAjustes && <AjustesPanel onClose={() => setShowAjustes(false)} />}
     </div>
   );
 }

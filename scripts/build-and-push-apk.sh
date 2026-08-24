@@ -60,10 +60,11 @@ echo "🔄 npx cap sync android..."
 npx cap sync android
 
 # ---------- 3. Compilar ----------
-echo "🔨 ./gradlew assembleDebug (puede tardar varios minutos)..."
+echo "🔨 ./gradlew clean assembleDebug (puede tardar varios minutos)..."
 cd android
 chmod +x ./gradlew
-./gradlew assembleDebug
+# Limpiar evita copiar un APK viejo si Gradle reutiliza artefactos anteriores.
+./gradlew clean assembleDebug
 cd "$ROOT_DIR"
 
 APK_SRC="android/app/build/outputs/apk/debug/app-debug.apk"

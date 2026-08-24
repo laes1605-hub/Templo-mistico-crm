@@ -51,7 +51,9 @@ jobs:
         working-directory: android
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+          # Evita reutilizar un APK de una versión anterior.
+          ./gradlew clean assembleDebug --no-daemon
+          echo "APK versionName: $(grep -n 'versionName' app/build.gradle)"
 
       - name: Copiar APK al repositorio
         run: |

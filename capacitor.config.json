@@ -1,0 +1,26 @@
+{
+  "appId": "com.templomistico.crm",
+  "appName": "Templo Místico CRM",
+  "webDir": "out",
+  "bundledWebRuntime": false,
+  "server": {
+    "androidScheme": "https",
+    "iosScheme": "https",
+    "hostname": "templomisitico.app"
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 2000,
+      "backgroundColor": "#090d16"
+    },
+    "StatusBar": {
+      "style": "DARK",
+      "backgroundColor": "#090d16"
+    }
+  },
+  "android": {
+    "allowMixedContent": true,
+    "captureInput": true,
+    "webContentsDebuggingEnabled": false
+  }
+}

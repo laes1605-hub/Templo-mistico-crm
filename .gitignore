@@ -5,3 +5,15 @@ build
 .env
 .env.local
 tsconfig.tsbuildinfo
+# Capacitor Android build
+android/app/build
+android/.gradle
+android/app/release
+android/capacitor.config.json
+android/build
+# APK
+*.apk
+*.aab
+# Capacitor
+.capacitor
+

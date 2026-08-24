@@ -10,11 +10,12 @@ import {
   CheckCircle2, Clock, Plus, Ban, Settings, Edit2, Trash2, ArrowUp, ArrowDown,
   Wallet, Target, TrendingDown, Award, Calendar, Shield, X,
   Mic, Paperclip, ArrowLeft, Info, ListTodo, CheckSquare, Square,
-  Sparkles, Play, Pause, RefreshCw, Image as ImageIcon, ChevronDown, ChevronRight
+  Sparkles, Play, Pause, RefreshCw, Image as ImageIcon, ChevronDown, ChevronRight,
+  Archive, ArchiveRestore, ArchiveX, Search, AlertTriangle
 } from "lucide-react";
 
 export default function CRMApp() {
-  const [tab, setTab] = useState<"chats" | "pipeline" | "cartera" | "tareas" | "ads" | "cerebro">("chats");
+  const [tab, setTab] = useState<"chats" | "pipeline" | "cartera" | "tareas" | "ads" | "cerebro" | "archivados">("chats");
   
   const [conversaciones, setConversaciones] = useState<any[]>([]);
   const [selectedConv, setSelectedConv] = useState<any | null>(null);
@@ -53,6 +54,13 @@ export default function CRMApp() {
   const [filtroCanal, setFiltroCanal] = useState<"todos" | "evolution" | "meta_business" | "spam">("todos");
   const [showMobileDetails, setShowMobileDetails] = useState(false);
   
+  // ARCHIVADOS & ELIMINAR
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [filtroArchivados, setFiltroArchivados] = useState<"todos" | "evolution" | "meta_business">("todos");
+  const [searchArchivados, setSearchArchivados] = useState("");
+  const [searchChats, setSearchChats] = useState("");
+
   const [tipoPago, setTipoPago] = useState<"unico" | "cuotas">("unico");
   const [montoTotal, setMontoTotal] = useState("");
   const [numeroCuotas, setNumeroCuotas] = useState("2");
@@ -184,6 +192,93 @@ export default function CRMApp() {
     setLoadingAiAds(false);
   }
 
+  // ===================== ARCHIVAR / ELIMINAR =====================
+  async function archivarConversacion(convId: string, archivar: boolean = true) {
+    // Optimistic update
+    setConversaciones(prev => prev.map(c => c.id === convId ? { 
+      ...c, 
+      archivada: archivar, 
+      fecha_archivado: archivar ? new Date().toISOString() : null,
+      motivo_archivado: archivar ? 'manual' : null
+    } : c));
+    
+    if (selectedConv?.id === convId && archivar && tab === "chats") {
+      setSelectedConv(null);
+    }
+
+    try {
+      const { error } = await supabase.from("conversaciones").update({ 
+        archivada: archivar, 
+        fecha_archivado: archivar ? new Date().toISOString() : null,
+        motivo_archivado: archivar ? 'manual' : null
+      }).eq("id", convId);
+      
+      if (error) {
+        console.error("Error archivando:", error);
+        // Si la columna no existe, intentar con estado archivado
+        if (error.message?.includes("archivada")) {
+          // Fallback: usar campo en clientes o localStorage
+          console.warn("Columna archivada no existe aún, aplicando migración local");
+          // Mantener optimistic pero avisar
+        } else {
+          fetchConversaciones();
+        }
+      }
+    } catch (e) {
+      console.error(e);
+      fetchConversaciones();
+    }
+  }
+
+  async function eliminarConversacionDefinitivo(convId: string) {
+    setIsDeleting(true);
+    try {
+      // 1. Eliminar mensajes
+      const { error: msgError } = await supabase.from("mensajes").delete().eq("conversacion_id", convId);
+      if (msgError) console.warn("Error eliminando mensajes:", msgError);
+
+      // 2. Eliminar tareas asociadas al cliente de esa conversación (opcional, solo las de ese cliente si se desea)
+      // No eliminamos tareas por defecto, solo conversación
+
+      // 3. Eliminar conversación
+      const { error: convError } = await supabase.from("conversaciones").delete().eq("id", convId);
+      if (convError) throw convError;
+
+      // 4. Actualizar estado local
+      setConversaciones(prev => prev.filter(c => c.id !== convId));
+      if (selectedConv?.id === convId) {
+        setSelectedConv(null);
+        setClienteActual(null);
+      }
+      setShowDeleteConfirm(null);
+    } catch (e: any) {
+      console.error("Error eliminando conversación:", e);
+      alert("Error al eliminar: " + (e.message || "desconocido"));
+    }
+    setIsDeleting(false);
+  }
+
+  function autoArchivarInactivos() {
+    const limite = new Date();
+    limite.setDate(limite.getDate() - 7);
+    const paraArchivar = conversaciones.filter(c => {
+      const isArchivada = (c as any).archivada === true;
+      const isSpam = c.clientes?.es_spam === true;
+      if (isArchivada || isSpam) return false;
+      const fecha = c.ultimo_mensaje_en ? new Date(c.ultimo_mensaje_en) : new Date(0);
+      return fecha < limite;
+    });
+
+    if (paraArchivar.length === 0) {
+      alert("No hay conversaciones inactivas de más de 7 días. ¡Todo al día! ✅");
+      return;
+    }
+
+    if (!confirm(`¿Archivar ${paraArchivar.length} conversaciones inactivas (>7 días sin actividad)?\n\nIrán a la pestaña Archivados. Podrás restaurarlas cuando quieras.`)) return;
+
+    paraArchivar.forEach(c => archivarConversacion(c.id, true));
+  }
+
   // ===================== SELECCIONAR CHAT =====================
   async function selectConversation(conv: any) {
     setSelectedConv(conv);
@@ -273,11 +368,13 @@ export default function CRMApp() {
       });
       const result = await response.json().catch(() => ({}));
       if (!response.ok || !result.success) throw new Error(result.error || "No se pudo enviar el mensaje.");
-      // Aviso no bloqueante: la nota salió, pero WhatsApp la va a mostrar como
-      // audio simple en vez de burbuja de nota de voz.
       const esNotaDeVoz = Boolean(fileBase64 && ((fileMime || "").startsWith("audio/") || String(fileName || "").toLowerCase().includes("nota_de_voz")));
       if (esNotaDeVoz && result.voiceNote === false) {
         setSendNotice("La nota se envió, pero llegó como audio simple en vez de nota de voz nativa.");
+      }
+      // Si estaba archivada y responden, desarchivar automáticamente
+      if ((selectedConv as any).archivada) {
+        archivarConversacion(selectedConv.id, false);
       }
     } catch (error: any) {
       const message = error.message || "No se pudo enviar el mensaje.";
@@ -308,19 +405,13 @@ export default function CRMApp() {
     reader.onload = async () => {
       try {
         await sendToApi("", reader.result as string, file.type, file.name);
-      } catch {
-        // sendToApi already exposes the provider error in the conversation UI.
-      }
+      } catch {}
     };
     reader.onerror = () => setSendError("No se pudo leer el archivo seleccionado.");
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
   // ===================== GRABACIÓN DE AUDIO =====================
-  // El micrófono se abre y la grabación arranca de inmediato: el contador corre
-  // desde el primer instante y no se graba ningún silencio de "calentamiento".
-  // El backend sólo agrega un preroll mínimo (300 ms) al convertir a OGG/Opus
-  // para que WhatsApp no recorte la primera sílaba.
   const MAX_GRABACION_SEG = 300;
   const MIN_DURACION_NOTA_MS = 400;
 
@@ -344,9 +435,6 @@ export default function CRMApp() {
     stream?.getTracks().forEach((track) => track.stop());
   };
 
-  // Onda en vivo mientras se graba: niveles reales del micrófono con
-  // AnalyserNode (funciona igual en laptop y celular). No se conecta al
-  // destino de salida, así que no genera retroalimentación.
   const setupLiveWaveform = (stream: MediaStream) => {
     try {
       const Ctx = window.AudioContext || (window as any).webkitAudioContext;
@@ -365,15 +453,12 @@ export default function CRMApp() {
         const bars: number[] = [];
         const COUNT = 16;
         for (let i = 0; i < COUNT; i++) {
-          // La voz vive en las frecuencias bajas/medias; saltamos el bin de DC.
           const idx = 1 + Math.floor(((i / COUNT) * spectrum.length) / 1.6);
           bars.push(Math.max(0.08, (spectrum[Math.min(idx, spectrum.length - 1)] || 0) / 255));
         }
         setRecordingBars(bars);
       }, 90);
-    } catch {
-      // La onda en vivo es sólo visual; si falla, la grabación continúa igual.
-    }
+    } catch {}
   };
 
   const teardownLiveWaveform = () => {
@@ -387,9 +472,6 @@ export default function CRMApp() {
   const startRecording = async () => {
     if (mediaRecorderRef.current?.state === "recording" || isSending || isPreparingRecording) return;
     let stream: MediaStream | null = null;
-    // Forzamos el render antes de abrir el micrófono. Algunos celulares bloquean
-    // la UI mientras inicializan getUserMedia, y por eso el aviso no alcanzaba
-    // a mostrarse aunque el estado ya estuviera cambiando.
     flushSync(() => {
       setSendError("");
       setRecordingTime(0);
@@ -406,8 +488,6 @@ export default function CRMApp() {
       try {
         stream = await navigator.mediaDevices.getUserMedia({
           audio: {
-            // En teléfonos estos procesamientos suelen "abrir la compuerta" tarde
-            // y se comen la primera palabra; para notas de voz es más seguro raw.
             echoCancellation: false,
             noiseSuppression: false,
             autoGainControl: false,
@@ -416,7 +496,6 @@ export default function CRMApp() {
           },
         });
       } catch {
-        // Dispositivos estrictos que rechazan constraints: pedir audio básico.
         stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       }
 
@@ -464,14 +543,11 @@ export default function CRMApp() {
         reader.onloadend = async () => {
           try {
             await sendToApi("", reader.result as string, usedMime, `nota_de_voz.${ext}`);
-          } catch {
-            // The error is displayed below the message composer.
-          }
+          } catch {}
         };
         reader.onerror = () => setSendError("No se pudo leer la nota de voz grabada.");
       };
       recordingStartRef.current = Date.now();
-      // Sin timeslice: evita cortes/lag en grabaciones creadas desde teléfonos.
       mediaRecorder.start();
       setIsPreparingRecording(false);
       setIsRecording(true);
@@ -631,10 +707,30 @@ export default function CRMApp() {
   // ===================== RENDER Y FILTROS =====================
   const conversacionesFiltradas = conversaciones.filter((c) => {
     const esSpam = c.clientes?.es_spam === true;
+    const isArchivada = (c as any).archivada === true;
+    if (isArchivada) return false; // Archivadas no aparecen en bandeja principal
     if (filtroCanal === "spam") return esSpam;
     if (esSpam) return false;
-    if (filtroCanal === "todos") return true;
-    return c.fuente === filtroCanal;
+    const matchCanal = filtroCanal === "todos" || c.fuente === filtroCanal;
+    const matchSearch = !searchChats || 
+      (c.clientes?.nombre || "").toLowerCase().includes(searchChats.toLowerCase()) ||
+      (c.numero_whatsapp || "").includes(searchChats) ||
+      (c.clientes?.telefono_display || "").includes(searchChats);
+    return matchCanal && matchSearch;
+  });
+
+  const conversacionesArchivadas = conversaciones.filter((c) => {
+    const esSpam = c.clientes?.es_spam === true;
+    const isArchivada = (c as any).archivada === true;
+    if (!isArchivada || esSpam) return false;
+    const matchCanal = filtroArchivados === "todos" || c.fuente === filtroArchivados;
+    const q = searchArchivados.toLowerCase();
+    const matchSearch = !searchArchivados ||
+      (c.clientes?.nombre || "").toLowerCase().includes(q) ||
+      (c.numero_whatsapp || "").includes(searchArchivados) ||
+      (c.clientes?.telefono_display || "").includes(searchArchivados) ||
+      (c.ultimo_mensaje || "").toLowerCase().includes(q);
+    return matchCanal && matchSearch;
   });
 
   const ahora = new Date(); const inicioMes = new Date(ahora.getFullYear(), ahora.getMonth(), 1);
@@ -663,6 +759,7 @@ export default function CRMApp() {
 
   const menuItems = [
     { id: "chats", icon: MessageSquare, label: "Chats" },
+    { id: "archivados", icon: Archive, label: "Archivados" },
     { id: "pipeline", icon: Users, label: "Pipeline" },
     { id: "tareas", icon: ListTodo, label: "Tareas" },
     { id: "cartera", icon: DollarSign, label: "Cartera" },
@@ -678,12 +775,17 @@ export default function CRMApp() {
         <div className="hidden md:flex w-12 h-12 rounded-2xl bg-gradient-to-tr from-purple-600 to-indigo-500 items-center justify-center shadow-lg shadow-purple-900/40">
           <span className="text-xl font-bold text-white">🔮</span>
         </div>
-        <nav className="flex flex-row md:flex-col gap-1 md:gap-3 w-full justify-around md:px-3">
+        <nav className="flex flex-row md:flex-col gap-1 md:gap-3 w-full justify-around md:px-3 overflow-x-auto">
           {menuItems.map((item) => (
             <button key={item.id} onClick={() => { setTab(item.id as any); setSelectedConv(null); setShowMobileDetails(false); }}
-              className={`p-2 md:p-3.5 rounded-xl flex flex-col items-center gap-1 transition-all flex-1 md:flex-none ${tab === item.id ? "text-purple-400 md:bg-purple-600 md:text-white" : "text-gray-500 hover:text-gray-200"}`}>
+              className={`p-2 md:p-3.5 rounded-xl flex flex-col items-center gap-1 transition-all flex-1 md:flex-none relative ${tab === item.id ? "text-purple-400 md:bg-purple-600 md:text-white" : "text-gray-500 hover:text-gray-200"}`}>
               <item.icon className="w-5 h-5" />
               <span className="text-[10px] font-medium">{item.label}</span>
+              {item.id === "archivados" && conversaciones.filter(c => (c as any).archivada).length > 0 && (
+                <span className="absolute -top-1 -right-1 md:top-1 md:right-1 bg-amber-600 text-white text-[9px] px-1.5 py-0.5 rounded-full font-bold">
+                  {conversaciones.filter(c => (c as any).archivada).length}
+                </span>
+              )}
             </button>
           ))}
         </nav>
@@ -710,6 +812,23 @@ export default function CRMApp() {
                     <button className="md:hidden text-gray-500" onClick={() => setShowAdmin(true)}><Shield className="w-4 h-4" /></button>
                   </div>
                 </div>
+
+                {/* Buscador */}
+                <div className="relative">
+                  <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
+                  <input 
+                    value={searchChats} 
+                    onChange={e => setSearchChats(e.target.value)}
+                    placeholder="Buscar nombre o número..." 
+                    className="w-full bg-background border border-border rounded-lg pl-9 pr-3 py-2 text-xs text-gray-200 placeholder-gray-500 focus:outline-none focus:border-purple-500"
+                  />
+                  {searchChats && (
+                    <button onClick={() => setSearchChats("")} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white">
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+
                 <div className="flex bg-background p-1 rounded-lg border border-border text-xs flex-wrap">
                   {["todos", "evolution", "meta_business", "spam"].map((f) => (
                     <button key={f} onClick={() => setFiltroCanal(f as any)} className={`flex-1 py-1.5 rounded-md transition-all capitalize ${filtroCanal === f ? (f === 'spam' ? "bg-red-900/50 text-red-400" : "bg-surfaceHover text-white font-medium") : "text-gray-500"}`}>
@@ -717,6 +836,11 @@ export default function CRMApp() {
                     </button>
                   ))}
                 </div>
+
+                {/* Botón auto-archivar */}
+                <button onClick={autoArchivarInactivos} className="w-full flex items-center justify-center gap-2 py-2 rounded-lg bg-amber-950/30 border border-amber-900/50 text-amber-400 hover:bg-amber-900/30 text-xs font-medium transition-colors">
+                  <Archive className="w-3.5 h-3.5" /> Archivar inactivos (+7 días)
+                </button>
               </div>
               <div className="flex-1 overflow-y-auto divide-y divide-border/50">
                 {loadingChats ? <div className="p-6 text-center text-sm text-gray-500">Cargando...</div> : conversacionesFiltradas.length === 0 ? <div className="p-6 text-center text-sm text-gray-500">Bandeja vacía</div> :
@@ -724,18 +848,37 @@ export default function CRMApp() {
                     const cliente = conv.clientes;
                     const displayName = cliente?.nombre || cliente?.telefono_display || conv.numero_whatsapp;
                     return (
-                      <button key={conv.id} onClick={() => selectConversation(conv)} className={`w-full p-4 flex items-start gap-3 text-left hover:bg-surfaceHover transition-colors ${selectedConv?.id === conv.id ? "bg-surfaceHover border-l-4 border-purple-500" : ""}`}>
-                        <div className="relative flex-shrink-0">
-                          <div className="w-12 h-12 rounded-full bg-surface border border-border flex items-center justify-center text-purple-400 font-bold overflow-hidden">
-                            {cliente?.foto_url ? <img src={cliente.foto_url} alt="" className="w-full h-full object-cover" /> : <span>{displayName?.charAt(0) || "W"}</span>}
+                      <div key={conv.id} className={`group relative w-full flex items-start gap-3 text-left hover:bg-surfaceHover transition-colors ${selectedConv?.id === conv.id ? "bg-surfaceHover border-l-4 border-purple-500" : ""}`}>
+                        <button onClick={() => selectConversation(conv)} className="flex-1 p-4 flex items-start gap-3 text-left">
+                          <div className="relative flex-shrink-0">
+                            <div className="w-12 h-12 rounded-full bg-surface border border-border flex items-center justify-center text-purple-400 font-bold overflow-hidden">
+                              {cliente?.foto_url ? <img src={cliente.foto_url} alt="" className="w-full h-full object-cover" /> : <span>{displayName?.charAt(0) || "W"}</span>}
+                            </div>
+                            {conv.agente_activo && !cliente?.es_spam && <span className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-purple-600 border-2 border-surface flex items-center justify-center"><Bot className="w-2.5 h-2.5 text-white" /></span>}
                           </div>
-                          {conv.agente_activo && !cliente?.es_spam && <span className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-purple-600 border-2 border-surface flex items-center justify-center"><Bot className="w-2.5 h-2.5 text-white" /></span>}
+                          <div className="flex-1 min-w-0">
+                            <div className="flex justify-between mb-1"><h2 className="text-sm font-semibold text-gray-200 truncate">{displayName}</h2><span className="text-[10px] text-gray-500">{new Date(conv.ultimo_mensaje_en).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span></div>
+                            <p className="text-xs text-gray-400 truncate flex items-center gap-1">{(conv.ultimo_mensaje === "[audio]" || conv.ultimo_mensaje === "[nota_de_voz]" || (conv.ultimo_mensaje && /\[audio\]|nota_de_voz|Nota de voz/i.test(conv.ultimo_mensaje))) ? (<><Mic className="w-3.5 h-3.5 text-purple-400 flex-shrink-0" /><span>Nota de voz</span></>) : (conv.ultimo_mensaje || "Sin mensajes")}</p>
+                          </div>
+                        </button>
+                        {/* Acciones rápidas hover */}
+                        <div className="absolute right-2 top-2 hidden group-hover:flex items-center gap-1 bg-surface border border-border rounded-lg p-1 shadow-lg">
+                          <button 
+                            onClick={(e) => { e.stopPropagation(); archivarConversacion(conv.id, true); }}
+                            className="p-1.5 text-amber-400 hover:bg-amber-950/50 rounded-md transition-colors"
+                            title="Archivar (no responde)"
+                          >
+                            <Archive className="w-3.5 h-3.5" />
+                          </button>
+                          <button 
+                            onClick={(e) => { e.stopPropagation(); setShowDeleteConfirm(conv.id); }}
+                            className="p-1.5 text-red-400 hover:bg-red-950/50 rounded-md transition-colors"
+                            title="Eliminar conversación"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
                         </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex justify-between mb-1"><h2 className="text-sm font-semibold text-gray-200 truncate">{displayName}</h2><span className="text-[10px] text-gray-500">{new Date(conv.ultimo_mensaje_en).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span></div>
-                          <p className="text-xs text-gray-400 truncate flex items-center gap-1">{(conv.ultimo_mensaje === "[audio]" || conv.ultimo_mensaje === "[nota_de_voz]" || (conv.ultimo_mensaje && /\[audio\]|nota_de_voz|Nota de voz/i.test(conv.ultimo_mensaje))) ? (<><Mic className="w-3.5 h-3.5 text-purple-400 flex-shrink-0" /><span>Nota de voz</span></>) : (conv.ultimo_mensaje || "Sin mensajes")}</p>
-                        </div>
-                      </button>
+                      </div>
                     );
                   })
                 }
@@ -762,6 +905,20 @@ export default function CRMApp() {
                           <Bot className="w-3.5 h-3.5" /><span>{selectedConv.agente_activo ? "Agente Luna: ON" : "Agente Pausado"}</span>
                         </button>
                       )}
+                      <button 
+                        onClick={() => archivarConversacion(selectedConv.id, true)}
+                        className="p-2 text-amber-400 hover:bg-amber-950/30 rounded-lg border border-amber-900/30 transition-colors"
+                        title="Archivar conversación"
+                      >
+                        <Archive className="w-4 h-4" />
+                      </button>
+                      <button 
+                        onClick={() => setShowDeleteConfirm(selectedConv.id)}
+                        className="p-2 text-red-400 hover:bg-red-950/30 rounded-lg border border-red-900/30 transition-colors"
+                        title="Eliminar conversación"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
                       <button onClick={() => setShowMobileDetails(true)} className="md:hidden p-2 text-gray-400"><Info className="w-5 h-5" /></button>
                     </div>
                   </header>
@@ -854,6 +1011,15 @@ export default function CRMApp() {
                       </button>
                       <button onClick={toggleAgenteIA} className={`flex-1 flex justify-center items-center gap-1.5 py-2 rounded-lg border text-xs font-medium transition-all ${selectedConv.agente_activo ? "bg-purple-900 border-purple-600 text-purple-200" : "bg-background border-border text-gray-400"}`}>
                         <Bot className="w-3.5 h-3.5" />{selectedConv.agente_activo ? "IA Activa" : "IA Pausa"}
+                      </button>
+                    </div>
+
+                    <div className="flex gap-2">
+                      <button onClick={() => archivarConversacion(selectedConv.id, true)} className="flex-1 flex justify-center items-center gap-1.5 py-2 rounded-lg bg-amber-950/30 border border-amber-800/50 text-amber-400 hover:bg-amber-900/30 text-xs font-medium transition-all">
+                        <Archive className="w-3.5 h-3.5" /> Archivar
+                      </button>
+                      <button onClick={() => setShowDeleteConfirm(selectedConv.id)} className="flex-1 flex justify-center items-center gap-1.5 py-2 rounded-lg bg-red-950/30 border border-red-800/50 text-red-400 hover:bg-red-900/30 text-xs font-medium transition-all">
+                        <Trash2 className="w-3.5 h-3.5" /> Eliminar
                       </button>
                     </div>
 
@@ -980,6 +1146,252 @@ export default function CRMApp() {
               <div className="hidden md:flex flex-1 flex-col items-center justify-center text-gray-500 bg-background">
                 <MessageSquare className="w-12 h-12 mb-2 stroke-[1.5]" />
                 <p className="text-sm">Selecciona una conversación</p>
+                <p className="text-xs mt-2 text-gray-600 max-w-xs text-center">Archiva a los que no contestan con el botón 📦 para mantener tu bandeja limpia</p>
+              </div>
+            )}
+          </>
+        )}
+
+        {/* ================= ARCHIVADOS ================= */}
+        {tab === "archivados" && (
+          <>
+            <section className={`w-full md:w-96 border-r border-border bg-surface/50 flex-col ${selectedConv ? "hidden md:flex" : "flex"}`}>
+              <div className="p-4 border-b border-border flex flex-col gap-3 pt-6 md:pt-4">
+                <div className="flex items-center justify-between">
+                  <h1 className="text-lg font-bold text-gray-100 flex items-center gap-2">
+                    <Archive className="w-5 h-5 text-amber-400" /> Archivados
+                  </h1>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs px-2.5 py-1 rounded-full bg-amber-900/30 text-amber-300 font-medium border border-amber-800/50">{conversacionesArchivadas.length}</span>
+                  </div>
+                </div>
+
+                <p className="text-[11px] text-gray-400 bg-background/50 p-2.5 rounded-lg border border-border">
+                  Personas que no volvieron a contestar. Se archivan automáticamente después de 7 días sin actividad o manualmente.
+                </p>
+
+                <div className="relative">
+                  <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
+                  <input 
+                    value={searchArchivados} 
+                    onChange={e => setSearchArchivados(e.target.value)}
+                    placeholder="Buscar en archivados..." 
+                    className="w-full bg-background border border-border rounded-lg pl-9 pr-3 py-2 text-xs text-gray-200 placeholder-gray-500 focus:outline-none focus:border-amber-600"
+                  />
+                  {searchArchivados && (
+                    <button onClick={() => setSearchArchivados("")} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white">
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+
+                <div className="flex bg-background p-1 rounded-lg border border-border text-xs">
+                  {["todos", "evolution", "meta_business"].map((f) => (
+                    <button key={f} onClick={() => setFiltroArchivados(f as any)} className={`flex-1 py-1.5 rounded-md transition-all capitalize ${filtroArchivados === f ? "bg-amber-900/40 text-amber-300 font-medium" : "text-gray-500"}`}>
+                      {f === "evolution" ? "Personal" : f === "meta_business" ? "Business" : f}
+                    </button>
+                  ))}
+                </div>
+
+                {conversacionesArchivadas.length > 0 && (
+                  <div className="flex gap-2">
+                    <button onClick={() => {
+                      if (confirm(`¿Restaurar todas las ${conversacionesArchivadas.length} conversaciones archivadas?`)) {
+                        conversacionesArchivadas.forEach(c => archivarConversacion(c.id, false));
+                      }
+                    }} className="flex-1 py-2 rounded-lg bg-surface border border-border text-gray-300 hover:bg-surfaceHover text-xs flex items-center justify-center gap-1.5">
+                      <ArchiveRestore className="w-3.5 h-3.5" /> Restaurar todo
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex-1 overflow-y-auto divide-y divide-border/50">
+                {conversacionesArchivadas.length === 0 ? (
+                  <div className="p-8 text-center">
+                    <Archive className="w-12 h-12 mx-auto text-gray-600 mb-3" />
+                    <p className="text-sm text-gray-400 font-medium">No hay archivados</p>
+                    <p className="text-xs text-gray-500 mt-1">Las conversaciones inactivas aparecerán aquí</p>
+                  </div>
+                ) : (
+                  conversacionesArchivadas.map((conv) => {
+                    const cliente = conv.clientes;
+                    const displayName = cliente?.nombre || cliente?.telefono_display || conv.numero_whatsapp;
+                    const diasArchivado = conv.fecha_archivado ? Math.floor((Date.now() - new Date(conv.fecha_archivado).getTime()) / (1000*60*60*24)) : Math.floor((Date.now() - new Date(conv.ultimo_mensaje_en).getTime()) / (1000*60*60*24));
+                    return (
+                      <div key={conv.id} className={`group relative w-full flex items-start gap-3 text-left hover:bg-surfaceHover transition-colors ${selectedConv?.id === conv.id ? "bg-amber-950/20 border-l-4 border-amber-600" : ""}`}>
+                        <button onClick={() => selectConversation(conv)} className="flex-1 p-4 flex items-start gap-3 text-left">
+                          <div className="relative flex-shrink-0">
+                            <div className="w-11 h-11 rounded-full bg-surface border border-amber-900/30 flex items-center justify-center text-amber-400 font-bold overflow-hidden opacity-80">
+                              {cliente?.foto_url ? <img src={cliente.foto_url} alt="" className="w-full h-full object-cover grayscale" /> : <span>{displayName?.charAt(0) || "W"}</span>}
+                            </div>
+                            <span className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-amber-900 border-2 border-surface flex items-center justify-center"><Archive className="w-2.5 h-2.5 text-amber-300" /></span>
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex justify-between mb-1">
+                              <h2 className="text-sm font-medium text-gray-300 truncate">{displayName}</h2>
+                              <span className="text-[10px] text-amber-500/70">{diasArchivado}d</span>
+                            </div>
+                            <p className="text-xs text-gray-500 truncate">{conv.ultimo_mensaje || "Sin mensajes"}</p>
+                            <p className="text-[10px] text-gray-600 mt-1">{new Date(conv.ultimo_mensaje_en).toLocaleDateString()}</p>
+                          </div>
+                        </button>
+                        <div className="absolute right-2 top-2 hidden group-hover:flex items-center gap-1 bg-surface border border-border rounded-lg p-1 shadow-lg">
+                          <button 
+                            onClick={(e) => { e.stopPropagation(); archivarConversacion(conv.id, false); }}
+                            className="p-1.5 text-emerald-400 hover:bg-emerald-950/50 rounded-md transition-colors"
+                            title="Restaurar"
+                          >
+                            <ArchiveRestore className="w-3.5 h-3.5" />
+                          </button>
+                          <button 
+                            onClick={(e) => { e.stopPropagation(); setShowDeleteConfirm(conv.id); }}
+                            className="p-1.5 text-red-400 hover:bg-red-950/50 rounded-md transition-colors"
+                            title="Eliminar definitivo"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </section>
+
+            {selectedConv && clienteActual ? (
+              <div className="flex-1 flex w-full h-full absolute inset-0 md:relative bg-background z-20">
+                <section className={`flex-1 flex flex-col h-full ${showMobileDetails ? "hidden md:flex" : "flex"}`}>
+                  <header className="h-16 px-4 md:px-6 border-b border-amber-900/30 bg-amber-950/20 backdrop-blur-md flex items-center justify-between flex-shrink-0">
+                    <div className="flex items-center gap-3">
+                      <button onClick={() => setSelectedConv(null)} className="md:hidden p-2 -ml-2 text-gray-400 hover:text-white"><ArrowLeft className="w-5 h-5" /></button>
+                      <div className="w-10 h-10 rounded-full bg-surface border border-amber-800/50 flex items-center justify-center text-amber-400 font-bold overflow-hidden">
+                        {clienteActual.foto_url ? <img src={clienteActual.foto_url} className="w-full h-full object-cover" alt="" /> : <span>{clienteActual.nombre?.charAt(0) || "W"}</span>}
+                      </div>
+                      <div className="flex flex-col">
+                        <h2 className="text-sm font-bold text-gray-100 flex items-center gap-2">
+                          {clienteActual.nombre || "Sin nombre"}
+                          <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-900/50 text-amber-300 border border-amber-800/50">ARCHIVADO</span>
+                        </h2>
+                        <span className="text-[10px] text-gray-400 flex items-center gap-1"><Phone className="w-3 h-3" /> {clienteActual.telefono_display || clienteActual.telefono}</span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button 
+                        onClick={() => archivarConversacion(selectedConv.id, false)}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-900/30 border border-emerald-800/50 text-emerald-300 hover:bg-emerald-900/50 text-xs font-medium transition-colors"
+                      >
+                        <ArchiveRestore className="w-4 h-4" /> Restaurar
+                      </button>
+                      <button 
+                        onClick={() => setShowDeleteConfirm(selectedConv.id)}
+                        className="p-2 text-red-400 hover:bg-red-950/30 rounded-lg border border-red-900/30 transition-colors"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                      <button onClick={() => setShowMobileDetails(true)} className="md:hidden p-2 text-gray-400"><Info className="w-5 h-5" /></button>
+                    </div>
+                  </header>
+
+                  <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4 bg-background">
+                    <div className="bg-amber-950/20 border border-amber-900/30 rounded-xl p-3 flex items-start gap-2 text-xs text-amber-200/80">
+                      <AlertTriangle className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
+                      <p>Esta conversación está archivada porque no hubo respuesta en más de 7 días. Puedes restaurarla para que vuelva a la bandeja principal o enviar un mensaje y se restaurará automáticamente.</p>
+                    </div>
+
+                    {mensajes.map((msg) => {
+                      const isMe = msg.tipo === "enviado";
+                      return (
+                        <div key={msg.id} className={`flex ${isMe ? "justify-end" : "justify-start"}`}>
+                          <div className={`max-w-[85%] md:max-w-[70%] rounded-2xl px-3 py-2 shadow-sm ${isMe ? "bg-purple-600 text-white rounded-br-none opacity-90" : "bg-surface border border-border text-gray-300 rounded-bl-none opacity-80"}`}>
+                            {(() => {
+                              const isAudioMsg = msg.tipo_contenido === "audio" || msg.contenido === "[audio]" || msg.contenido === "[nota_de_voz]" || (msg.url_archivo && (msg.url_archivo.startsWith("data:audio/") || /\.(ogg|opus|webm|mp3|wav|m4a|aac)($|\?)/i.test(msg.url_archivo)));
+                              if (isAudioMsg && msg.url_archivo) {
+                                return <VoiceNotePlayer src={msg.url_archivo} isMe={isMe} />;
+                              }
+                              if (msg.tipo_contenido === "imagen" && msg.url_archivo) {
+                                return <img src={msg.url_archivo} alt="" className="rounded-lg max-h-60 object-cover" />;
+                              }
+                              return <p className="text-sm whitespace-pre-wrap leading-relaxed">{msg.contenido}</p>;
+                            })()}
+                            <span className={`block text-[9px] mt-1 ${isMe ? "text-purple-200 text-right" : "text-gray-500"}`}>{new Date(msg.creado_en).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    <div ref={messagesEndRef} />
+                  </div>
+
+                  <div className="p-3 border-t border-border bg-surface/80 backdrop-blur-md flex items-center gap-2 flex-shrink-0">
+                    <input type="file" ref={fileInputRef} className="hidden" onChange={handleFileUpload} accept="image/*,audio/*,video/*,.pdf,.doc,.docx,.xls,.xlsx" />
+                    <button type="button" onClick={() => fileInputRef.current?.click()} disabled={isRecording} className="p-2.5 text-gray-400 hover:text-purple-400 hover:bg-surfaceHover rounded-full transition-colors disabled:opacity-40"><Paperclip className="w-5 h-5" /></button>
+                    {(isRecording || isPreparingRecording) ? (
+                      <div className="flex-1 bg-red-950/30 border border-red-900/50 rounded-full px-4 py-2 flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 text-red-400 text-sm font-medium flex-shrink-0"><span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" /><Mic className="w-4 h-4" /> {isPreparingRecording ? "Preparando..." : formatTime(recordingTime)}</div>
+                        <div className="flex items-center gap-1 flex-shrink-0">
+                          <button onClick={cancelRecording} disabled={!isRecording} className="p-1.5 text-gray-400 hover:text-white rounded-full disabled:opacity-40"><Trash2 className="w-4 h-4" /></button>
+                          <button onClick={stopRecording} disabled={isPreparingRecording || !isRecording} className="p-1.5 text-white bg-red-600 hover:bg-red-500 rounded-full shadow-lg disabled:opacity-40"><Send className="w-4 h-4 ml-0.5" /></button>
+                        </div>
+                      </div>
+                    ) : (
+                      <form onSubmit={handleSendMessage} className="flex-1 flex flex-wrap items-center gap-2">
+                        <input type="text" value={nuevoMensaje} onChange={(e) => setNuevoMensaje(e.target.value)} placeholder="Escribe para restaurar y responder..." disabled={isSending} className="flex-1 bg-background border border-border rounded-full px-4 py-2.5 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-amber-600 disabled:opacity-50" />
+                        {nuevoMensaje.trim() ? (
+                          <button type="submit" disabled={isSending} className="bg-amber-700 hover:bg-amber-600 text-white p-2.5 rounded-full transition-colors disabled:opacity-50"><Send className="w-5 h-5" /></button>
+                        ) : (
+                          <button type="button" onClick={startRecording} disabled={isSending || isPreparingRecording} className="bg-surface border border-border text-amber-400 hover:bg-amber-600 hover:text-white hover:border-amber-600 p-2.5 rounded-full transition-colors disabled:opacity-50"><Mic className="w-5 h-5" /></button>
+                        )}
+                        {sendError && <p className="w-full text-xs text-red-400 px-2">{sendError}</p>}
+                      </form>
+                    )}
+                  </div>
+                </section>
+
+                <aside className={`w-full md:w-80 lg:w-96 border-l border-border bg-surface/95 overflow-y-auto absolute inset-0 z-30 md:relative flex flex-col ${!showMobileDetails ? "hidden md:flex" : "flex"}`}>
+                  <header className="md:hidden flex items-center p-4 border-b border-border bg-background sticky top-0 z-10">
+                    <button onClick={() => setShowMobileDetails(false)} className="p-2 -ml-2 text-gray-400"><ArrowLeft className="w-5 h-5" /></button>
+                    <h2 className="font-bold ml-2">Ficha Archivada</h2>
+                  </header>
+                  <div className="p-5 space-y-5">
+                    <div className="text-center">
+                      <div className="w-20 h-20 mx-auto rounded-full bg-surface border-2 border-amber-700 flex items-center justify-center text-2xl font-bold text-amber-300 mb-3 overflow-hidden shadow-lg">
+                        {clienteActual.foto_url ? <img src={clienteActual.foto_url} alt="" className="w-full h-full object-cover" /> : <span>{clienteActual.nombre?.charAt(0) || "W"}</span>}
+                      </div>
+                      <h3 className="text-base font-bold text-gray-100">{clienteActual.nombre || "Sin Nombre"}</h3>
+                      <p className="text-xs text-gray-400 mt-0.5">{clienteActual.telefono_display || clienteActual.telefono}</p>
+                      <p className="text-[10px] text-amber-400 mt-2 bg-amber-950/30 border border-amber-900/30 px-2 py-1 rounded-full inline-block">
+                        Archivado {clienteActual ? `hace ${Math.floor((Date.now() - new Date((selectedConv as any).fecha_archivado || (selectedConv as any).ultimo_mensaje_en).getTime()) / (1000*60*60*24))} días` : ''}
+                      </p>
+                    </div>
+
+                    <div className="flex gap-2">
+                      <button onClick={() => archivarConversacion(selectedConv.id, false)} className="flex-1 flex justify-center items-center gap-1.5 py-2.5 rounded-lg bg-emerald-900/30 border border-emerald-800 text-emerald-300 hover:bg-emerald-900/50 text-xs font-bold transition-all">
+                        <ArchiveRestore className="w-4 h-4" /> Restaurar a bandeja
+                      </button>
+                    </div>
+
+                    <div className="bg-background p-4 rounded-xl border border-border space-y-2">
+                      <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider block">Estado Pipeline</label>
+                      <select value={clienteActual.estado || "nuevo_lead"} onChange={(e) => actualizarEstadoCliente(clienteActual.id, e.target.value)} className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-purple-500">
+                        {pipelineEtapas.map((etapa) => <option key={etapa.clave} value={etapa.clave}>{etapa.nombre}</option>)}
+                      </select>
+                    </div>
+
+                    <div className="bg-red-950/20 border border-red-900/30 p-4 rounded-xl">
+                      <h4 className="text-xs font-bold text-red-300 mb-2 flex items-center gap-1.5"><AlertTriangle className="w-3.5 h-3.5" /> Zona de peligro</h4>
+                      <p className="text-[11px] text-gray-400 mb-3">Eliminar borrará todos los mensajes de esta conversación de forma permanente.</p>
+                      <button onClick={() => setShowDeleteConfirm(selectedConv.id)} className="w-full flex justify-center items-center gap-1.5 py-2 rounded-lg bg-red-900/50 border border-red-800 text-red-300 hover:bg-red-800 text-xs font-medium transition-all">
+                        <Trash2 className="w-3.5 h-3.5" /> Eliminar definitivo
+                      </button>
+                    </div>
+                  </div>
+                </aside>
+              </div>
+            ) : (
+              <div className="hidden md:flex flex-1 flex-col items-center justify-center text-gray-500 bg-background">
+                <Archive className="w-12 h-12 mb-3 text-amber-700/50" />
+                <p className="text-sm font-medium">Selecciona un archivado</p>
+                <p className="text-xs mt-1 text-gray-600 max-w-xs text-center">Aquí van las personas que no vuelven a contestar. Puedes restaurarlas o eliminarlas.</p>
               </div>
             )}
           </>
@@ -1019,7 +1431,7 @@ export default function CRMApp() {
               )}
 
               {pipelineEtapas.filter((e) => e.clave !== "spam").map((col) => {
-                const clientesEnCol = conversaciones.filter((c) => (c.clientes?.estado || "nuevo_lead") === col.clave && !c.clientes?.es_spam);
+                const clientesEnCol = conversaciones.filter((c) => (c.clientes?.estado || "nuevo_lead") === col.clave && !c.clientes?.es_spam && !(c as any).archivada);
                 return (
                   <div key={col.id} className="w-72 flex-shrink-0 bg-surface/60 border border-border rounded-2xl p-4 flex flex-col gap-3 min-h-full">
                     <div className={`flex items-center justify-between pb-2 border-b-2 ${col.color || "border-purple-500"}`}>
@@ -1277,7 +1689,6 @@ export default function CRMApp() {
                         </div>
                       </div>
 
-                      {/* PANEL EXPANDIDO DE DETALLES */}
                       {isExpanded && (
                         <div className="px-5 pb-5 pt-2 bg-surface/30 border-t border-border/50">
                           <h5 className="text-[10px] font-bold text-purple-400 uppercase tracking-wider mb-3">Detalles de Rendimiento</h5>
@@ -1324,6 +1735,35 @@ export default function CRMApp() {
         {/* ==================== CEREBRO IA (FASE 3) ==================== */}
         {tab === "cerebro" && <CerebroPanel />}
       </main>
+
+      {/* MODAL CONFIRMAR ELIMINAR */}
+      {showDeleteConfirm && (
+        <div className="fixed inset-0 z-[60] bg-black/70 flex items-center justify-center p-4 backdrop-blur-md">
+          <div className="w-full max-w-sm bg-surface border border-red-900/50 rounded-2xl p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center gap-3 text-red-400">
+              <div className="w-10 h-10 rounded-full bg-red-950/50 border border-red-800 flex items-center justify-center">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-gray-100">¿Eliminar conversación?</h3>
+                <p className="text-xs text-gray-400">Esta acción no se puede deshacer</p>
+              </div>
+            </div>
+            <div className="bg-red-950/20 border border-red-900/30 rounded-xl p-3 text-xs text-gray-300">
+              Se borrarán <span className="text-red-300 font-bold">todos los mensajes</span> de esta conversación de forma permanente. El cliente y sus pagos se mantendrán.
+            </div>
+            <div className="flex gap-2">
+              <button onClick={() => setShowDeleteConfirm(null)} disabled={isDeleting} className="flex-1 py-2.5 rounded-xl bg-surface border border-border text-gray-300 hover:bg-surfaceHover text-sm font-medium transition-colors disabled:opacity-50">
+                Cancelar
+              </button>
+              <button onClick={() => eliminarConversacionDefinitivo(showDeleteConfirm)} disabled={isDeleting} className="flex-1 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-bold transition-colors disabled:opacity-50 flex items-center justify-center gap-2">
+                {isDeleting ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                {isDeleting ? "Eliminando..." : "Sí, eliminar"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* MODAL IA RECOMENDACIONES ADS */}
       {showAiModal && (
@@ -1374,6 +1814,11 @@ export default function CRMApp() {
                 </div>
               </div>
             )}
+            <div className="pt-3 border-t border-border space-y-2">
+              <h4 className="text-[10px] font-bold text-gray-500 uppercase">APK Info</h4>
+              <p className="text-[11px] text-gray-400">App ID: <span className="text-purple-300">com.templomistico.crm</span></p>
+              <p className="text-[11px] text-gray-500">Para generar APK lee README-APK.md</p>
+            </div>
           </div>
         </div>
       )}

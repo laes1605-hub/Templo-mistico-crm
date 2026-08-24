@@ -5,10 +5,21 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "build:apk": "next build && npx cap copy android && npx cap sync android",
+    "build:static": "next build",
+    "cap:init": "npx cap init \"Templo Místico CRM\" com.templomistico.crm --web-dir=out",
+    "cap:add:android": "npx cap add android",
+    "cap:copy": "npx cap copy",
+    "cap:sync": "npx cap sync",
+    "cap:open:android": "npx cap open android",
+    "cap:build:android": "npx cap copy android && npx cap sync android && cd android && ./gradlew assembleDebug",
     "start": "next start",
     "lint": "next lint"
   },
   "dependencies": {
+    "@capacitor/android": "^8.5.0",
+    "@capacitor/cli": "^8.5.0",
+    "@capacitor/core": "^8.5.0",
     "@supabase/supabase-js": "^2.48.1",
     "clsx": "^2.1.1",
     "lucide-react": "^0.475.0",

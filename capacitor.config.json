@@ -8,5 +8,11 @@
     "allowNavigation": [
       "templo-mistico-crm.vercel.app"
     ]
+  },
+  "plugins": {
+    "LocalNotifications": {
+      "smallIcon": "ic_stat_templo",
+      "iconColor": "#8B5CF6"
+    }
   }
 }

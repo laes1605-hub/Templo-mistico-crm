@@ -13,6 +13,7 @@
 ## APK
 - App ID: com.templomistico.crm
 - App Name: Templo Místico CRM
+- Version: 1.1.0 (definida en `package.json` y usada por Android)
 - WebDir: out
 - Android project: android/
 - Para generar APK debug:

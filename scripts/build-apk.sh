@@ -14,35 +14,18 @@ echo "====================================="
 
 if [ -n "$URL" ]; then
   echo "🌐 Configurando server.url a: $URL"
-  # Actualizar capacitor.config.json con URL
-  cat > capacitor.config.json <<EOF
-{
-  "appId": "com.templomistico.crm",
-  "appName": "Templo Místico CRM",
-  "webDir": "out",
-  "bundledWebRuntime": false,
-  "server": {
-    "url": "$URL",
-    "cleartext": true,
-    "androidScheme": "https",
-    "iosScheme": "https"
-  },
-  "plugins": {
-    "SplashScreen": {
-      "launchShowDuration": 2000,
-      "backgroundColor": "#090d16"
-    },
-    "StatusBar": {
-      "style": "DARK",
-      "backgroundColor": "#090d16"
-    }
-  },
-  "android": {
-    "allowMixedContent": true,
-    "captureInput": true
-  }
-}
-EOF
+  # Actualizar solo server.url. No sobrescribimos el config completo porque
+  # eso elimina opciones/plugins y puede dejar la configuración desincronizada.
+  CAPACITOR_URL="$URL" node <<'NODE'
+const fs = require('fs');
+const path = 'capacitor.config.json';
+const config = JSON.parse(fs.readFileSync(path, 'utf8'));
+config.server = {
+  ...(config.server || {}),
+  url: process.env.CAPACITOR_URL,
+};
+fs.writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`);
+NODE
 else
   echo "📦 Modo estático (sin URL) - Se usará carpeta out"
   echo "⚠️  Recuerda que las API no funcionarán offline sin server.url"

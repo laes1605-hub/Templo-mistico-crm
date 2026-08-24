@@ -50,9 +50,78 @@ create table if not exists public.cerebro_reglas (
   actualizado_en    timestamptz not null default now()
 );
 
+-- Compatibilidad con instalaciones donde `cerebro_reglas` ya existía antes
+-- de esta versión. `create table if not exists` NO agrega las columnas que
+-- falten a una tabla existente; por eso, sin este bloque, una tabla antigua
+-- puede fallar más abajo al crear el check de `confianza`.
+alter table public.cerebro_reglas
+  add column if not exists titulo text,
+  add column if not exists regla text,
+  add column if not exists categoria text default 'cierre',
+  add column if not exists ejemplo text,
+  add column if not exists justificacion text,
+  add column if not exists impacto_estimado text,
+  add column if not exists confianza numeric(4,3) default 0.500,
+  add column if not exists prioridad integer default 0,
+  add column if not exists estado text default 'pendiente',
+  add column if not exists origen text default 'n8n_extractor',
+  add column if not exists cliente_id uuid references public.clientes(id) on delete set null,
+  add column if not exists conversacion_id uuid references public.conversaciones(id) on delete set null,
+  add column if not exists evidencia jsonb default '{}'::jsonb,
+  add column if not exists veces_usada integer default 0,
+  add column if not exists ultima_inyeccion_en timestamptz,
+  add column if not exists hash_regla text,
+  add column if not exists revisado_en timestamptz,
+  add column if not exists revisado_por text,
+  add column if not exists nota_revision text,
+  add column if not exists creado_en timestamptz default now(),
+  add column if not exists actualizado_en timestamptz default now();
+
+-- Completa valores nulos de tablas antiguas antes de aplicar las restricciones.
+update public.cerebro_reglas
+set confianza = coalesce(confianza, 0.500),
+    prioridad = coalesce(prioridad, 0),
+    estado = coalesce(estado, 'pendiente'),
+    categoria = coalesce(categoria, 'cierre'),
+    origen = coalesce(origen, 'n8n_extractor'),
+    evidencia = coalesce(evidencia, '{}'::jsonb),
+    veces_usada = coalesce(veces_usada, 0),
+    creado_en = coalesce(creado_en, now()),
+    actualizado_en = coalesce(actualizado_en, now());
+
+alter table public.cerebro_reglas
+  alter column confianza set default 0.500,
+  alter column confianza set not null,
+  alter column prioridad set default 0,
+  alter column prioridad set not null,
+  alter column estado set default 'pendiente',
+  alter column estado set not null,
+  alter column categoria set default 'cierre',
+  alter column categoria set not null,
+  alter column origen set default 'n8n_extractor',
+  alter column origen set not null,
+  alter column evidencia set default '{}'::jsonb,
+  alter column evidencia set not null,
+  alter column veces_usada set default 0,
+  alter column veces_usada set not null,
+  alter column creado_en set default now(),
+  alter column creado_en set not null,
+  alter column actualizado_en set default now(),
+  alter column actualizado_en set not null;
+
 -- Restricciones de dominio (se agregan sólo si no existen)
 do $$
 begin
+  if not exists (
+    select 1 from pg_constraint
+    where conrelid = 'public.cerebro_reglas'::regclass
+      and contype = 'u'
+      and conkey = array[(select attnum from pg_attribute where attrelid = 'public.cerebro_reglas'::regclass and attname = 'hash_regla')]
+  ) then
+    alter table public.cerebro_reglas
+      add constraint cerebro_reglas_hash_regla_key unique (hash_regla);
+  end if;
+
   if not exists (select 1 from pg_constraint where conname = 'cerebro_reglas_estado_check') then
     alter table public.cerebro_reglas
       add constraint cerebro_reglas_estado_check
@@ -99,6 +168,52 @@ create table if not exists public.cerebro_ejecuciones (
   error                 text,
   creado_en             timestamptz not null default now()
 );
+
+-- Igual que con las reglas, actualiza una eventual tabla creada por una versión
+-- anterior del archivo antes de crear índices o activar RLS.
+alter table public.cerebro_ejecuciones
+  add column if not exists origen text default 'n8n_extractor',
+  add column if not exists estado text default 'ok',
+  add column if not exists conversaciones_analizadas integer default 0,
+  add column if not exists mensajes_analizados integer default 0,
+  add column if not exists reglas_sugeridas integer default 0,
+  add column if not exists reglas_nuevas integer default 0,
+  add column if not exists reglas_duplicadas integer default 0,
+  add column if not exists modelo text,
+  add column if not exists detalle jsonb default '{}'::jsonb,
+  add column if not exists error text,
+  add column if not exists creado_en timestamptz default now();
+
+update public.cerebro_ejecuciones
+set origen = coalesce(origen, 'n8n_extractor'),
+    estado = coalesce(estado, 'ok'),
+    conversaciones_analizadas = coalesce(conversaciones_analizadas, 0),
+    mensajes_analizados = coalesce(mensajes_analizados, 0),
+    reglas_sugeridas = coalesce(reglas_sugeridas, 0),
+    reglas_nuevas = coalesce(reglas_nuevas, 0),
+    reglas_duplicadas = coalesce(reglas_duplicadas, 0),
+    detalle = coalesce(detalle, '{}'::jsonb),
+    creado_en = coalesce(creado_en, now());
+
+alter table public.cerebro_ejecuciones
+  alter column origen set default 'n8n_extractor',
+  alter column origen set not null,
+  alter column estado set default 'ok',
+  alter column estado set not null,
+  alter column conversaciones_analizadas set default 0,
+  alter column conversaciones_analizadas set not null,
+  alter column mensajes_analizados set default 0,
+  alter column mensajes_analizados set not null,
+  alter column reglas_sugeridas set default 0,
+  alter column reglas_sugeridas set not null,
+  alter column reglas_nuevas set default 0,
+  alter column reglas_nuevas set not null,
+  alter column reglas_duplicadas set default 0,
+  alter column reglas_duplicadas set not null,
+  alter column detalle set default '{}'::jsonb,
+  alter column detalle set not null,
+  alter column creado_en set default now(),
+  alter column creado_en set not null;
 
 create index if not exists cerebro_ejecuciones_creado_idx on public.cerebro_ejecuciones (creado_en desc);
 

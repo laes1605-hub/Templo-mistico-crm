@@ -1,53 +1,39 @@
 -- ============================================================================
--- 📦 ARCHIVADOS Y ELIMINADOS — Templo Místico CRM
--- Agrega soporte para archivar conversaciones (personas que no contestan)
--- y preparar borrado lógico
+-- 📦 ARCHIVADOS Y ELIMINADOS — Templo Místico CRM (FIXED)
+-- Versión corregida que no falla en Supabase
 -- ============================================================================
 
--- Agregar columnas de archivado a conversaciones
-alter table public.conversaciones
-  add column if not exists archivada boolean not null default false,
-  add column if not exists fecha_archivado timestamptz,
-  add column if not exists motivo_archivado text;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='conversaciones' AND column_name='archivada') THEN
+    ALTER TABLE public.conversaciones ADD COLUMN archivada boolean DEFAULT false;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='conversaciones' AND column_name='fecha_archivado') THEN
+    ALTER TABLE public.conversaciones ADD COLUMN fecha_archivado timestamptz;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='conversaciones' AND column_name='motivo_archivado') THEN
+    ALTER TABLE public.conversaciones ADD COLUMN motivo_archivado text;
+  END IF;
+  -- Asegurar valores por defecto
+  EXECUTE 'UPDATE public.conversaciones SET archivada = false WHERE archivada IS NULL';
+  BEGIN
+    ALTER TABLE public.conversaciones ALTER COLUMN archivada SET NOT NULL;
+  EXCEPTION WHEN others THEN NULL;
+  END;
+  ALTER TABLE public.conversaciones ALTER COLUMN archivada SET DEFAULT false;
+END $$;
 
--- Índice para filtrar archivadas rápido
-create index if not exists conversaciones_archivada_idx on public.conversaciones (archivada);
-create index if not exists conversaciones_fecha_archivado_idx on public.conversaciones (fecha_archivado desc) where archivada = true;
+CREATE INDEX IF NOT EXISTS conversaciones_archivada_idx ON public.conversaciones (archivada);
+CREATE INDEX IF NOT EXISTS conversaciones_fecha_archivado_idx ON public.conversaciones (fecha_archivado DESC) WHERE archivada = true;
 
--- Opcional: vista de conversaciones activas vs archivadas
-create or replace view public.v_conversaciones_activas as
-select * from public.conversaciones where archivada = false;
+CREATE OR REPLACE VIEW public.v_conversaciones_activas AS SELECT * FROM public.conversaciones WHERE archivada = false;
+CREATE OR REPLACE VIEW public.v_conversaciones_archivadas AS SELECT * FROM public.conversaciones WHERE archivada = true;
 
-create or replace view public.v_conversaciones_archivadas as
-select * from public.conversaciones where archivada = true;
-
--- Comentarios para documentación
-comment on column public.conversaciones.archivada is 'Si true, la conversación está archivada (no contestan)';
-comment on column public.conversaciones.fecha_archivado is 'Fecha en que se archivó';
-comment on column public.conversaciones.motivo_archivado is 'Motivo opcional: inactivo_7d, manual, no_responde, etc';
-
--- Función helper para auto-archivar inactivos > X días
-create or replace function public.archivar_conversaciones_inactivas(dias int default 7)
-returns integer
-language plpgsql
-security definer
-set search_path = public
-as $$
-declare
-  filas integer;
-begin
-  update public.conversaciones
-  set archivada = true,
-      fecha_archivado = now(),
-      motivo_archivado = 'inactivo_' || dias || 'd'
-  where archivada = false
-    and ultimo_mensaje_en < now() - (dias || ' days')::interval;
-  
-  get diagnostics filas = row_count;
-  return filas;
-end;
-$$;
-
--- Permisos RLS ya existentes deberían cubrir la nueva columna, pero por si acaso:
--- La anon key ya puede leer (si tenías política de lectura pública)
--- Si usas service_role para escrituras, no necesitas política extra
+CREATE OR REPLACE FUNCTION public.archivar_conversaciones_inactivas(dias int DEFAULT 7)
+RETURNS integer LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+DECLARE filas integer;
+BEGIN
+  UPDATE public.conversaciones SET archivada = true, fecha_archivado = now(), motivo_archivado = 'inactivo_' || dias || 'd'
+  WHERE archivada = false AND ultimo_mensaje_en < now() - (dias || ' days')::interval;
+  GET DIAGNOSTICS filas = ROW_COUNT; RETURN filas;
+END; $$;

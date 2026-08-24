@@ -2,12 +2,13 @@
   "appId": "com.templomistico.crm",
   "appName": "Templo Místico CRM",
   "webDir": "out",
-  "bundledWebRuntime": false,
   "server": {
+    "url": "https://templo-mistico-crm.vercel.app",
+    "cleartext": true,
     "androidScheme": "https",
-    "iosScheme": "https",
-    "hostname": "templomisitico.app"
-  },
+    "iosScheme": "https"
+  }
+}
   "plugins": {
     "SplashScreen": {
       "launchShowDuration": 2000,

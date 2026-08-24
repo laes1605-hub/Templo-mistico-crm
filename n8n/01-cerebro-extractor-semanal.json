@@ -1,0 +1,158 @@
+{
+  "name": "🧠 Cerebro Luna — Extractor Semanal (Fase 3)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "triggerAtDay": [1],
+              "triggerAtHour": 4,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      },
+      "id": "trigger-semanal",
+      "name": "Cada lunes 4:00 AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-380, 0]
+    },
+    {
+      "parameters": {},
+      "id": "trigger-manual",
+      "name": "Probar manualmente",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [-380, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.CRM_URL }}/api/cerebro/extraer",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-cerebro-secret",
+              "value": "={{ $env.CEREBRO_API_SECRET }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"dias\": 7,\n  \"maxConversaciones\": 12,\n  \"maxMensajes\": 60,\n  \"maxReglas\": 6,\n  \"modelo\": \"gpt-4o-mini\",\n  \"origen\": \"n8n_extractor\"\n}",
+        "options": {
+          "timeout": 120000,
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "http-extraer",
+      "name": "CRM · Extraer lecciones de ventas cerradas",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-120, 100],
+      "notes": "Llama a /api/cerebro/extraer. El CRM se encarga de leer Supabase, llamar a OpenAI y guardar las reglas en estado 'pendiente'."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "hay-nuevas",
+              "leftValue": "={{ $json.nuevas }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-hay-nuevas",
+      "name": "¿Aprendió algo nuevo?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [160, 100]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "resumen",
+              "name": "resumen",
+              "value": "=🧠 *Cerebro de Luna — Reporte semanal*\n\nAnalicé {{ $json.analizadas }} conversación(es) que terminaron en venta o agendamiento ({{ $json.mensajes }} mensajes).\n\n✨ *{{ $json.nuevas }} lección(es) nueva(s)* esperan tu aprobación en el CRM.\n{{ $json.duplicadas > 0 ? '♻️ ' + $json.duplicadas + ' patrón(es) ya los conocía.' : '' }}\n\n👉 Entrá a la pestaña *Cerebro* y aprobalas con 1 clic para que Luna las use hoy mismo.\n{{ $env.CRM_URL }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-resumen",
+      "name": "Armar reporte",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [440, 0],
+      "notes": "Conectá aquí abajo tu nodo de notificación (WhatsApp / Telegram / Email) usando {{ $json.resumen }}."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "nota",
+              "name": "nota",
+              "value": "={{ $json.nota || $json.error || 'Sin lecciones nuevas esta semana.' }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-sin-novedad",
+      "name": "Sin novedades",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [440, 220]
+    }
+  ],
+  "connections": {
+    "Cada lunes 4:00 AM": {
+      "main": [[{ "node": "CRM · Extraer lecciones de ventas cerradas", "type": "main", "index": 0 }]]
+    },
+    "Probar manualmente": {
+      "main": [[{ "node": "CRM · Extraer lecciones de ventas cerradas", "type": "main", "index": 0 }]]
+    },
+    "CRM · Extraer lecciones de ventas cerradas": {
+      "main": [[{ "node": "¿Aprendió algo nuevo?", "type": "main", "index": 0 }]]
+    },
+    "¿Aprendió algo nuevo?": {
+      "main": [
+        [{ "node": "Armar reporte", "type": "main", "index": 0 }],
+        [{ "node": "Sin novedades", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "pinData": {}
+}

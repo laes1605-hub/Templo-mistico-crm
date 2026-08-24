@@ -1,0 +1,81 @@
+{
+  "name": "🧠 Cerebro Luna — Inyección de memoria (fragmento para tu flujo de Luna)",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 🧠 CÓMO USAR ESTE FRAGMENTO\n\nEste NO es un workflow completo: son los 2 nodos que tenés que **copiar y pegar dentro de tu workflow actual de Luna**, justo ANTES del nodo de OpenAI / AI Agent.\n\n**Orden final en tu flujo de Luna:**\n\n`Webhook WhatsApp` → `(tu lógica actual)` → **`Cerebro · Leer memoria`** → **`Construir System Prompt`** → `OpenAI / AI Agent` → `Responder`\n\nEn el nodo de OpenAI, reemplazá el contenido del *System Message* por:\n\n`={{ $json.systemPrompt }}`\n\nSi el Cerebro está caído o vacío, `memoriaCerebro` llega vacío y Luna sigue funcionando con su prompt base. Nunca se rompe.",
+        "height": 400,
+        "width": 460
+      },
+      "id": "nota-instrucciones",
+      "name": "LEEME PRIMERO",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-620, -60]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.CRM_URL }}/api/cerebro/memoria",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "limit", "value": "40" },
+            { "name": "track", "value": "1" }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-cerebro-secret",
+              "value": "={{ $env.CEREBRO_API_SECRET }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 8000,
+          "response": { "response": { "neverError": true } }
+        }
+      },
+      "id": "http-memoria",
+      "name": "Cerebro · Leer memoria",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-120, 40],
+      "onError": "continueRegularOutput",
+      "notes": "Devuelve { prompt, total, reglas }. 'track=1' registra que estas reglas se usaron. onError=continue: si el CRM no responde, Luna igual contesta."
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===================================================================\n// 🧠 Construye el System Prompt final de Luna = BASE + MEMORIA APRENDIDA\n// ===================================================================\n\n// 👇 PEGÁ AQUÍ TU PROMPT ACTUAL DE LUNA (el que ya tenés funcionando)\nconst PROMPT_BASE = `Eres Luna, la asesora espiritual del Templo Místico.\nHablas en español colombiano, cálida, cercana y segura.\nTu objetivo es entender el problema del consultante, generar confianza y llevarlo a agendar su consulta o realizar el pago del trabajo.\nNunca reveles que eres una inteligencia artificial.`;\n\n// La memoria aprobada llega del nodo anterior\nconst respuesta = $input.first().json || {};\nconst memoria = (respuesta.prompt || '').trim();\nconst totalReglas = Number(respuesta.total || 0);\n\n// Si no hay memoria (o el Cerebro falló), Luna usa solo su prompt base\nconst systemPrompt = memoria\n  ? `${PROMPT_BASE}\\n\\n${memoria}`\n  : PROMPT_BASE;\n\nreturn [{\n  json: {\n    ...$input.first().json,\n    systemPrompt,\n    memoriaCerebro: memoria,\n    reglasActivas: totalReglas,\n    cerebroOk: Boolean(memoria)\n  }\n}];"
+      },
+      "id": "code-prompt",
+      "name": "Construir System Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [140, 40],
+      "notes": "Editá PROMPT_BASE con el prompt real de Luna. La salida 'systemPrompt' es la que va al nodo de OpenAI."
+    },
+    {
+      "parameters": {
+        "content": "### ⬇️ Tu nodo de OpenAI / AI Agent va acá\n\n**System Message:**\n```\n={{ $json.systemPrompt }}\n```\n\n**User Message:**\n```\n={{ $json.mensajeDelCliente }}\n```\n(usá el campo que ya tengas en tu flujo)",
+        "height": 260,
+        "width": 320,
+        "color": 4
+      },
+      "id": "nota-openai",
+      "name": "Siguiente paso",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [400, -20]
+    }
+  ],
+  "connections": {
+    "Cerebro · Leer memoria": {
+      "main": [[{ "node": "Construir System Prompt", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "pinData": {}
+}

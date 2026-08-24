@@ -4,6 +4,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { flushSync } from "react-dom";
 import { supabase } from "../lib/supabase";
 import VoiceNotePlayer from "../components/VoiceNotePlayer";
+import CerebroPanel from "../components/CerebroPanel";
 import {
   MessageSquare, Users, DollarSign, TrendingUp, Brain, Send, Bot, Phone,
   CheckCircle2, Clock, Plus, Ban, Settings, Edit2, Trash2, ArrowUp, ArrowDown,
@@ -1299,14 +1300,8 @@ export default function CRMApp() {
           </div>
         )}
 
-        {/* CEREBRO IA */}
-        {tab === "cerebro" && (
-          <div className="flex-1 p-8 flex flex-col items-center justify-center text-center">
-            <Brain className="w-16 h-16 text-purple-500 mb-4 stroke-[1.5]" />
-            <h2 className="text-xl font-bold text-gray-200">Cerebro IA</h2>
-            <p className="text-sm text-gray-400 max-w-md mt-2">Auto-aprendizaje de conversaciones exitosas (Fase 3).</p>
-          </div>
-        )}
+        {/* ==================== CEREBRO IA (FASE 3) ==================== */}
+        {tab === "cerebro" && <CerebroPanel />}
       </main>
 
       {/* MODAL IA RECOMENDACIONES ADS */}

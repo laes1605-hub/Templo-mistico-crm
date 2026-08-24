@@ -118,6 +118,33 @@ UPDATE public.pipeline_etapas SET color = 'border-purple-500' WHERE color IS NUL
 UPDATE public.pipeline_etapas SET es_spam = false WHERE es_spam IS NULL;
 UPDATE public.pipeline_etapas SET es_archivado = false WHERE es_archivado IS NULL;
 
+-- Asegurar que existan las etapas semilla para AMBOS grupos (incluso si la tabla ya existía)
+-- Personal
+INSERT INTO public.pipeline_etapas (clave, nombre, orden, color, bg_color, text_color, grupo, es_spam, es_archivado) VALUES
+  ('nuevo_lead',       'Nuevo Lead',          1, 'border-blue-500',    'bg-blue-500/10',    'text-blue-300',    'personal', false, false),
+  ('en_consulta',      'En Consulta',         2, 'border-yellow-500',  'bg-yellow-500/10',  'text-yellow-300',  'personal', false, false),
+  ('consulta_hecha',   'Consulta Hecha',      3, 'border-orange-500',  'bg-orange-500/10',  'text-orange-300',  'personal', false, false),
+  ('pago_recibido',    'Pago Recibido',       4, 'border-emerald-500', 'bg-emerald-500/10', 'text-emerald-300', 'personal', false, false),
+  ('trabajo_proceso',  'Trabajo en Proceso',  5, 'border-purple-500',  'bg-purple-500/10',  'text-purple-300',  'personal', false, false),
+  ('trabajo_completado','Trabajo Completado', 6, 'border-green-500',   'bg-green-500/10',   'text-green-300',   'personal', false, false),
+  ('perdido',          'Perdido',             7, 'border-red-500',     'bg-red-500/10',     'text-red-300',     'personal', false, false),
+  ('spam_personal',    'Spam',               99, 'border-red-700',     'bg-red-900/30',     'text-red-400',     'personal', true,  false),
+  ('archivado_personal','Archivados',         98, 'border-amber-600',   'bg-amber-900/20',   'text-amber-400',   'personal', false, true)
+ON CONFLICT (clave) DO NOTHING;
+
+-- Templo
+INSERT INTO public.pipeline_etapas (clave, nombre, orden, color, bg_color, text_color, grupo, es_spam, es_archivado) VALUES
+  ('nuevo_lead_templo',       'Nuevo Lead',          1, 'border-indigo-500',  'bg-indigo-500/10',  'text-indigo-300',  'templo', false, false),
+  ('en_consulta_templo',      'En Consulta',         2, 'border-pink-500',    'bg-pink-500/10',    'text-pink-300',    'templo', false, false),
+  ('consulta_hecha_templo',   'Consulta Hecha',      3, 'border-fuchsia-500', 'bg-fuchsia-500/10', 'text-fuchsia-300', 'templo', false, false),
+  ('pago_recibido_templo',    'Pago Recibido',       4, 'border-teal-500',    'bg-teal-500/10',    'text-teal-300',    'templo', false, false),
+  ('trabajo_proceso_templo',  'Trabajo en Proceso',  5, 'border-violet-500',  'bg-violet-500/10',  'text-violet-300',  'templo', false, false),
+  ('trabajo_completado_templo','Trabajo Completado', 6, 'border-cyan-500',    'bg-cyan-500/10',    'text-cyan-300',    'templo', false, false),
+  ('perdido_templo',          'Perdido',             7, 'border-rose-500',    'bg-rose-500/10',    'text-rose-300',    'templo', false, false),
+  ('spam_templo',             'Spam',               99, 'border-red-700',     'bg-red-900/30',     'text-red-400',     'templo', true,  false),
+  ('archivado_templo',        'Archivados',         98, 'border-amber-600',   'bg-amber-900/20',   'text-amber-400',   'templo', false, true)
+ON CONFLICT (clave) DO NOTHING;
+
 -- Asegurar RLS
 ALTER TABLE public.pipeline_etapas ENABLE ROW LEVEL SECURITY;
 
@@ -135,15 +162,26 @@ UPDATE public.clientes SET grupo = 'personal' WHERE grupo IS NULL OR grupo = '';
 CREATE INDEX IF NOT EXISTS clientes_grupo_idx ON public.clientes (grupo);
 CREATE INDEX IF NOT EXISTS clientes_estado_idx ON public.clientes (estado);
 
--- RLS clientes (si ya está habilitado, esto no hace daño)
+-- RLS clientes: asegurar política de lectura + escritura públicas (como el resto del CRM)
 DO $$
 BEGIN
-  -- Políticas de lectura/escritura si no existen (asumiendo anon key como siempre)
-  -- No forzamos enable si ya tiene sus propias políticas
-  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='clientes' AND policyname='clientes_all_access') THEN
-    DROP POLICY IF EXISTS "clientes_lectura_publica" ON public.clientes;
-    CREATE POLICY "clientes_lectura_publica" ON public.clientes FOR SELECT USING (true);
-  END IF;
+  ALTER TABLE public.clientes ENABLE ROW LEVEL SECURITY;
+  DROP POLICY IF EXISTS "clientes_lectura_publica" ON public.clientes;
+  DROP POLICY IF EXISTS "clientes_escritura_publica" ON public.clientes;
+  CREATE POLICY "clientes_lectura_publica" ON public.clientes FOR SELECT USING (true);
+  CREATE POLICY "clientes_escritura_publica" ON public.clientes FOR ALL USING (true) WITH CHECK (true);
+EXCEPTION WHEN others THEN
+  RAISE NOTICE 'No se pudo aplicar RLS a clientes (probablemente ya tenía políticas): %', SQLERRM;
+END $$;
+
+-- RLS conversaciones: asegurar política de escritura (para toggle global de Luna)
+DO $$
+BEGIN
+  ALTER TABLE public.conversaciones ENABLE ROW LEVEL SECURITY;
+  DROP POLICY IF EXISTS "conversaciones_escritura_publica" ON public.conversaciones;
+  CREATE POLICY "conversaciones_escritura_publica" ON public.conversaciones FOR ALL USING (true) WITH CHECK (true);
+EXCEPTION WHEN others THEN
+  RAISE NOTICE 'RLS conversaciones ya configurada: %', SQLERRM;
 END $$;
 
 -- 4. CONVERSACIONES: asegurar que agente_activo respete el kill switch global

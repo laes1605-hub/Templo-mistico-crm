@@ -19,7 +19,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const raiz = path.resolve(__dirname, "..");
 const BASE = path.join(__dirname, "luna", "base-workflow.json");
 const CODE = path.join(__dirname, "luna", "code");
+// 05-luna-etapas.json        → EL QUE SE IMPORTA EN n8n (llaves dentro, sin $env). Ignorado por git.
+// 05-luna-etapas.github.json → copia para el repo (sin secretos, usa $env). Versionada.
 const SALIDA = path.join(__dirname, "05-luna-etapas.json");
+const SALIDA_GITHUB = path.join(__dirname, "05-luna-etapas.github.json");
 
 const wf = JSON.parse(fs.readFileSync(BASE, "utf8"));
 const codigo = (nombre) => fs.readFileSync(path.join(CODE, nombre), "utf8");
@@ -325,37 +328,34 @@ wf.connections = {
   "Enviar Mensaje Chatwoot": { main: [[]] }
 };
 
-fs.writeFileSync(SALIDA, JSON.stringify(wf, null, 2) + "\n", "utf8");
-
-// El repo no puede llevar llaves de OpenAI/Groq (GitHub push protection).
-// La variante local, ignorada por git, si las lleva dentro para importar directo.
-const serial = fs.readFileSync(SALIDA, "utf8");
-// Marcas partidas a proposito: el repo no debe contener ni el prefijo de una llave.
+const base = JSON.stringify(wf, null, 2) + "\n";
 const MARCAS_LLAVES = ["sk-" + "proj-", "gs" + "k_"];
-const filtradas = MARCAS_LLAVES.filter((marca) => serial.includes(marca));
-if (filtradas.length) {
-  throw new Error("El workflow generado sigue con llaves dentro: " + filtradas.join(", "));
-}
 
+// 1) Version del repo: jamas puede llevar llaves (GitHub push protection).
+if (MARCAS_LLAVES.some((marca) => base.includes(marca))) {
+  throw new Error("El workflow tiene llaves dentro y no puede versionarse");
+}
+fs.writeFileSync(SALIDA_GITHUB, base, "utf8");
+
+// 2) Version para importar en n8n: llaves dentro y SIN $env, porque el n8n del
+//    Templo tiene N8N_BLOCK_ENV_ACCESS_IN_NODE y niega el acceso a $env.
 const RUTA_SECRETS = path.join(__dirname, "luna", "secrets.local.json");
 if (fs.existsSync(RUTA_SECRETS)) {
   const secretos = JSON.parse(fs.readFileSync(RUTA_SECRETS, "utf8"));
-  let local = serial;
+  let importable = base;
   for (const [clave, valor] of Object.entries(secretos)) {
     if (!valor) continue;
-    local = local.split("={{ 'Bearer ' + $env." + clave + " }}").join("Bearer " + valor);
+    importable = importable.split("={{ 'Bearer ' + $env." + clave + " }}").join("Bearer " + valor);
   }
-  const SALIDA_LOCAL = path.join(__dirname, "05-luna-etapas.local.json");
-  fs.writeFileSync(SALIDA_LOCAL, local, "utf8");
-  if (local.includes("$env.")) {
-    throw new Error("La variante local quedo con referencias a $env y fallaria en n8n con N8N_BLOCK_ENV_ACCESS_IN_NODE");
+  if (importable.includes("$env.")) {
+    throw new Error("El archivo importable quedo con $env y fallaria con N8N_BLOCK_ENV_ACCESS_IN_NODE");
   }
-  console.log("");
-  console.log("  ⮕ IMPORTA EN n8n: " + path.relative(raiz, SALIDA_LOCAL) + "  (llaves dentro, no usa $env)");
-  console.log("    " + path.relative(raiz, SALIDA) + " es solo para el repo: usa $env.OPENAI_API_KEY");
-  console.log("    y falla si tu n8n tiene N8N_BLOCK_ENV_ACCESS_IN_NODE activado.");
+  if (!/Bearer\s+\S/.test(importable)) {
+    throw new Error("El archivo importable quedo sin llaves en los headers Authorization");
+  }
+  fs.writeFileSync(SALIDA, importable, "utf8");
 } else {
-  console.log("! Falta n8n/luna/secrets.local.json: el JSON usa $env.OPENAI_API_KEY y $env.GROQ_API_KEY");
+  console.log("! Falta n8n/luna/secrets.local.json: no se genero el archivo importable.");
 }
 
 const nombres = wf.nodes.map((n) => n.name);
@@ -366,5 +366,10 @@ for (const [origen, salidas] of Object.entries(wf.connections)) {
 }
 for (const d of destinos) if (!nombres.includes(d)) throw new Error("Conexion hacia nodo inexistente: " + d);
 
-console.log("✔ Workflow generado:", path.relative(raiz, SALIDA));
-console.log("  nodos:", wf.nodes.length, "| conexiones desde:", Object.keys(wf.connections).length);
+console.log("✔ Nodos:", wf.nodes.length, "| conexiones desde:", Object.keys(wf.connections).length);
+console.log("✔ Version del repo (sin secretos, usa $env):", path.relative(raiz, SALIDA_GITHUB));
+if (fs.existsSync(SALIDA)) {
+  console.log("");
+  console.log("  ⮕ IMPORTA EN n8n: " + path.relative(raiz, SALIDA) + "   ← llaves dentro, no usa $env");
+  console.log("    (" + path.relative(raiz, SALIDA_GITHUB) + " es solo para GitHub y falla en tu n8n)");
+}

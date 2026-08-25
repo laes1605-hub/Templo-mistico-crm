@@ -33,9 +33,10 @@
 - Motor de etapas + archivo persistente (motivo, tipo de trabajo, nombres y fotos) para que
   Luna no vuelva a pedir lo que ya le entregaron
 - Verificación: `npm run check:luna` (152 pruebas sobre el código real de los nodos) — ✅ 0 fallos
-- Regenerar el JSON: `npm run build:luna` (genera `05-luna-etapas.json` sin llaves y
-  `05-luna-etapas.local.json` con llaves, este último ignorado por git)
-- Llaves OpenAI/Groq por variable de entorno de n8n: `OPENAI_API_KEY`, `GROQ_API_KEY`
+- Regenerar: `npm run build:luna` → `05-luna-etapas.json` (importar en n8n, llaves dentro,
+  ignorado por git) y `05-luna-etapas.github.json` (versionado, sin secretos, usa $env)
+- El n8n del Templo tiene N8N_BLOCK_ENV_ACCESS_IN_NODE: por eso el archivo importable
+  lleva las llaves dentro y no usa $env
 
 ## Nuevas funciones de este build
 - Número de teléfono con prioridad sobre el nombre (formato +país, ej: +573054021111)

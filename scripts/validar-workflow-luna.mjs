@@ -114,8 +114,22 @@ const serializado = JSON.stringify(wf);
 // GitHub push protection rechaza llaves de OpenAI/Groq dentro del repo
 const MARCA_OPENAI = "sk-" + "proj-";
 const MARCA_GROQ = "gs" + "k_";
-ok(!serializado.includes(MARCA_OPENAI) && !serializado.includes(MARCA_GROQ), "el JSON versionado no lleva llaves de OpenAI/Groq");
-ok(serializado.includes("$env.OPENAI_API_KEY") && serializado.includes("$env.GROQ_API_KEY"), "las llaves se leen de variables de entorno de n8n");
+
+// El archivo que se importa en n8n no puede depender de $env: la instancia del
+// Templo tiene N8N_BLOCK_ENV_ACCESS_IN_NODE y niega el acceso a variables.
+ok(!serializado.includes("$env."), "el archivo importable no usa $env (tu n8n tiene N8N_BLOCK_ENV_ACCESS_IN_NODE)");
+ok(/Bearer\s+\S/.test(serializado), "  y lleva las llaves dentro de los headers Authorization");
+
+// La copia del repo es la contraparte: sin secretos y con $env
+const RUTA_GITHUB = path.join(raiz, "n8n", "05-luna-etapas.github.json");
+if (fs.existsSync(RUTA_GITHUB)) {
+  const gh = fs.readFileSync(RUTA_GITHUB, "utf8");
+  ok(!gh.includes(MARCA_OPENAI) && !gh.includes(MARCA_GROQ), "la version del repo no lleva llaves de OpenAI/Groq");
+  ok(gh.includes("$env.OPENAI_API_KEY") && gh.includes("$env.GROQ_API_KEY"), "  y las lee de variables de entorno");
+  ok(JSON.parse(gh).nodes.length === wf.nodes.length, "  tiene los mismos nodos que el importable");
+  const nombresGh = JSON.parse(gh).nodes.map(n => n.name);
+  ok(nombresGh.every(n => nombres.includes(n)), "  y los mismos nombres de nodo");
+}
 const presentes = PROHIBIDOS.filter((p) => serializado.includes("$('" + p + "')") || serializado.includes('$("' + p + '")') || serializado.includes('"name": "' + p + '"'));
 ok(presentes.length === 0, "sin referencias a nodos eliminados", presentes.join(", "));
 
@@ -728,25 +742,6 @@ ok(!/nombre completo|foto tuya/i.test(r.pul.textoRespuesta), "  el mensaje final
 ok(/Maestro/.test(r.pul.textoRespuesta), "  solo retiene al cliente hasta la llamada", r.pul.textoRespuesta);
 
 // ---------------------------------------------------------------------------
-grupo("9. Archivo importable (variante local con llaves dentro)");
-const RUTA_LOCAL = path.join(raiz, "n8n", "05-luna-etapas.local.json");
-if (fs.existsSync(RUTA_LOCAL)) {
-  const local = fs.readFileSync(RUTA_LOCAL, "utf8");
-  ok(!local.includes("$env."), "el archivo para importar NO usa $env (tu n8n tiene N8N_BLOCK_ENV_ACCESS_IN_NODE)");
-  ok(local.includes("Bearer sk-") || local.includes("Bearer gs"), "  y lleva las llaves dentro");
-  const wfLocal = JSON.parse(local);
-  ok(wfLocal.nodes.length === wf.nodes.length, "  tiene los mismos nodos que el versionado", wfLocal.nodes.length + " vs " + wf.nodes.length);
-  const authMalo = [];
-  for (const nodo of wfLocal.nodes) {
-    for (const v of Object.values(nodo.parameters || {})) {
-      if (typeof v === "string" && /Bearer\s*$/.test(v)) authMalo.push(nodo.name);
-    }
-  }
-  ok(authMalo.length === 0, "  ningun header Authorization quedo vacio", authMalo.join(", "));
-} else {
-  console.log("  (omitido: falta n8n/05-luna-etapas.local.json, se genera con npm run build:luna)");
-}
-
 // ---------------------------------------------------------------------------
 console.log("\n────────────────────────────────────────");
 console.log("Pruebas: " + pruebas + "  |  Fallos: " + fallos);

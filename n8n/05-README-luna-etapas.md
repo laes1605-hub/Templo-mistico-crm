@@ -58,23 +58,17 @@ aprende algo nuevo, para que el Maestro la vea en el CRM.
 1. Ejecuta `supabase/migrations/20260902_luna_etapas_expediente.sql` en el SQL Editor de Supabase.
    Agrega `motivo_consulta`, `motivo_categoria` y `luna_etapa` a `clientes`, y crea las etapas
    **Sin respuesta / Datos / Por consulta** solo si tu pipeline no las tiene ya con ese nombre.
-2. **Importa `n8n/05-luna-etapas.local.json`** ← este es el archivo para n8n.
-
-   > ⚠️ El otro archivo, `n8n/05-luna-etapas.json`, es solo la versión del repo: lee las llaves
-   > con `$env.OPENAI_API_KEY` y **falla con el error `access to env vars denied`** si tu n8n
-   > tiene `N8N_BLOCK_ENV_ACCESS_IN_NODE` (viene activado en muchas instalaciones).
+2. **Importa `n8n/05-luna-etapas.json`** ← llaves dentro, no usa `$env`, cero configuración.
 
    | Archivo | Para qué |
    |---|---|
-   | `n8n/05-luna-etapas.local.json` | **Importar en n8n.** Llaves dentro, no usa `$env`, no necesita configurar nada. Ignorado por git. |
-   | `n8n/05-luna-etapas.json` | Versión versionada en GitHub, sin secretos. Úsala solo si cargaste `OPENAI_API_KEY` y `GROQ_API_KEY` como variables de entorno **y** tu n8n permite `$env`. |
+   | `n8n/05-luna-etapas.json` | **Importar en n8n.** Lleva las llaves dentro y no usa `$env`. Está en `.gitignore` (no se sube a GitHub). |
+   | `n8n/05-luna-etapas.github.json` | Copia versionada en GitHub, sin secretos: lee `$env.OPENAI_API_KEY`. **No la importes**: tu n8n tiene `N8N_BLOCK_ENV_ACCESS_IN_NODE` y falla con `access to env vars denied`. |
 
-   Si prefieres la versión del repo, quita `N8N_BLOCK_ENV_ACCESS_IN_NODE` del entorno de n8n
-   (o ponlo en `false`), exporta `OPENAI_API_KEY` y `GROQ_API_KEY` y reinicia n8n.
-
-   `npm run build:luna` regenera las dos: la limpia siempre, y la `.local.json` solo si existe
-   `n8n/luna/secrets.local.json` (también ignorado por git) con este formato:
+   `npm run build:luna` regenera los dos. El importable se construye a partir de
+   `n8n/luna/secrets.local.json` (ignorado por git):
    `{"OPENAI_API_KEY":"<tu llave de OpenAI>","GROQ_API_KEY":"<tu llave de Groq>"}`.
+   El builder **falla** si el archivo importable llegara a quedar con `$env` o sin llaves.
 3. **Desactiva el workflow anterior** y activa este.
 4. Revisa los números y tokens en el nodo `Aplicar Transicion de Etapa`
    (`NUMERO_MAESTRO`, `INSTANCIA_MAESTRO`).

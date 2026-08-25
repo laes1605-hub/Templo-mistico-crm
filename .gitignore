@@ -18,6 +18,7 @@ android/build
 .capacitor
 
 
-# Llaves reales de Luna: la variante importable con claves dentro no se sube
+# Llaves reales de Luna: el archivo importable lleva las claves dentro
 n8n/luna/secrets.local.json
 n8n/*.local.json
+n8n/05-luna-etapas.json

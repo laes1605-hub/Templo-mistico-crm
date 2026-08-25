@@ -207,10 +207,32 @@ for (const [clave, esperado] of [
 }
 
 // El caso que detuvo el flujo en produccion: etapa fuera del mapa
-const desconocida = await etapaDe("primer_contacto", [{ clave: "primer_contacto", nombre: "Primer Contacto", grupo: "templo" }]);
+const desconocida = await etapaDe("etapa_templo_1700000000000", [{ clave: "etapa_templo_1700000000000", nombre: "Interesados", grupo: "templo" }]);
 ok(desconocida.lunaActua === false, "etapa no reconocida → Luna no responde", desconocida.etapa);
 ok(desconocida.etapaReconocida === false, "  y queda marcada como NO reconocida (alerta de configuracion)");
 ok(desconocida._debug.etapasDelGrupo.length === 1, "  el debug lista las etapas reales del CRM", desconocida._debug.etapasDelGrupo.join(","));
+
+// El CRM crea las etapas con clave "etapa_<grupo>_<timestamp>": se reconocen por NOMBRE
+const pipelineTimestamp = [
+  { clave: "etapa_templo_1787627846101", nombre: "Lead Nuevo", grupo: "templo" },
+  { clave: "etapa_templo_1787627846102", nombre: "Sin respuesta", grupo: "templo" },
+  { clave: "etapa_templo_1787627846103", nombre: "Datos", grupo: "templo" },
+  { clave: "etapa_templo_1787627846104", nombre: "Por consulta", grupo: "templo" },
+  { clave: "etapa_templo_1787627846105", nombre: "Consulta Hecha", grupo: "templo" }
+];
+for (const [clave, nombre, esperado] of [
+  ["etapa_templo_1787627846101", "Lead Nuevo", "lead_nuevo"],
+  ["etapa_templo_1787627846102", "Sin respuesta", "sin_respuesta"],
+  ["etapa_templo_1787627846103", "Datos", "datos"],
+  ["etapa_templo_1787627846104", "Por consulta", "por_consulta"],
+  ["etapa_templo_1787627846105", "Consulta Hecha", "tardia"]
+]) {
+  const r = await etapaDe(clave, pipelineTimestamp);
+  ok(r.etapa === esperado, "clave-timestamp " + clave + " (" + nombre + ") → " + esperado, "obtenido: " + r.etapa);
+  ok(r._debug.nombreEtapaEnCrm === nombre, "  el debug muestra el nombre real de la etapa", r._debug.nombreEtapaEnCrm);
+}
+const nuevoLeadOtroNombre = await etapaDe("etapa_templo_9", [{ clave: "etapa_templo_9", nombre: "Nuevo Lead", grupo: "templo" }]);
+ok(nuevoLeadOtroNombre.etapa === "lead_nuevo", 'tambien reconoce "Nuevo Lead"', nuevoLeadOtroNombre.etapa);
 
 const tardia = await etapaDe("consulta_hecha_templo", pipelineTemplo);
 ok(tardia.lunaActua === false && tardia.etapaReconocida === true, "etapa tardia conocida → silencio sin alerta de configuracion");
@@ -524,6 +546,18 @@ ok(t.salida.etapaNueva === "por_consulta" && t.salida.transicion === false, "Por
 
 t = await transicion({ etapa: "por_consulta", novedades: ["foto_cliente"], checklist: completoPareja, pipeline: pipelineTemplo });
 ok(t.llamadas.some((l) => l.url.includes("message/sendText") && l.body.text.includes("EXPEDIENTE ACTUALIZADO")), "si llega algo nuevo en Por consulta, actualiza el expediente del Maestro");
+
+t = await transicion({ etapa: "lead_nuevo", pipeline: pipelineTimestamp });
+patch = t.llamadas.find((l) => l.method === "PATCH" && l.url.includes("/rest/v1/clientes"));
+ok(patch && patch.body.estado === "etapa_templo_1787627846102", "con claves-timestamp escribe la clave real de 'Sin respuesta'", patch && patch.body.estado);
+
+t = await transicion({ etapa: "datos", consultaLista: true, checklist: completoPareja, pipeline: pipelineTimestamp });
+patch = t.llamadas.find((l) => l.method === "PATCH" && l.url.includes("/rest/v1/clientes"));
+ok(patch && patch.body.estado === "etapa_templo_1787627846104", "  y la de 'Por consulta'", patch && patch.body.estado);
+
+t = await transicion({ etapa: "lead_nuevo", pipeline: [{ clave: "etapa_templo_1", nombre: "Interesados", grupo: "templo" }] });
+patch = t.llamadas.find((l) => l.method === "PATCH" && l.url.includes("/rest/v1/clientes"));
+ok(!patch && /no existe la etapa/.test(t.salida._debug.errorEstado || ""), "si la etapa destino no existe en el pipeline no inventa una clave", t.salida._debug.errorEstado);
 
 t = await transicion({ etapa: "lead_nuevo", pipeline: [] });
 ok(t.salida.etapaNuevaClave === "sin_respuesta", "sin pipeline cargado usa la clave por defecto", t.salida.etapaNuevaClave);

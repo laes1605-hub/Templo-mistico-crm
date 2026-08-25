@@ -78,10 +78,30 @@ aprende algo nuevo, para que el Maestro la vea en el CRM.
 > rótalas cuando puedas.
 
 
-Si tus etapas tienen otras claves, no hace falta tocar nada: el workflow lee
-`pipeline_etapas` en cada turno y resuelve la clave real por nombre dentro del grupo del cliente.
-Aun así, las claves aceptadas están en `MAPA_ETAPAS` de `n8n/luna/code/leer-estado-lead.js`
-(y en `aplicar-transicion.js`), donde puedes agregar las tuyas.
+### Las etapas se reconocen por NOMBRE, no por clave
+
+Tu CRM crea las etapas con `clave: etapa_<grupo>_<timestamp>` (`src/app/page.tsx`, función
+`agregarEtapaPipeline`), así que la clave es un número que no dice nada. Por eso el workflow
+lee `pipeline_etapas` en cada turno y reconoce la etapa **por su nombre**:
+
+| Nombre de la etapa en el CRM | Etapa de Luna |
+|---|---|
+| Nuevo Lead / Lead Nuevo / Nuevo / Primer Contacto | Lead Nuevo |
+| Sin respuesta / No contesta / Sin responder | Sin respuesta |
+| Datos / Solicitar datos / Pedir datos | Datos |
+| Por consulta / En consulta / Espera consulta / Por llamar | Por consulta |
+
+No tienes que renombrar ni tocar claves. Si tu etapa se llama distinto, agrega **el nombre**
+en `ETAPAS_EXTRA` del nodo `Leer Estado del Lead`:
+
+```js
+const ETAPAS_EXTRA = { "clientes_interesados": "datos" };
+```
+
+Al mover el lead, Luna escribe la clave real que corresponde a ese nombre dentro del grupo del
+cliente (por eso un lead del Templo cae en `etapa_templo_...` y uno del personal en la suya).
+Si la etapa destino no existe en el pipeline, **no inventa una clave**: deja el aviso en
+`_debug.errorEstado`.
 
 ## Si Luna no responde y la ejecución se detiene en `Luna Actua en esta Etapa?`
 
@@ -91,8 +111,10 @@ que deja el motivo en el log y, si la etapa no se reconoce, una nota privada en 
 
 Significa que **la etapa del lead en el CRM no es ninguna de las cuatro**. Para verlo:
 
-1. Abre la ejecución en n8n y haz clic en el nodo **`Leer Estado del Lead`**.
-2. Mira `_debug.etapaLeidaDelCrm` (la etapa real del lead) y `_debug.etapasDelGrupo`
+1. Abre la ejecución en n8n y haz clic en el nodo **`Leer Estado del Lead`** (pestaña **Output**,
+   no Input).
+2. Mira `_debug.etapaLeidaDelCrm` (la clave guardada en el cliente),
+   `_debug.nombreEtapaEnCrm` (el nombre de esa etapa) y `_debug.etapasDelGrupo`
    (todas las etapas que existen en tu CRM).
 
 Dos soluciones, según el caso:
@@ -100,13 +122,13 @@ Dos soluciones, según el caso:
 - **El lead está en una etapa posterior** (Consulta Hecha, Pago Recibido, Trabajo en Proceso,
   Perdido, Spam…): es correcto que Luna no hable. Muévelo a Lead Nuevo / Sin respuesta / Datos /
   Por consulta si quieres que lo atienda.
-- **Tu etapa tiene otra clave** (por ejemplo `primer_contacto`): abre el nodo
-  **`Leer Estado del Lead`** y agrégala en `ETAPAS_EXTRA`:
+- **Tu etapa se llama distinto**: abre el nodo **`Leer Estado del Lead`** y agrega **el nombre**
+  (no la clave) en `ETAPAS_EXTRA`:
 
   ```js
   const ETAPAS_EXTRA = {
-    "primer_contacto": "lead_nuevo",   // Luna saluda y la pasa a Sin respuesta
-    "interesado": "datos"              // Luna pide solo los datos que falten
+    "clientes_nuevos": "lead_nuevo",   // Luna saluda y la pasa a Sin respuesta
+    "interesados": "datos"             // Luna pide solo los datos que falten
   };
   ```
 

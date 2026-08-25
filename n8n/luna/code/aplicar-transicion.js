@@ -44,29 +44,46 @@ const MAPA_ETAPAS = {
   datos: ["datos", "datos_templo", "solicitar_datos", "solicitud_datos", "en_datos", "pedir_datos"],
   por_consulta: ["por_consulta", "por_consulta_templo", "porconsulta", "en_consulta", "en_consulta_templo", "espera_consulta", "consulta_pendiente"]
 };
+// NOMBRES de etapa: es la via principal porque el CRM crea las etapas con
+// clave "etapa_<grupo>_<timestamp>" y lo unico estable es el nombre.
 const NOMBRES_ETAPA = {
-  lead_nuevo: ["nuevo_lead", "lead_nuevo"],
-  sin_respuesta: ["sin_respuesta", "no_contesta"],
+  lead_nuevo: ["nuevo_lead", "lead_nuevo", "nuevo", "nuevo_cliente", "lead", "primer_contacto", "nuevo_contacto"],
+  sin_respuesta: ["sin_respuesta", "no_contesta", "sin_responder", "no_responde", "sin_contacto", "no_ha_respondido"],
+  datos: ["datos", "solicitar_datos", "pedir_datos", "en_datos", "datos_cliente", "datos_del_cliente", "recoleccion_datos", "solicitud_datos"],
+  por_consulta: ["por_consulta", "en_consulta", "espera_consulta", "consulta_pendiente", "esperando_maestro", "listo_para_consulta", "por_llamar", "espera_llamada"]
+};
+
+const TOKENS_NOMBRE = {
+  lead_nuevo: ["nuevo lead", "lead nuevo", "nuevo"],
+  sin_respuesta: ["sin respuesta", "no contesta", "sin responder"],
   datos: ["datos"],
-  por_consulta: ["por_consulta", "en_consulta"]
+  por_consulta: ["por consulta", "en consulta", "espera consulta", "esperando"]
 };
 
 function resolverClave(canon) {
   const candidatasClave = MAPA_ETAPAS[canon] || [];
   const candidatasNombre = NOMBRES_ETAPA[canon] || [];
+  const tokens = TOKENS_NOMBRE[canon] || [];
   const delGrupo = etapasPipeline.filter(e => String(e.grupo || "") === String(grupo));
   const universo = delGrupo.length ? delGrupo : etapasPipeline;
-  for (const c of candidatasClave) {
-    const e = universo.find(x => normalizar(x.clave) === c);
-    if (e) return e.clave;
-  }
+  if (!universo.length) return candidatasClave[0] || null;
+
+  // 1) por NOMBRE exacto (las claves son timestamps, el nombre es lo estable)
   for (const n of candidatasNombre) {
     const e = universo.find(x => normalizar(x.nombre) === n);
     if (e) return e.clave;
   }
-  const parcial = universo.find(x => candidatasNombre.some(n => normalizar(x.nombre).indexOf(n) !== -1 || normalizar(x.clave).indexOf(n) !== -1));
-  if (parcial) return parcial.clave;
-  return candidatasClave[0] || null;
+  // 2) por clave semilla
+  for (const c of candidatasClave) {
+    const e = universo.find(x => normalizar(x.clave) === c);
+    if (e) return e.clave;
+  }
+  // 3) por nombre parcial
+  for (const t of tokens) {
+    const e = universo.find(x => normalizar(x.nombre).indexOf(normalizar(t)) !== -1);
+    if (e) return e.clave;
+  }
+  return null;
 }
 
 // -----------------------------------------------------
@@ -141,14 +158,14 @@ if (destino) {
       etapaMovida = true;
     } catch (e) { errorEstado = e.message || "error estado"; }
   } else {
-    errorEstado = clienteIdReal ? "sin clave de etapa" : "sin cliente en supabase";
+    errorEstado = nuevaClave ? "sin cliente en supabase" : "no existe la etapa '" + destino + "' en pipeline_etapas del grupo " + grupo;
   }
 }
 
 // -----------------------------------------------------
 // 3) ATRIBUTOS EN CHATWOOT
 // -----------------------------------------------------
-const attrs = { luna_etapa: destino || etapa };
+const attrs = { luna_etapa: destino || etapa, luna_etapa_crm_sync: etapaMovida };
 let errorAttrs = null;
 if (destino === "por_consulta") {
   attrs.consulta_lista_enviada = true;

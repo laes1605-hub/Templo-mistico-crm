@@ -32,7 +32,7 @@
 - Luna solo responde en Lead Nuevo, Sin respuesta, Datos y Por consulta; en el resto se calla
 - Motor de etapas + archivo persistente (motivo, tipo de trabajo, nombres y fotos) para que
   Luna no vuelva a pedir lo que ya le entregaron
-- Verificación: `npm run check:luna` (134 pruebas sobre el código real de los nodos) — ✅ 0 fallos
+- Verificación: `npm run check:luna` (148 pruebas sobre el código real de los nodos) — ✅ 0 fallos
 - Regenerar el JSON: `npm run build:luna` (genera `05-luna-etapas.json` sin llaves y
   `05-luna-etapas.local.json` con llaves, este último ignorado por git)
 - Llaves OpenAI/Groq por variable de entorno de n8n: `OPENAI_API_KEY`, `GROQ_API_KEY`

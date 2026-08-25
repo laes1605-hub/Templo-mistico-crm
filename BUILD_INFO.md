@@ -27,6 +27,8 @@
 - supabase/migrations/20260830_enrutar_leads_por_numero.sql
 - supabase/migrations/20260902_luna_etapas_expediente.sql  ← nueva (Luna por etapas)
 - supabase/migrations/20260903_mensajes_id_chatwoot.sql   ← nueva (mensajes perdidos)
+- supabase/migrations/20260904_eliminar_cliente_completo.sql (eliminación completa v1)
+- supabase/migrations/20260905_eliminar_cliente_total.sql   ← nueva (eliminación total v2)
 
 ## Luna por etapas (nuevo)
 - Workflow importable: `n8n/05-luna-etapas.json` (docs en `n8n/05-README-luna-etapas.md`)
@@ -46,4 +48,9 @@
 - Enrutado de leads por número: publicidad → Lead Nuevo del WhatsApp API Templo
 - Mover de etapa sincroniza el grupo (Personal ↔ Templo)
 - Eliminación completa del cliente y sus datos: al volver a escribir entra como lead nuevo
+- 🗑️ Eliminar ahora también borra el chat de WhatsApp y las **fichas de Luna**
+  (custom_attributes con motivo, nombres, fotos y etapa) vía `/api/clientes/eliminar`.
+  Detalle en `ELIMINAR-CLIENTE-COMPLETO.md`
+- Pruebas: `npm run test:eliminar` (endpoint + limpieza de Luna) y
+  `npm run test:eliminar:sql` (función SQL contra PostgreSQL real) — ✅ 0 fallos
 - Guardar el contacto directamente en la agenda Android (o descargar vCard en web/PWA)

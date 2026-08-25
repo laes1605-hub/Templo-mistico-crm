@@ -244,9 +244,12 @@ export default function CRMApp() {
     cargarConfigGeneral();
     // Recalcular mensajes no leídos (cubre los que llegaron con la app cerrada)
     sincronizarNoLeidos();
+    // Sincronizar con Chatwoot al abrir: trae lo que haya perdido el webhook
+    // de n8n (mensajes nuevos, chats nuevos, contactos nuevos).
+    sincronizarConChatwoot({ silencioso: true });
 
-    const convSub = supabase.channel("r-conv").on("postgres_changes", { event: "*", schema: "public", table: "conversaciones" }, fetchConversaciones).subscribe();
-    const cliSub = supabase.channel("r-cli").on("postgres_changes", { event: "*", schema: "public", table: "clientes" }, () => { fetchConversaciones(); fetchTodosClientes(); }).subscribe();
+    const convSub = supabase.channel("r-conv").on("postgres_changes", { event: "*", schema: "public", table: "conversaciones" }, () => fetchConversaciones(false)).subscribe();
+    const cliSub = supabase.channel("r-cli").on("postgres_changes", { event: "*", schema: "public", table: "clientes" }, () => { fetchConversaciones(false); fetchTodosClientes(); }).subscribe();
     const pagSub = supabase.channel("r-pag").on("postgres_changes", { event: "*", schema: "public", table: "pagos" }, fetchTodosPagos).subscribe();
     const tarSub = supabase.channel("r-tar").on("postgres_changes", { event: "*", schema: "public", table: "tareas" }, fetchTodasTareas).subscribe();
 
@@ -782,18 +785,75 @@ export default function CRMApp() {
 
   async function sincronizarNoLeidos() {
     try { await supabase.rpc("sincronizar_no_leidos"); } catch {}
-    fetchConversaciones();
+    fetchConversaciones(false);
   }
 
-  async function fetchConversaciones() {
+  // ===================== SINCRONIZACIÓN DIRECTA CON CHATWOOT =====================
+  // El dashboard ya no depende del workflow de n8n para enterarse de los
+  // mensajes: pregunta directamente a Chatwoot (la fuente de la verdad) vía
+  // /api/chatwoot/sync y repara Supabase. Se ejecuta al abrir la app, cada 20s
+  // mientras la app está visible, al abrir un chat y con el botón 🔄.
+  const [sincronizandoCW, setSincronizandoCW] = useState(false);
+  const sincronizandoCWRef = useRef(false);
+
+  async function sincronizarConChatwoot(
+    opciones: { conversacionId?: string | number; completa?: boolean; silencioso?: boolean } = {}
+  ) {
+    if (sincronizandoCWRef.current) return;
+    sincronizandoCWRef.current = true;
+    if (!opciones.silencioso) setSincronizandoCW(true);
+    try {
+      const params = new URLSearchParams();
+      if (opciones.conversacionId) params.set("conversacionId", String(opciones.conversacionId));
+      if (opciones.completa) params.set("completa", "1");
+      const res = await fetch(`/api/chatwoot/sync?${params.toString()}`, { method: "POST" });
+      const data = await res.json().catch(() => null);
+      if (data && (data.mensajes_nuevos > 0 || data.conversaciones_nuevas > 0 || !opciones.silencioso)) {
+        fetchConversaciones(false);
+        // Si hay un chat abierto, refrescar sus mensajes con lo nuevo.
+        const convAbierta = selectedConvRef.current;
+        if (convAbierta && (!opciones.conversacionId || String(opciones.conversacionId) === String(convAbierta.chatwoot_conversation_id))) {
+          const { data: msgs } = await supabase.from("mensajes").select("*").eq("conversacion_id", convAbierta.id).order("creado_en", { ascending: true });
+          if (msgs) setMensajes(msgs);
+        }
+      }
+    } catch (e) {
+      console.warn("Sincronización con Chatwoot falló (se reintentará):", e);
+    } finally {
+      sincronizandoCWRef.current = false;
+      setSincronizandoCW(false);
+    }
+  }
+
+  // Sondeo cada 20 s con la app visible (la APK/web no siempre reciben el
+  // realtime de Supabase; con esto los mensajes aparecen igual).
+  useEffect(() => {
+    const tic = () => {
+      if (typeof document === "undefined" || document.visibilityState !== "visible") return;
+      void sincronizarConChatwoot({ silencioso: true });
+    };
+    const intervalo = setInterval(tic, 20_000);
+    document.addEventListener("visibilitychange", tic);
+    return () => {
+      clearInterval(intervalo);
+      document.removeEventListener("visibilitychange", tic);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function fetchConversaciones(completa = true) {
     // Si el mismo cliente escribió al WhatsApp API y al Personal, conservar
     // Personal como conversación principal y copiar allí todo el historial.
     // La RPC es idempotente; si la migración aún no fue aplicada, no bloquea
     // la carga normal del CRM.
-    try {
-      await supabase.rpc("unificar_conversaciones_whatsapp");
-    } catch (e) {
-      console.warn("No se pudo unificar el historial WhatsApp todavía:", e);
+    // `completa=false` (refrescos por sondeo/realtime) se salta la RPC para no
+    // saturar Supabase: no cambia datos, sólo los lee.
+    if (completa) {
+      try {
+        await supabase.rpc("unificar_conversaciones_whatsapp");
+      } catch (e) {
+        console.warn("No se pudo unificar el historial WhatsApp todavía:", e);
+      }
     }
     const { data } = await supabase.from("conversaciones").select("*, clientes(*)").order("ultimo_mensaje_en", { ascending: false });
     if (data) setConversaciones(data);
@@ -1190,6 +1250,11 @@ export default function CRMApp() {
     fetchMensajes(conv.id);
     fetchPagos(conv.cliente_id);
     fetchTareasCliente(conv.cliente_id);
+    // Traer el historial fresco directo de Chatwoot para ESTE chat: si el
+    // webhook de n8n se cayó, el chat se llena igual (y al instante).
+    if (conv.chatwoot_conversation_id) {
+      void sincronizarConChatwoot({ conversacionId: conv.chatwoot_conversation_id, silencioso: true });
+    }
   }
 
   async function fetchMensajes(convId: string) {
@@ -2092,19 +2157,31 @@ export default function CRMApp() {
                   </div>
                 </div>
 
-                <div className="relative">
-                  <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
-                  <input 
-                    value={searchChats} 
-                    onChange={e => setSearchChats(e.target.value)}
-                    placeholder="Buscar por nombre o número..." 
-                    className="w-full bg-background border border-border rounded-lg pl-9 pr-3 py-2 text-xs text-gray-200 placeholder-gray-500 focus:outline-none focus:border-purple-500"
-                  />
-                  {searchChats && (
-                    <button onClick={() => setSearchChats("")} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white">
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  )}
+                <div className="flex items-center gap-2">
+                  <div className="relative flex-1">
+                    <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
+                    <input 
+                      value={searchChats} 
+                      onChange={e => setSearchChats(e.target.value)}
+                      placeholder="Buscar por nombre o número..." 
+                      className="w-full bg-background border border-border rounded-lg pl-9 pr-3 py-2 text-xs text-gray-200 placeholder-gray-500 focus:outline-none focus:border-purple-500"
+                    />
+                    {searchChats && (
+                      <button onClick={() => setSearchChats("")} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white">
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                  {/* 🔄 Sincronizar directo con Chatwoot (repara Supabase aunque n8n esté caído) */}
+                  <button
+                    onClick={() => sincronizarConChatwoot({})}
+                    disabled={sincronizandoCW}
+                    className="flex-shrink-0 flex items-center gap-1.5 px-2.5 py-2 rounded-lg border border-border text-gray-400 hover:text-purple-400 hover:border-purple-500/40 hover:bg-surfaceHover transition-colors disabled:opacity-50"
+                    title="Sincronizar chats con Chatwoot ahora (trae los mensajes que falten)"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${sincronizandoCW ? "animate-spin" : ""}`} />
+                    <span className="hidden sm:inline text-[10px] font-medium">{sincronizandoCW ? "Sincronizando..." : "Chatwoot"}</span>
+                  </button>
                 </div>
 
                 {/* SUBPESTAÑAS DE CATEGORÍA: por defecto solo Nuevos Leads */}

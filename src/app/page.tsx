@@ -8,12 +8,14 @@ import ChatImage from "../components/ChatImage";
 import CerebroPanel from "../components/CerebroPanel";
 import AjustesPanel from "../components/AjustesPanel";
 import { downloadMany, guessImageFilename, isImageMessage } from "../lib/download-media";
-import { guardarContactoEnTelefono } from "../lib/contacts";
+import { estaContactoGuardadoEnTelefono, guardarContactoEnTelefono } from "../lib/contacts";
+import { abrirLlamadaWhatsAppPersonal, llamadasWhatsAppPersonalDisponibles } from "../lib/whatsapp-personal";
 import { initTheme } from "../lib/theme";
 import {
   initializeNotificationChannels,
   NOTIFICATION_CHANNELS,
   notify,
+  scheduleFollowUpReminders,
   scheduleTaskReminders,
 } from "../lib/notifications";
 import {
@@ -23,7 +25,8 @@ import {
   Mic, Paperclip, ArrowLeft, Info, ListTodo, CheckSquare, Square, MailOpen,
   Sparkles, Play, Pause, RefreshCw, Image as ImageIcon, ChevronDown, ChevronRight, Download,
   Archive, ArchiveRestore, Search, AlertTriangle,
-  StickyNote, FileText, Coins, Globe, Percent, Save, Eye, EyeOff, Palette, Power, User, Landmark, UserPlus
+  StickyNote, FileText, Coins, Globe, Percent, Save, Eye, EyeOff, Palette, Power, User, Landmark, UserPlus,
+  PhoneCall, BellRing
 } from "lucide-react";
 
 // Equivalencias de etapas Personal → Templo (para re-enrutar leads por número)
@@ -100,6 +103,9 @@ export default function CRMApp() {
   // Subcategoría especial de chats: "Por leer" (chats de TODAS las categorías
   // con mensajes pendientes por leer). No es una etapa del pipeline.
   const CATEGORIA_POR_LEER = "__por_leer__";
+  // Etapa real, exclusiva de WhatsApp Personal. Se muestra como chip especial
+  // junto a "Por leer" para que el seguimiento quede siempre a la vista.
+  const CATEGORIA_EN_SEGUIMIENTO = "en_seguimiento";
 
   const [tab, setTab] = useState<"chats" | "pipeline" | "cartera" | "tareas" | "ads" | "cerebro" | "archivados">("chats");
   
@@ -220,6 +226,10 @@ export default function CRMApp() {
   const [descargandoFotos, setDescargandoFotos] = useState(false);
   const [guardandoContacto, setGuardandoContacto] = useState(false);
   const [contactoGuardado, setContactoGuardado] = useState<"nativo" | "vcf" | null>(null);
+  // null = comprobando / sin acceso a agenda; true = puede llamar; false = debe guardarlo primero.
+  const [contactoEnTelefono, setContactoEnTelefono] = useState<boolean | null>(null);
+  const [llamandoWhatsApp, setLlamandoWhatsApp] = useState(false);
+  const [llamadasPersonalDisponibles, setLlamadasPersonalDisponibles] = useState(false);
 
   const [showAdmin, setShowAdmin] = useState(false);
   const [showAjustes, setShowAjustes] = useState(false);
@@ -267,6 +277,12 @@ export default function CRMApp() {
     return cleanup;
   }, []);
 
+  // Se calcula ya en el dispositivo para que la versión web no intente usar el
+  // puente Android ni produzca diferencias de hidratación.
+  useEffect(() => {
+    setLlamadasPersonalDisponibles(llamadasWhatsAppPersonalDisponibles());
+  }, []);
+
   // TICKER: mantiene la cartera y los días restantes actualizados día a día
   useEffect(() => {
     const t = setInterval(() => setNowTick(Date.now()), 60_000);
@@ -282,7 +298,12 @@ export default function CRMApp() {
   useEffect(() => {
     const claveNuevoLead = grupoActivo === "templo" ? "nuevo_lead_templo" : "nuevo_lead";
     const existe = pipelineEtapas.find((e) => e.grupo === grupoActivo && e.clave === chatCategoria);
-    if (!existe && chatCategoria !== claveNuevoLead && chatCategoria !== CATEGORIA_POR_LEER) setChatCategoria(claveNuevoLead);
+    if (
+      !existe &&
+      chatCategoria !== claveNuevoLead &&
+      chatCategoria !== CATEGORIA_POR_LEER &&
+      !(grupoActivo === "personal" && chatCategoria === CATEGORIA_EN_SEGUIMIENTO)
+    ) setChatCategoria(claveNuevoLead);
   }, [grupoActivo, pipelineEtapas]);
 
   // Al volver a la app con un chat abierto, ese chat cuenta como revisado
@@ -344,6 +365,23 @@ export default function CRMApp() {
   useEffect(() => {
     if (todasTareas.length > 0) scheduleTaskReminders(todasTareas);
   }, [todasTareas]);
+
+  // Aviso diario de la etapa En seguimiento (solo WhatsApp Personal). Se
+  // recalcula al cargar/sincronizar clientes y cuando se activan o apagan los
+  // avisos desde Ajustes, sin crear alarmas duplicadas en Android.
+  useEffect(() => {
+    const programarSeguimiento = () => {
+      const clientesSeguimiento = todosClientes.filter((cliente) =>
+        !cliente?.es_spam &&
+        cliente?.estado === CATEGORIA_EN_SEGUIMIENTO &&
+        cliente?.grupo !== "templo"
+      );
+      void scheduleFollowUpReminders(clientesSeguimiento);
+    };
+    programarSeguimiento();
+    window.addEventListener("tm-notification-pref-changed", programarSeguimiento);
+    return () => window.removeEventListener("tm-notification-pref-changed", programarSeguimiento);
+  }, [todosClientes]);
 
   // Cargar config divisas de localStorage y de Supabase
   async function cargarConfigDivisas() {
@@ -555,6 +593,34 @@ export default function CRMApp() {
     return num || "Sin número";
   }
 
+  // La fuente meta_business es WhatsApp API/Templo. Todo lo demás corresponde
+  // a la bandeja que usa la cuenta Personal del teléfono.
+  function esConversacionWhatsAppPersonal(conv: any): boolean {
+    return Boolean(conv && conv.fuente !== "meta_business");
+  }
+
+  // Verifica silenciosamente si el número ya está en la agenda. La comprobación
+  // nativa vuelve a ejecutarse al pulsar Llamar, así que nunca basta solo esta UI.
+  useEffect(() => {
+    let cancelado = false;
+    const telefono = getTelefonoE164(clienteActual, selectedConv);
+    if (!selectedConv || !esConversacionWhatsAppPersonal(selectedConv) || !telefono) {
+      setContactoEnTelefono(null);
+      return () => { cancelado = true; };
+    }
+
+    setContactoEnTelefono(null);
+    void estaContactoGuardadoEnTelefono(telefono)
+      .then((guardado) => {
+        if (!cancelado) setContactoEnTelefono(guardado);
+      })
+      .catch(() => {
+        if (!cancelado) setContactoEnTelefono(false);
+      });
+
+    return () => { cancelado = true; };
+  }, [selectedConv, clienteActual]);
+
   async function guardarContactoCliente() {
     if (!clienteActual || guardandoContacto) return;
     const telefono = getTelefonoE164(clienteActual, selectedConv);
@@ -569,15 +635,51 @@ export default function CRMApp() {
       const resultado = await guardarContactoEnTelefono(nombre, telefono);
       setContactoGuardado(resultado.native ? "nativo" : "vcf");
       if (resultado.native) {
-        alert(`Contacto guardado en el teléfono: ${nombre} (${telefono})`);
+        setContactoEnTelefono(true);
+        const ajuste = resultado.nombreAjustado
+          ? ` Ya existía "${nombre}" en la agenda, por eso se guardó como "${resultado.nombreGuardado}".`
+          : "";
+        alert(`Contacto guardado en el teléfono: ${resultado.nombreGuardado} (${telefono}).${ajuste}`);
       } else {
-        alert(`Se descargó ${resultado.fileName || "el contacto.vcf"}. Ábrelo en el teléfono para añadirlo a Contactos.`);
+        const ajuste = resultado.nombreAjustado
+          ? ` El CRM lo nombró "${resultado.nombreGuardado}" para no repetir una exportación anterior.`
+          : "";
+        alert(`Se descargó ${resultado.fileName || "el contacto.vcf"}. Ábrelo en el teléfono para añadirlo a Contactos.${ajuste}`);
       }
     } catch (e: any) {
       console.error("Error guardando contacto:", e);
       alert(e?.message || "No se pudo guardar el contacto en el teléfono.");
     } finally {
       setGuardandoContacto(false);
+    }
+  }
+
+  async function llamarPorWhatsAppPersonal() {
+    if (!selectedConv || !clienteActual || llamandoWhatsApp) return;
+    if (!esConversacionWhatsAppPersonal(selectedConv)) {
+      alert("Las llamadas por este botón solo están disponibles en WhatsApp Personal.");
+      return;
+    }
+    const telefono = getTelefonoE164(clienteActual, selectedConv);
+    if (!telefono) {
+      alert("Este cliente no tiene un número válido para llamar por WhatsApp.");
+      return;
+    }
+    if (contactoEnTelefono !== true) {
+      alert("Para llamar por WhatsApp Personal primero guarda este cliente en los contactos del teléfono.");
+      return;
+    }
+
+    setLlamandoWhatsApp(true);
+    try {
+      await abrirLlamadaWhatsAppPersonal(telefono);
+    } catch (e: any) {
+      if (e?.code === "CONTACT_NOT_SAVED" || e?.code === "CONTACT_PERMISSION_REQUIRED") {
+        setContactoEnTelefono(false);
+      }
+      alert(e?.message || "No se pudo abrir WhatsApp Personal para la llamada.");
+    } finally {
+      setLlamandoWhatsApp(false);
     }
   }
 
@@ -589,6 +691,16 @@ export default function CRMApp() {
 
   function slugFoto(value: string) {
     return (value || "cliente").replace(/[^\w.+-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40) || "cliente";
+  }
+
+  // Chatwoot/Evolution usan estos marcadores cuando una imagen no trae pie.
+  // El texto real que acompañó una foto se muestra debajo de ella, nunca se
+  // descarta por tratarse de un mensaje multimedia.
+  function textoAdjuntoMultimedia(msg: any): string {
+    const texto = String(msg?.contenido || "").trim();
+    if (!texto) return "";
+    if (/^\[(?:imagen|image|sticker|archivo|video|audio|nota_de_voz|documento)\]$/i.test(texto)) return "";
+    return texto;
   }
 
   function fotosDelCliente(cliente: any, msgs: any[] = []) {
@@ -808,7 +920,7 @@ export default function CRMApp() {
       if (opciones.completa) params.set("completa", "1");
       const res = await fetch(`/api/chatwoot/sync?${params.toString()}`, { method: "POST" });
       const data = await res.json().catch(() => null);
-      if (data && (data.mensajes_nuevos > 0 || data.conversaciones_nuevas > 0 || !opciones.silencioso)) {
+      if (data && (data.mensajes_nuevos > 0 || data.mensajes_actualizados > 0 || data.conversaciones_nuevas > 0 || !opciones.silencioso)) {
         fetchConversaciones(false);
         // Si hay un chat abierto, refrescar sus mensajes con lo nuevo.
         const convAbierta = selectedConvRef.current;
@@ -861,7 +973,30 @@ export default function CRMApp() {
   }
   async function fetchPipelineEtapas() {
     const { data } = await supabase.from("pipeline_etapas").select("*").order("orden", { ascending: true });
-    if (data) setPipelineEtapas(data);
+    if (!data) return;
+
+    // Respaldo para instalaciones que aún no aplicaron la migración: el SQL es
+    // la ruta principal, pero el chip de seguimiento no queda inutilizado.
+    if (!data.some((etapa: any) => etapa.clave === CATEGORIA_EN_SEGUIMIENTO)) {
+      const etapasPersonal = data.filter((etapa: any) => etapa.grupo === "personal" && !etapa.es_spam && !etapa.es_archivado);
+      const orden = Math.max(0, ...etapasPersonal.map((etapa: any) => Number(etapa.orden) || 0)) + 1;
+      const { data: creada } = await supabase.from("pipeline_etapas").insert([{
+        clave: CATEGORIA_EN_SEGUIMIENTO,
+        nombre: "En seguimiento",
+        orden,
+        color: "border-cyan-500",
+        bg_color: "bg-cyan-500/15",
+        text_color: "text-cyan-300",
+        grupo: "personal",
+        es_spam: false,
+        es_archivado: false,
+      }]).select();
+      if (creada?.[0]) {
+        setPipelineEtapas([...data, creada[0]].sort((a: any, b: any) => a.orden - b.orden));
+        return;
+      }
+    }
+    setPipelineEtapas(data);
   }
   async function fetchTodosPagos() {
     const { data } = await supabase.from("pagos").select("*");
@@ -1127,6 +1262,8 @@ export default function CRMApp() {
       setPagosCliente([]);
       setTareasCliente([]);
       setContactoGuardado(null);
+      setContactoEnTelefono(null);
+      setLlamandoWhatsApp(false);
       setShowMobileDetails(false);
       setIsEditingNombre(false);
       setIsEditingNotas(false);
@@ -1234,6 +1371,8 @@ export default function CRMApp() {
     setSelectedConv(conv);
     setClienteActual(conv.clientes);
     setContactoGuardado(null);
+    setContactoEnTelefono(null);
+    setLlamandoWhatsApp(false);
     // Al abrir un chat, mostrar su categoría en la subpestaña correspondiente
     const esSpamCliente = conv.clientes?.es_spam === true;
     const estCliente = esSpamCliente
@@ -1799,8 +1938,10 @@ export default function CRMApp() {
   async function eliminarEtapa(id: string) {
     const etapa = pipelineEtapas.find(e => e.id === id);
     if (!etapa) return;
-    if (etapa.es_spam || etapa.es_archivado) {
-      alert("No puedes eliminar la etapa de Spam ni Archivados.");
+    if (etapa.es_spam || etapa.es_archivado || etapa.clave === CATEGORIA_EN_SEGUIMIENTO) {
+      alert(etapa.clave === CATEGORIA_EN_SEGUIMIENTO
+        ? "En seguimiento no se puede eliminar porque activa la alerta diaria del WhatsApp Personal."
+        : "No puedes eliminar la etapa de Spam ni Archivados.");
       return;
     }
     if (!confirm(`¿Eliminar la etapa "${etapa.nombre}"? Los clientes en esa etapa quedarán como "Nuevo Lead" del grupo ${etapa.grupo === "templo" ? temploLabel : personalLabel}.`)) return;
@@ -1854,6 +1995,14 @@ export default function CRMApp() {
   });
   const totalMensajesPorLeer = conversacionesPorLeer.reduce((s, c) => s + (c.no_leidos || 0), 0);
 
+  // En seguimiento es una etapa real, exclusiva del WhatsApp Personal. Este
+  // contador alimenta el chip especial junto a "Por leer" y la alerta diaria.
+  const conversacionesEnSeguimiento = conversaciones.filter((c) => {
+    if ((c as any).archivada === true || c.clientes?.es_spam === true) return false;
+    const grupoCliente = c.clientes?.grupo || (c.fuente === "meta_business" ? "templo" : "personal");
+    return grupoCliente === "personal" && c.clientes?.estado === CATEGORIA_EN_SEGUIMIENTO;
+  });
+
   const conversacionesFiltradas = conversaciones.filter((c) => {
     const esSpam = c.clientes?.es_spam === true;
     const isArchivada = (c as any).archivada === true;
@@ -1868,6 +2017,9 @@ export default function CRMApp() {
     } else {
       // Spam es una categoría más del pipeline (chip negro, sin agente ni recordatorios)
       if (esSpam) return chatCategoria === "spam";
+      // En seguimiento pertenece únicamente a WhatsApp Personal, aunque el
+      // usuario cambie de grupo justo mientras el filtro está seleccionado.
+      if (chatCategoria === CATEGORIA_EN_SEGUIMIENTO && grupoActivo !== "personal") return false;
       // Filtrar por subcategoría seleccionada (por defecto: solo Nuevos Leads)
       const estadoCliente = c.clientes?.estado || (grupoActivo === "templo" ? "nuevo_lead_templo" : "nuevo_lead");
       if (chatCategoria !== "spam" && estadoCliente !== chatCategoria) return false;
@@ -2188,7 +2340,12 @@ export default function CRMApp() {
                 {tab === "chats" && (
                   <div className="flex gap-1.5 overflow-x-auto -mx-1 px-1 pb-0.5">
                     {(() => {
-                      const etapasChats = pipelineEtapas.filter(e => e.grupo === grupoActivo && !e.es_spam && !e.es_archivado).sort((a, b) => a.orden - b.orden);
+                      // En seguimiento es una etapa normal para el Pipeline, pero aquí se
+                      // coloca a propósito junto a Por leer para priorizarla en Personal.
+                      const etapasChats = pipelineEtapas
+                        .filter(e => e.grupo === grupoActivo && !e.es_spam && !e.es_archivado)
+                        .filter(e => !(grupoActivo === "personal" && e.clave === CATEGORIA_EN_SEGUIMIENTO))
+                        .sort((a, b) => a.orden - b.orden);
                       const claveNL = grupoActivo === "templo" ? "nuevo_lead_templo" : "nuevo_lead";
                       const idxNL = etapasChats.findIndex(e => e.clave === claveNL);
                       const idxPorLeer = idxNL >= 0 ? idxNL : 0; // "Por leer" va al lado de Leads Nuevos
@@ -2233,10 +2390,26 @@ export default function CRMApp() {
                             <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-semibold ${chatCategoria === CATEGORIA_POR_LEER ? "bg-white/20 text-white" : "bg-background text-red-300"}`}>{conversacionesPorLeer.length}</span>
                           </button>
                         );
+                        const chipSeguimiento = grupoActivo === "personal" && (
+                          <button
+                            key="chip-en-seguimiento"
+                            onClick={() => setChatCategoria(CATEGORIA_EN_SEGUIMIENTO)}
+                            className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-bold border transition-all ${
+                              chatCategoria === CATEGORIA_EN_SEGUIMIENTO
+                                ? "bg-cyan-600 text-white border-cyan-500 shadow-md shadow-cyan-900/30"
+                                : "bg-cyan-950/30 border-cyan-900/50 text-cyan-300 hover:text-cyan-200 hover:border-cyan-600/60"
+                            }`}
+                            title={`Clientes de WhatsApp Personal en seguimiento (${conversacionesEnSeguimiento.length}). La APK avisa todos los días a las 9:00 a. m.`}
+                          >
+                            <BellRing className="w-3 h-3" /> En seguimiento
+                            <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-semibold ${chatCategoria === CATEGORIA_EN_SEGUIMIENTO ? "bg-white/20 text-white" : "bg-background text-cyan-300"}`}>{conversacionesEnSeguimiento.length}</span>
+                          </button>
+                        );
                         return (
                           <React.Fragment key={etapa.id}>
                             {chipEtapa}
                             {chipPorLeer}
+                            {chipSeguimiento}
                           </React.Fragment>
                         );
                       });
@@ -2266,7 +2439,7 @@ export default function CRMApp() {
               <div className="flex-1 overflow-y-auto divide-y divide-border/50">
                 {loadingChats ? <div className="p-6 text-center text-sm text-gray-500">Cargando...</div>
                   : conversacionesFiltradas.length === 0
-                  ? <div className="p-6 text-center text-sm text-gray-500">{chatCategoria === CATEGORIA_POR_LEER ? "No hay chats pendientes por leer 🎉" : "Bandeja vacía"}</div>
+                  ? <div className="p-6 text-center text-sm text-gray-500">{chatCategoria === CATEGORIA_POR_LEER ? "No hay chats pendientes por leer 🎉" : chatCategoria === CATEGORIA_EN_SEGUIMIENTO ? "No hay clientes en seguimiento 🎉" : "Bandeja vacía"}</div>
                   : conversacionesFiltradas.map((conv) => {
                     const cliente = conv.clientes;
                     const displayName = getDisplayName(cliente, conv);
@@ -2350,6 +2523,29 @@ export default function CRMApp() {
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
+                      {!clienteActual.es_spam && esConversacionWhatsAppPersonal(selectedConv) && (
+                        <button
+                          onClick={llamarPorWhatsAppPersonal}
+                          disabled={!llamadasPersonalDisponibles || contactoEnTelefono !== true || llamandoWhatsApp}
+                          title={
+                            !llamadasPersonalDisponibles
+                              ? "Disponible desde la APK Android actualizada"
+                              : contactoEnTelefono === null
+                                ? "Verificando que el número esté guardado en el teléfono..."
+                                : contactoEnTelefono === false
+                                  ? "Guarda el contacto en el teléfono antes de llamar"
+                                  : "Intentar llamada de voz con WhatsApp Personal"
+                          }
+                          className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-all disabled:opacity-50 ${
+                            contactoEnTelefono === true && llamadasPersonalDisponibles
+                              ? "bg-emerald-950/40 border-emerald-700 text-emerald-300 hover:bg-emerald-900/60"
+                              : "bg-surfaceHover border-border text-gray-500"
+                          }`}
+                        >
+                          <PhoneCall className={`w-3.5 h-3.5 ${llamandoWhatsApp ? "animate-pulse" : ""}`} />
+                          <span className="hidden sm:inline">{llamandoWhatsApp ? "Abriendo..." : contactoEnTelefono === null ? "Verificando..." : contactoEnTelefono ? "Llamar" : "Guardar contacto"}</span>
+                        </button>
+                      )}
                       {!clienteActual.es_spam && (!lunaGlobalActiva ? (
                         <button onClick={toggleLunaGlobal} className="hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-all bg-red-950/40 border-red-700 text-red-300 animate-pulse">
                           <Power className="w-3.5 h-3.5" /><span>Luna APAGADA (Encender)</span>
@@ -2378,11 +2574,15 @@ export default function CRMApp() {
                               }
                               if (isImageMessage(msg)) {
                                 const slug = slugFoto(getDisplayName(clienteActual, selectedConv));
+                                const pieDeFoto = textoAdjuntoMultimedia(msg);
                                 return (
-                                  <ChatImage
-                                    src={msg.url_archivo}
-                                    filename={guessImageFilename(String(msg.url_archivo), `foto-${slug}-${isMe ? "enviada" : "cliente"}`)}
-                                  />
+                                  <div className="space-y-2">
+                                    <ChatImage
+                                      src={msg.url_archivo}
+                                      filename={guessImageFilename(String(msg.url_archivo), `foto-${slug}-${isMe ? "enviada" : "cliente"}`)}
+                                    />
+                                    {pieDeFoto && <p className="text-sm whitespace-pre-wrap leading-relaxed">{pieDeFoto}</p>}
+                                  </div>
                                 );
                               }
                               return <p className="text-sm whitespace-pre-wrap leading-relaxed">{msg.contenido}</p>;
@@ -2484,6 +2684,27 @@ export default function CRMApp() {
                         <UserPlus className="w-3.5 h-3.5" />
                         {guardandoContacto ? "Guardando contacto..." : contactoGuardado === "nativo" ? "Contacto guardado en el teléfono" : contactoGuardado === "vcf" ? "Contacto descargado (.vcf)" : "Guardar en teléfono"}
                       </button>
+                      {!clienteActual.es_spam && esConversacionWhatsAppPersonal(selectedConv) && (
+                        <>
+                          <button
+                            onClick={llamarPorWhatsAppPersonal}
+                            disabled={!llamadasPersonalDisponibles || contactoEnTelefono !== true || llamandoWhatsApp}
+                            className={`w-full mt-2 flex items-center justify-center gap-2 py-2 rounded-lg border text-xs font-semibold transition-all disabled:opacity-50 ${
+                              contactoEnTelefono === true && llamadasPersonalDisponibles
+                                ? "bg-emerald-600 hover:bg-emerald-500 border-emerald-500 text-white"
+                                : "bg-surface border-border text-gray-500"
+                            }`}
+                          >
+                            <PhoneCall className={`w-3.5 h-3.5 ${llamandoWhatsApp ? "animate-pulse" : ""}`} />
+                            {llamandoWhatsApp ? "Abriendo WhatsApp..." : contactoEnTelefono === null ? "Verificando contacto..." : contactoEnTelefono ? "Llamar por WhatsApp" : "Guarda el contacto para llamar"}
+                          </button>
+                          <p className="text-[10px] text-gray-500 mt-1.5 leading-relaxed">
+                            {llamadasPersonalDisponibles
+                              ? "Solo se habilita si este número está guardado. La APK intenta abrir la llamada de voz de WhatsApp Personal; si tu agenda no expone esa acción, abre el chat para tocar el ícono de teléfono."
+                              : "Las llamadas por WhatsApp Personal requieren la APK Android actualizada."}
+                          </p>
+                        </>
+                      )}
                       {!getNombreManual(clienteActual) && (
                         <p className="text-[10px] text-gray-500 mt-1.5 italic">Sin nombre asignado — toca ✏️ para ponerle uno</p>
                       )}
@@ -2806,7 +3027,27 @@ export default function CRMApp() {
                     <div className="bg-amber-950/20 border border-amber-900/30 rounded-xl p-3 flex items-start gap-2 text-xs text-amber-200/80"><AlertTriangle className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" /><p>Esta conversación está archivada porque no hubo respuesta en más de 7 días. Puedes restaurarla para que vuelva a la bandeja principal o enviar un mensaje y se restaurará automáticamente.</p></div>
                     {mensajes.map((msg) => {
                       const isMe = msg.tipo === "enviado";
-                      return (<div key={msg.id} className={`flex ${isMe ? "justify-end" : "justify-start"}`}><div className={`max-w-[85%] md:max-w-[70%] rounded-2xl px-3 py-2 shadow-sm ${isMe ? "bg-purple-600 text-white rounded-br-none opacity-90" : "bg-surface border border-border text-gray-300 rounded-bl-none opacity-80"}`}>{(() => { const isAudioMsg = msg.tipo_contenido === "audio" || msg.contenido === "[audio]" || msg.contenido === "[nota_de_voz]" || (msg.url_archivo && (msg.url_archivo.startsWith("data:audio/") || /\.(ogg|opus|webm|mp3|wav|m4a|aac)($|\?)/i.test(msg.url_archivo))); if (isAudioMsg && msg.url_archivo) { return <VoiceNotePlayer src={msg.url_archivo} isMe={isMe} />; } if (isImageMessage(msg)) { return <ChatImage src={msg.url_archivo} filename={guessImageFilename(String(msg.url_archivo), `foto-${slugFoto(getDisplayName(clienteActual, selectedConv))}-${isMe ? "enviada" : "cliente"}`)} />; } return <p className="text-sm whitespace-pre-wrap leading-relaxed">{msg.contenido}</p>; })()}<span className={`block text-[9px] mt-1 ${isMe ? "text-purple-200 text-right" : "text-gray-500"}`}>{new Date(msg.creado_en).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span></div></div>);
+                      return (
+                        <div key={msg.id} className={`flex ${isMe ? "justify-end" : "justify-start"}`}>
+                          <div className={`max-w-[85%] md:max-w-[70%] rounded-2xl px-3 py-2 shadow-sm ${isMe ? "bg-purple-600 text-white rounded-br-none opacity-90" : "bg-surface border border-border text-gray-300 rounded-bl-none opacity-80"}`}>
+                            {(() => {
+                              const isAudioMsg = msg.tipo_contenido === "audio" || msg.contenido === "[audio]" || msg.contenido === "[nota_de_voz]" || (msg.url_archivo && (msg.url_archivo.startsWith("data:audio/") || /\.(ogg|opus|webm|mp3|wav|m4a|aac)($|\?)/i.test(msg.url_archivo)));
+                              if (isAudioMsg && msg.url_archivo) return <VoiceNotePlayer src={msg.url_archivo} isMe={isMe} />;
+                              if (isImageMessage(msg)) {
+                                const pieDeFoto = textoAdjuntoMultimedia(msg);
+                                return (
+                                  <div className="space-y-2">
+                                    <ChatImage src={msg.url_archivo} filename={guessImageFilename(String(msg.url_archivo), `foto-${slugFoto(getDisplayName(clienteActual, selectedConv))}-${isMe ? "enviada" : "cliente"}`)} />
+                                    {pieDeFoto && <p className="text-sm whitespace-pre-wrap leading-relaxed">{pieDeFoto}</p>}
+                                  </div>
+                                );
+                              }
+                              return <p className="text-sm whitespace-pre-wrap leading-relaxed">{msg.contenido}</p>;
+                            })()}
+                            <span className={`block text-[9px] mt-1 ${isMe ? "text-purple-200 text-right" : "text-gray-500"}`}>{new Date(msg.creado_en).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                          </div>
+                        </div>
+                      );
                     })}
                     <div ref={messagesEndRef} />
                   </div>
@@ -2894,9 +3135,11 @@ export default function CRMApp() {
                           </div>
                           <input
                             type="text"
-                            value={etapa.nombre}
+                            value={etapa.clave === CATEGORIA_EN_SEGUIMIENTO ? "En seguimiento" : etapa.nombre}
+                            disabled={etapa.clave === CATEGORIA_EN_SEGUIMIENTO}
                             onChange={(e) => actualizarNombreEtapa(etapa.id, e.target.value)}
-                            className="flex-1 bg-transparent text-sm focus:outline-none focus:text-purple-300"
+                            title={etapa.clave === CATEGORIA_EN_SEGUIMIENTO ? "Etapa fija: activa el aviso diario de seguimiento" : undefined}
+                            className={`flex-1 bg-transparent text-sm focus:outline-none focus:text-purple-300 ${etapa.clave === CATEGORIA_EN_SEGUIMIENTO ? "text-cyan-300 cursor-not-allowed" : ""}`}
                           />
                           <div className="relative">
                             <button
@@ -2917,7 +3160,11 @@ export default function CRMApp() {
                               </div>
                             )}
                           </div>
-                          <button onClick={() => eliminarEtapa(etapa.id)} className="text-red-500/70 hover:text-red-400 p-1"><Trash2 className="w-4 h-4" /></button>
+                          {etapa.clave === CATEGORIA_EN_SEGUIMIENTO ? (
+                            <span title="Aviso diario activo"><BellRing className="w-4 h-4 text-cyan-500/70" /></span>
+                          ) : (
+                            <button onClick={() => eliminarEtapa(etapa.id)} className="text-red-500/70 hover:text-red-400 p-1"><Trash2 className="w-4 h-4" /></button>
+                          )}
                         </div>
                       </div>
                     ))}

@@ -2,19 +2,25 @@
 
 Este proyecto ya está preparado para convertirse en APK usando **Capacitor**.
 
-## ✅ Actualización APK 1.2 — Android Studio
+## ✅ Actualización APK 1.3 — Android Studio
 
 La versión está configurada como:
 
-- `versionName`: **1.2.0**
-- `versionCode`: **3**
+- `versionName`: **1.3.0**
+- `versionCode`: **4**
 - `appId`: `com.templomistico.crm`
 - `compileSdk` / `targetSdk`: **36**
 - Java requerido: **JDK 21**
 
 Para compilar esta actualización desde cero:
 
-> **Importante:** `capacitor.config.json` hace que la APK cargue `https://templo-mistico-crm.vercel.app`. Primero verifica que Vercel haya desplegado este commit; de lo contrario la APK podría abrir la versión web anterior aunque el proyecto Android esté en 1.2.0.
+> **Importante:** `capacitor.config.json` hace que la APK cargue `https://templo-mistico-crm.vercel.app`. Primero verifica que Vercel haya desplegado este commit; de lo contrario la APK podría abrir la versión web anterior aunque el proyecto Android esté en 1.3.0.
+
+### Novedades de la APK 1.3
+
+- **Llamar por WhatsApp Personal:** desde un chat Personal, la APK comprueba que el número exista en Contactos e intenta abrir la llamada de voz en `com.whatsapp` (nunca WhatsApp Business). Si la agenda/versión de WhatsApp no expone la acción directa, abre el chat Personal como respaldo para tocar el ícono de teléfono.
+- **En seguimiento:** ejecuta `supabase/migrations/20260907_llamadas_seguimiento_contactos.sql`. El chip aparece junto a **Por leer** en Personal y genera un aviso local diario a las **9:00 a. m.** mientras haya clientes en esa etapa y los avisos estén activados.
+- **Nombres duplicados:** al guardar un contacto desde la APK se revisa la agenda real; si ya existe `Pedro y María`, se guarda como `Pedro y María 2`, luego `Pedro y María 3`, etc.
 
 1. Instala Android Studio y, desde **SDK Manager**, instala Android SDK 36, Android SDK Build-Tools y Android SDK Platform-Tools.
 2. Abre Android Studio y selecciona la carpeta `android/` del proyecto, no la carpeta raíz.
@@ -42,7 +48,7 @@ Para compilar esta actualización desde cero:
    ```
 
 9. Para distribuir una versión firmada, usa **Build > Generate Signed Bundle / APK > APK**, crea o selecciona un keystore y conserva la misma clave para futuras actualizaciones. Selecciona la variante `release`.
-10. Instala la actualización sobre la APK anterior. Como el `versionCode` pasó de 2 a 3, Android la reconocerá como una actualización; no desinstales la versión anterior si quieres conservar sus permisos y datos locales.
+10. Instala la actualización sobre la APK anterior. Como el `versionCode` pasó de 3 a 4, Android la reconocerá como una actualización; no desinstales la versión anterior si quieres conservar sus permisos y datos locales.
 
 Cada vez que cambies el código web, repite `npm run build` y `npx cap sync android` antes de volver a compilar. No ejecutes `npx cap add android` para esta actualización: la carpeta Android ya existe.
 
@@ -246,16 +252,23 @@ npx cap add android
 - Ejecuta también `supabase/migrations/20260904_eliminar_cliente_completo.sql` en Supabase > SQL Editor > Run.
 - No se archiva ni se marca como perdido: al volver a escribir desde ese número, el webhook creará un cliente nuevo en **Nuevo Lead**.
 
-**Guardar clientes en el teléfono**
-- En la APK, el botón **Guardar en teléfono** crea directamente el contacto en la agenda usando el nombre y el número que aparecen en la ficha.
+**Guardar clientes y llamar por WhatsApp Personal**
+- En la APK, el botón **Guardar en teléfono** crea directamente el contacto en la agenda usando el nombre y el número que aparecen en la ficha. Antes revisa los nombres existentes y agrega un consecutivo si hace falta (`Pedro y María 2`, `Pedro y María 3`...).
+- En chats de **WhatsApp Personal** aparece **Llamar por WhatsApp**. Solo se habilita cuando el número está guardado en la agenda. Intenta abrir directamente la voz de WhatsApp Personal; si Android no expone esa acción para el contacto, abre su chat para iniciar la llamada con el icono de teléfono.
 - La primera vez Android solicitará los permisos de contactos. Después de modificar esta función hay que recompilar la APK con `npm run cap:build:android`.
-- En la versión web/PWA se descarga un archivo `.vcf`; ábrelo en el teléfono para importarlo a Contactos.
+- En la versión web/PWA se descarga un archivo `.vcf`; ábrelo en el teléfono para importarlo a Contactos. El navegador no puede leer la agenda real, así que la verificación completa ocurre en la APK.
 
 ---
 
 ## 📋 Checklist migración Supabase
 
-Ejecuta este SQL en Supabase Dashboard:
+Para habilitar la bandeja y el aviso diario de **En seguimiento**, ejecuta primero el archivo completo:
+
+```text
+supabase/migrations/20260907_llamadas_seguimiento_contactos.sql
+```
+
+Después ejecuta los SQL históricos que todavía falten en Supabase Dashboard:
 
 ```sql
 alter table public.conversaciones

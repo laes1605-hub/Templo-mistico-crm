@@ -16,10 +16,14 @@ public class MainActivity extends BridgeActivity {
     private static final String CHANNEL_DEFAULT = "default";
     private static final String CHANNEL_MESSAGES = "crm_messages";
     private static final String CHANNEL_TASK_REMINDERS = "crm_task_reminders";
+    private static final String CHANNEL_FOLLOW_UPS = "crm_follow_ups";
     private static final String CHANNEL_GENERAL = "crm_general";
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
+        // Debe registrarse antes de super.onCreate(): BridgeActivity construye
+        // el bridge de Capacitor dentro de esa llamada.
+        registerPlugin(WhatsAppPersonalPlugin.class);
         super.onCreate(savedInstanceState);
         createNotificationChannels();
     }
@@ -55,6 +59,13 @@ public class MainActivity extends BridgeActivity {
             CHANNEL_TASK_REMINDERS,
             "Recordatorios de tareas",
             "Recordatorios de tareas pendientes y fechas de vencimiento.",
+            NotificationManager.IMPORTANCE_HIGH
+        );
+        createChannel(
+            manager,
+            CHANNEL_FOLLOW_UPS,
+            "Seguimientos de clientes",
+            "Aviso diario para revisar los clientes en la etapa En seguimiento.",
             NotificationManager.IMPORTANCE_HIGH
         );
         createChannel(

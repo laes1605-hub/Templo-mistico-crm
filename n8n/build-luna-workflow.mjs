@@ -347,7 +347,13 @@ if (fs.existsSync(RUTA_SECRETS)) {
   }
   const SALIDA_LOCAL = path.join(__dirname, "05-luna-etapas.local.json");
   fs.writeFileSync(SALIDA_LOCAL, local, "utf8");
-  console.log("✔ Variante local con llaves dentro (ignorada por git):", path.relative(raiz, SALIDA_LOCAL));
+  if (local.includes("$env.")) {
+    throw new Error("La variante local quedo con referencias a $env y fallaria en n8n con N8N_BLOCK_ENV_ACCESS_IN_NODE");
+  }
+  console.log("");
+  console.log("  ⮕ IMPORTA EN n8n: " + path.relative(raiz, SALIDA_LOCAL) + "  (llaves dentro, no usa $env)");
+  console.log("    " + path.relative(raiz, SALIDA) + " es solo para el repo: usa $env.OPENAI_API_KEY");
+  console.log("    y falla si tu n8n tiene N8N_BLOCK_ENV_ACCESS_IN_NODE activado.");
 } else {
   console.log("! Falta n8n/luna/secrets.local.json: el JSON usa $env.OPENAI_API_KEY y $env.GROQ_API_KEY");
 }

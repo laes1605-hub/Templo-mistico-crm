@@ -728,6 +728,26 @@ ok(!/nombre completo|foto tuya/i.test(r.pul.textoRespuesta), "  el mensaje final
 ok(/Maestro/.test(r.pul.textoRespuesta), "  solo retiene al cliente hasta la llamada", r.pul.textoRespuesta);
 
 // ---------------------------------------------------------------------------
+grupo("9. Archivo importable (variante local con llaves dentro)");
+const RUTA_LOCAL = path.join(raiz, "n8n", "05-luna-etapas.local.json");
+if (fs.existsSync(RUTA_LOCAL)) {
+  const local = fs.readFileSync(RUTA_LOCAL, "utf8");
+  ok(!local.includes("$env."), "el archivo para importar NO usa $env (tu n8n tiene N8N_BLOCK_ENV_ACCESS_IN_NODE)");
+  ok(local.includes("Bearer sk-") || local.includes("Bearer gs"), "  y lleva las llaves dentro");
+  const wfLocal = JSON.parse(local);
+  ok(wfLocal.nodes.length === wf.nodes.length, "  tiene los mismos nodos que el versionado", wfLocal.nodes.length + " vs " + wf.nodes.length);
+  const authMalo = [];
+  for (const nodo of wfLocal.nodes) {
+    for (const v of Object.values(nodo.parameters || {})) {
+      if (typeof v === "string" && /Bearer\s*$/.test(v)) authMalo.push(nodo.name);
+    }
+  }
+  ok(authMalo.length === 0, "  ningun header Authorization quedo vacio", authMalo.join(", "));
+} else {
+  console.log("  (omitido: falta n8n/05-luna-etapas.local.json, se genera con npm run build:luna)");
+}
+
+// ---------------------------------------------------------------------------
 console.log("\n────────────────────────────────────────");
 console.log("Pruebas: " + pruebas + "  |  Fallos: " + fallos);
 if (fallos > 0) {

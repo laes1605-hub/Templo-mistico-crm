@@ -58,12 +58,19 @@ aprende algo nuevo, para que el Maestro la vea en el CRM.
 1. Ejecuta `supabase/migrations/20260902_luna_etapas_expediente.sql` en el SQL Editor de Supabase.
    Agrega `motivo_consulta`, `motivo_categoria` y `luna_etapa` a `clientes`, y crea las etapas
    **Sin respuesta / Datos / Por consulta** solo si tu pipeline no las tiene ya con ese nombre.
-2. Importa el workflow. Hay dos archivos y **debes elegir uno**:
+2. **Importa `n8n/05-luna-etapas.local.json`** ← este es el archivo para n8n.
 
-   | Archivo | Cuándo usarlo |
+   > ⚠️ El otro archivo, `n8n/05-luna-etapas.json`, es solo la versión del repo: lee las llaves
+   > con `$env.OPENAI_API_KEY` y **falla con el error `access to env vars denied`** si tu n8n
+   > tiene `N8N_BLOCK_ENV_ACCESS_IN_NODE` (viene activado en muchas instalaciones).
+
+   | Archivo | Para qué |
    |---|---|
-   | `n8n/05-luna-etapas.json` | Versión del repo. Lee las llaves de variables de entorno: en n8n carga `OPENAI_API_KEY` y `GROQ_API_KEY` (docker: `-e OPENAI_API_KEY=...`; en n8n cloud: Settings → Environment Variables). |
-   | `n8n/05-luna-etapas.local.json` | Versión con las llaves dentro, lista para importar sin configurar nada. **No se sube a GitHub** (está en `.gitignore`) porque push protection rechaza llaves de OpenAI/Groq. |
+   | `n8n/05-luna-etapas.local.json` | **Importar en n8n.** Llaves dentro, no usa `$env`, no necesita configurar nada. Ignorado por git. |
+   | `n8n/05-luna-etapas.json` | Versión versionada en GitHub, sin secretos. Úsala solo si cargaste `OPENAI_API_KEY` y `GROQ_API_KEY` como variables de entorno **y** tu n8n permite `$env`. |
+
+   Si prefieres la versión del repo, quita `N8N_BLOCK_ENV_ACCESS_IN_NODE` del entorno de n8n
+   (o ponlo en `false`), exporta `OPENAI_API_KEY` y `GROQ_API_KEY` y reinicia n8n.
 
    `npm run build:luna` regenera las dos: la limpia siempre, y la `.local.json` solo si existe
    `n8n/luna/secrets.local.json` (también ignorado por git) con este formato:

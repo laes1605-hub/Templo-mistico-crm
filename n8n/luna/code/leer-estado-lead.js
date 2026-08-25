@@ -40,18 +40,50 @@ const MAPA_ETAPAS = {
   por_consulta: ["por_consulta", "por_consulta_templo", "porconsulta", "en_consulta", "en_consulta_templo", "espera_consulta", "consulta_pendiente", "esperando_maestro"]
 };
 
+// =====================================================
+// ⚙️ CONFIGURACION RAPIDA (lo unico que suele haber que tocar)
+// =====================================================
+// 1) ETAPAS EXTRA: si en tu CRM el lead esta en una etapa que no esta en la
+//    lista de arriba, Luna se queda CALLADA. Para que atienda, agrega aqui la
+//    clave de tu etapa (minusculas, sin tildes, espacios como guion bajo) y la
+//    etapa de Luna que corresponde. Ejemplo:
+//      "primer_contacto": "lead_nuevo",
+//      "interesado": "datos",
+//    La clave exacta de tus etapas la ves en el CRM o en el _debug de este nodo.
+const ETAPAS_EXTRA = {
+};
+
+// 2) Si la etapa NO se reconoce y esto esta en true, Luna responde en modo
+//    retencion (confirma y retiene, no pide datos). En false se queda callada.
+const ACTUAR_EN_ETAPA_NO_RECONOCIDA = false;
+
+// Etapas posteriores a la consulta: Luna no habla ahi, pero son conocidas
+// (no son un error de configuracion, asi que no generan alerta).
+const ETAPAS_TARDIAS = [
+  "consulta_hecha", "consulta_hecha_templo", "consulta_realizada",
+  "pago_recibido", "pago_recibido_templo", "pago_pendiente",
+  "trabajo_proceso", "trabajo_proceso_templo", "trabajo_en_proceso",
+  "trabajo_completado", "trabajo_completado_templo", "trabajo_terminado",
+  "perdido", "perdido_templo", "abandono",
+  "spam_personal", "spam_templo", "archivado_personal", "archivado_templo",
+  "cliente", "cliente_activo", "atendido"
+];
+
 const ETAPAS_LUNA = ["lead_nuevo", "sin_respuesta", "datos", "por_consulta"];
 
 function canonEtapa(clave) {
   const k = normalizar(clave);
   if (!k) return "lead_nuevo";
+  if (ETAPAS_EXTRA[k] && ETAPAS_LUNA.indexOf(ETAPAS_EXTRA[k]) !== -1) return ETAPAS_EXTRA[k];
   for (const canon of Object.keys(MAPA_ETAPAS)) {
     if (MAPA_ETAPAS[canon].indexOf(k) !== -1) return canon;
   }
+  if (ETAPAS_TARDIAS.indexOf(k) !== -1) return "tardia";
   // Coincidencia parcial (ej: "datos_2", "lead_datos")
   for (const canon of Object.keys(MAPA_ETAPAS)) {
     if (k.indexOf(canon) !== -1) return canon;
   }
+  if (ETAPAS_TARDIAS.some(t => k.indexOf(t) !== -1)) return "tardia";
   return "otra";
 }
 
@@ -142,9 +174,22 @@ if (!nombreContacto) nombreContacto = sender.name || conv.meta?.sender?.name || 
 // La etapa mandatoria es la del CRM (clientes.estado); el atributo luna_etapa
 // solo sirve de respaldo si el cliente aun no tiene estado.
 const etapaClave = estadoCliente || attrs.luna_etapa || "";
-const etapa = canonEtapa(etapaClave);
+const etapaDetectada = canonEtapa(etapaClave);
+const etapaReconocida = etapaDetectada !== "otra";
+const etapa = (etapaDetectada === "otra" && ACTUAR_EN_ETAPA_NO_RECONOCIDA) ? "por_consulta" : etapaDetectada;
 const etapaNombre = NOMBRE_ETAPA[etapa] || (etapaClave ? String(etapaClave) : "Lead Nuevo");
 const lunaActua = ETAPAS_LUNA.indexOf(etapa) !== -1;
+
+// Las etapas que si existen en el CRM, para ver de un vistazo que clave agregar
+const etapasDelGrupo = etapasPipeline
+  .filter(e => !e.grupo || String(e.grupo) === String(grupo))
+  .map(e => String(e.clave) + " (" + String(e.nombre || "") + ")");
+
+if (!lunaActua) {
+  console.log("🔕 Luna no responde. Etapa del lead: '" + etapaClave +
+    "' → " + (etapaReconocida ? "etapa fuera de las cuatro (correcto)" : "ETAPA NO RECONOCIDA") +
+    ". Etapas del CRM: " + (etapasDelGrupo.join(", ") || "sin pipeline_etapas"));
+}
 
 return [{
   json: {
@@ -160,11 +205,22 @@ return [{
     etapa: etapa,
     etapaClave: etapaClave,
     etapaNombre: etapaNombre,
+    etapaReconocida: etapaReconocida,
     lunaActua: lunaActua,
     etapasPipeline: etapasPipeline,
+    etapasDelGrupo: etapasDelGrupo,
     attrs: attrs,
     labels: labels,
     chatwootUrl: CHATWOOT_URL + "/app/accounts/" + ACCOUNT_ID + "/conversations/" + conversationId,
-    _debug: { errorSupabase, errorChatwoot, totalEtapas: etapasPipeline.length }
+    _debug: {
+      etapaLeidaDelCrm: etapaClave,
+      etapaInterpretada: etapa,
+      etapaReconocida: etapaReconocida,
+      lunaActua: lunaActua,
+      etapasDelGrupo: etapasDelGrupo,
+      errorSupabase,
+      errorChatwoot,
+      totalEtapas: etapasPipeline.length
+    }
   }
 }];

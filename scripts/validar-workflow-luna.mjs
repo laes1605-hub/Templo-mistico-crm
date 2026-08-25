@@ -82,6 +82,15 @@ function jsDe(wf, nombre) {
   return nodo.parameters.jsCode;
 }
 
+const pipelineTemplo = [
+  { clave: "nuevo_lead_templo", nombre: "Nuevo Lead", grupo: "templo" },
+  { clave: "sin_respuesta_templo", nombre: "Sin respuesta", grupo: "templo" },
+  { clave: "datos_templo", nombre: "Datos", grupo: "templo" },
+  { clave: "por_consulta_templo", nombre: "Por consulta", grupo: "templo" },
+  { clave: "consulta_hecha_templo", nombre: "Consulta Hecha", grupo: "templo" }
+];
+
+
 // ---------------------------------------------------------------------------
 const wf = JSON.parse(fs.readFileSync(RUTA_WF, "utf8"));
 const nombres = wf.nodes.map((n) => n.name);
@@ -187,8 +196,8 @@ for (const [clave, esperado] of [
   ["solicitar_datos", "datos"],
   ["por_consulta", "por_consulta"],
   ["en_consulta_templo", "por_consulta"],
-  ["consulta_hecha_templo", "otra"],
-  ["pago_recibido", "otra"],
+  ["consulta_hecha_templo", "tardia"],
+  ["pago_recibido", "tardia"],
   [null, "lead_nuevo"]
 ]) {
   const r = await etapaDe(clave);
@@ -196,6 +205,62 @@ for (const [clave, esperado] of [
   const debeActuar = ["lead_nuevo", "sin_respuesta", "datos", "por_consulta"].includes(esperado);
   ok(r.lunaActua === debeActuar, "  lunaActua=" + debeActuar + " para '" + clave + "'", "obtenido: " + r.lunaActua);
 }
+
+// El caso que detuvo el flujo en produccion: etapa fuera del mapa
+const desconocida = await etapaDe("primer_contacto", [{ clave: "primer_contacto", nombre: "Primer Contacto", grupo: "templo" }]);
+ok(desconocida.lunaActua === false, "etapa no reconocida → Luna no responde", desconocida.etapa);
+ok(desconocida.etapaReconocida === false, "  y queda marcada como NO reconocida (alerta de configuracion)");
+ok(desconocida._debug.etapasDelGrupo.length === 1, "  el debug lista las etapas reales del CRM", desconocida._debug.etapasDelGrupo.join(","));
+
+const tardia = await etapaDe("consulta_hecha_templo", pipelineTemplo);
+ok(tardia.lunaActua === false && tardia.etapaReconocida === true, "etapa tardia conocida → silencio sin alerta de configuracion");
+
+// ETAPAS_EXTRA: una linea y la etapa propia queda atendida por Luna
+const conExtra = codeEtapa.replace("const ETAPAS_EXTRA = {", 'const ETAPAS_EXTRA = { "primer_contacto": "lead_nuevo",');
+{
+  const { salida } = await correr(conExtra, {
+    entrada: { body: { conversation: { id: 55 }, sender: {} } },
+    http: async (opts) => {
+      if (opts.url.includes("/rest/v1/conversaciones")) return [{ id: "c", cliente_id: "cli", clientes: { estado: "primer_contacto", grupo: "templo" } }];
+      if (opts.url.includes("pipeline_etapas")) return pipelineTemplo;
+      return {};
+    }
+  });
+  ok(salida.etapa === "lead_nuevo" && salida.lunaActua === true, "ETAPAS_EXTRA permite atender una etapa propia", salida.etapa);
+}
+
+// ACTUAR_EN_ETAPA_NO_RECONOCIDA: red de seguridad en modo retencion
+const conRed = codeEtapa.replace("const ACTUAR_EN_ETAPA_NO_RECONOCIDA = false;", "const ACTUAR_EN_ETAPA_NO_RECONOCIDA = true;");
+{
+  const { salida } = await correr(conRed, {
+    entrada: { body: { conversation: { id: 55 }, sender: {} } },
+    http: async (opts) => {
+      if (opts.url.includes("/rest/v1/conversaciones")) return [{ id: "c", cliente_id: "cli", clientes: { estado: "etapa_rara", grupo: "templo" } }];
+      if (opts.url.includes("pipeline_etapas")) return pipelineTemplo;
+      return {};
+    }
+  });
+  ok(salida.lunaActua === true && salida.etapa === "por_consulta", "con la red activada responde en modo retencion", salida.etapa);
+}
+
+// Rama falsa conectada: el silencio queda registrado, no se pierde
+ok((wf.connections["Luna Actua en esta Etapa?"]?.main || []).length === 2, "el IF de etapa tiene rama falsa conectada");
+ok((wf.connections["Luna Actua en esta Etapa?"]?.main?.[1] || []).some(d => d.node === "Registrar Silencio de Luna"), "  y apunta a Registrar Silencio de Luna");
+
+const codeSilencio = jsDe(wf, "Registrar Silencio de Luna");
+async function silencio({ etapaClave, reconocida }) {
+  const { salida, llamadas } = await correr(codeSilencio, {
+    entrada: { etapaClave, etapaReconocida: reconocida, conversationId: 55, etapasDelGrupo: ["nuevo_lead_templo (Nuevo Lead)"] },
+    http: async () => ({})
+  });
+  return { salida, llamadas };
+}
+let sil = await silencio({ etapaClave: "primer_contacto", reconocida: false });
+const notaSil = sil.llamadas.find(l => l.url.includes("/messages"));
+ok(Boolean(notaSil) && notaSil.body.private === true, "etapa no reconocida deja nota privada en el chat");
+ok(sil.salida.lunaRespondio === false, "  y marca lunaRespondio=false");
+sil = await silencio({ etapaClave: "consulta_hecha_templo", reconocida: true });
+ok(sil.llamadas.length === 0, "etapa tardia conocida no ensucia el chat con notas");
 
 // ---------------------------------------------------------------------------
 grupo("3. Vision — clasifica rostro, pareja y palma");
@@ -424,13 +489,6 @@ async function transicion({ etapa, motivoOk = false, consultaLista = false, pipe
   return { salida, llamadas };
 }
 
-const pipelineTemplo = [
-  { clave: "nuevo_lead_templo", nombre: "Nuevo Lead", grupo: "templo" },
-  { clave: "sin_respuesta_templo", nombre: "Sin respuesta", grupo: "templo" },
-  { clave: "datos_templo", nombre: "Datos", grupo: "templo" },
-  { clave: "por_consulta_templo", nombre: "Por consulta", grupo: "templo" },
-  { clave: "consulta_hecha_templo", nombre: "Consulta Hecha", grupo: "templo" }
-];
 
 let t = await transicion({ etapa: "lead_nuevo", pipeline: pipelineTemplo });
 ok(t.salida.etapaNueva === "sin_respuesta", "Lead Nuevo → Sin respuesta apenas saluda", t.salida.etapaNueva);

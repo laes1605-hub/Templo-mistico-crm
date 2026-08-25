@@ -144,6 +144,16 @@ agregarNodo({
 });
 
 agregarNodo({
+  name: "Registrar Silencio de Luna",
+  type: "n8n-nodes-base.code",
+  typeVersion: 2,
+  position: [4912, -1312],
+  onError: "continueRegularOutput",
+  notes: "Rama falsa: explica por que Luna no respondio (etapa fuera de las cuatro o no reconocida).",
+  parameters: { jsCode: codigo("registrar-silencio.js") }
+});
+
+agregarNodo({
   name: "Preparar Analisis de Caso",
   type: "n8n-nodes-base.code",
   typeVersion: 2,
@@ -272,7 +282,8 @@ wf.connections = {
 
   // Nuevo motor de etapas
   "Leer Estado del Lead": { main: [[c("Luna Actua en esta Etapa?")]] },
-  "Luna Actua en esta Etapa?": { main: [[c("Historial")]] },
+  "Luna Actua en esta Etapa?": { main: [[c("Historial")], [c("Registrar Silencio de Luna")]] },
+  "Registrar Silencio de Luna": { main: [[]] },
   Historial: { main: [[c("Preparar Analisis de Caso")]] },
   "Preparar Analisis de Caso": { main: [[c("Analizar Caso con IA")]] },
   "Analizar Caso con IA": { main: [[c("Fusionar Memoria")]] },

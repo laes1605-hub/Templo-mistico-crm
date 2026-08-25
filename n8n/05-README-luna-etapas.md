@@ -83,6 +83,39 @@ Si tus etapas tienen otras claves, no hace falta tocar nada: el workflow lee
 Aun así, las claves aceptadas están en `MAPA_ETAPAS` de `n8n/luna/code/leer-estado-lead.js`
 (y en `aplicar-transicion.js`), donde puedes agregar las tuyas.
 
+## Si Luna no responde y la ejecución se detiene en `Luna Actua en esta Etapa?`
+
+No es un error: esa es la rama que **calla a Luna a propósito**. La ejecución sale
+"successfully" porque la rama falsa termina ahí (ahora pasa por `Registrar Silencio de Luna`,
+que deja el motivo en el log y, si la etapa no se reconoce, una nota privada en el chat).
+
+Significa que **la etapa del lead en el CRM no es ninguna de las cuatro**. Para verlo:
+
+1. Abre la ejecución en n8n y haz clic en el nodo **`Leer Estado del Lead`**.
+2. Mira `_debug.etapaLeidaDelCrm` (la etapa real del lead) y `_debug.etapasDelGrupo`
+   (todas las etapas que existen en tu CRM).
+
+Dos soluciones, según el caso:
+
+- **El lead está en una etapa posterior** (Consulta Hecha, Pago Recibido, Trabajo en Proceso,
+  Perdido, Spam…): es correcto que Luna no hable. Muévelo a Lead Nuevo / Sin respuesta / Datos /
+  Por consulta si quieres que lo atienda.
+- **Tu etapa tiene otra clave** (por ejemplo `primer_contacto`): abre el nodo
+  **`Leer Estado del Lead`** y agrégala en `ETAPAS_EXTRA`:
+
+  ```js
+  const ETAPAS_EXTRA = {
+    "primer_contacto": "lead_nuevo",   // Luna saluda y la pasa a Sin respuesta
+    "interesado": "datos"              // Luna pide solo los datos que falten
+  };
+  ```
+
+  Y si prefieres que Luna nunca se quede callada ante una etapa desconocida, cambia
+  `ACTUAR_EN_ETAPA_NO_RECONOCIDA` a `true`: responde en modo retención (confirma y retiene,
+  no pide datos).
+
+> El audio, la foto o el texto no influyen en esa decisión: el corte es solo por etapa.
+
 ## Verificación
 
 ```bash

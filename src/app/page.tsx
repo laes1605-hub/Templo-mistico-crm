@@ -4,8 +4,10 @@ import React, { useState, useEffect, useRef } from "react";
 import { flushSync } from "react-dom";
 import { supabase } from "../lib/supabase";
 import VoiceNotePlayer from "../components/VoiceNotePlayer";
+import ChatImage from "../components/ChatImage";
 import CerebroPanel from "../components/CerebroPanel";
 import AjustesPanel from "../components/AjustesPanel";
+import { downloadMany, guessImageFilename, isImageMessage } from "../lib/download-media";
 import { initTheme } from "../lib/theme";
 import {
   initializeNotificationChannels,
@@ -18,7 +20,7 @@ import {
   CheckCircle2, Clock, Plus, Ban, Settings, Edit2, Trash2, ArrowUp, ArrowDown,
   Wallet, Target, TrendingDown, Award, Calendar, Shield, X,
   Mic, Paperclip, ArrowLeft, Info, ListTodo, CheckSquare, Square, MailOpen,
-  Sparkles, Play, Pause, RefreshCw, Image as ImageIcon, ChevronDown, ChevronRight,
+  Sparkles, Play, Pause, RefreshCw, Image as ImageIcon, ChevronDown, ChevronRight, Download,
   Archive, ArchiveRestore, Search, AlertTriangle,
   StickyNote, FileText, Coins, Globe, Percent, Save, Eye, EyeOff, Palette, Power, User, Landmark
 } from "lucide-react";
@@ -151,6 +153,7 @@ export default function CRMApp() {
   const analyserRef = useRef<AnalyserNode | null>(null);
   const liveAudioCtxRef = useRef<AudioContext | null>(null);
   const liveBarsIntervalRef = useRef<any>(null);
+  const [descargandoFotos, setDescargandoFotos] = useState(false);
 
   const [showAdmin, setShowAdmin] = useState(false);
   const [showAjustes, setShowAjustes] = useState(false);
@@ -487,6 +490,47 @@ export default function CRMApp() {
     // Si empieza con +, mostrar un ícono de teléfono; si no, la inicial
     if (displayName.startsWith("+")) return "#";
     return displayName.charAt(0).toUpperCase();
+  }
+
+  function slugFoto(value: string) {
+    return (value || "cliente").replace(/[^\w.+-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40) || "cliente";
+  }
+
+  function fotosDelCliente(cliente: any, msgs: any[] = []) {
+    const slug = slugFoto(getDisplayName(cliente, selectedConv));
+    const labeled = [
+      cliente?.foto_url && { url: cliente.foto_url, label: "Cliente", filename: `foto-${slug}-cliente.jpg` },
+      cliente?.foto_otra_persona && { url: cliente.foto_otra_persona, label: "Pareja", filename: `foto-${slug}-pareja.jpg` },
+      cliente?.foto_mano && { url: cliente.foto_mano, label: "Palma", filename: `foto-${slug}-palma.jpg` },
+    ].filter(Boolean) as Array<{ url: string; label: string; filename: string }>;
+    const seen = new Set(labeled.map((f) => f.url));
+    const delChat = (msgs || [])
+      .filter((m) => m.tipo !== "enviado" && isImageMessage(m))
+      .map((m: any, i: number) => ({
+        url: String(m.url_archivo),
+        label: `Chat ${i + 1}`,
+        filename: guessImageFilename(String(m.url_archivo), `foto-${slug}-chat-${i + 1}`),
+        id: m.id,
+      }))
+      .filter((f) => f.url && !seen.has(f.url));
+    return { labeled, delChat, all: [...labeled, ...delChat] };
+  }
+
+  async function descargarFotosCliente() {
+    if (!clienteActual || descargandoFotos) return;
+    const { all } = fotosDelCliente(clienteActual, mensajes);
+    if (all.length === 0) return;
+    setDescargandoFotos(true);
+    try {
+      const result = await downloadMany(all.map((f) => ({ url: f.url, filename: f.filename })));
+      if (result.fail > 0 && result.ok === 0) {
+        alert("No se pudieron descargar las imágenes. Puede que el enlace de WhatsApp ya haya vencido.");
+      } else if (result.fail > 0) {
+        alert(`Se descargaron ${result.ok} imagen(es). ${result.fail} no se pudieron bajar.`);
+      }
+    } finally {
+      setDescargandoFotos(false);
+    }
   }
 
   // Nombre para las tarjetas de tareas: nombre manual o número con +
@@ -2000,8 +2044,14 @@ export default function CRMApp() {
                               if (isAudioMsg && msg.url_archivo) {
                                 return <VoiceNotePlayer src={msg.url_archivo} isMe={isMe} />;
                               }
-                              if (msg.tipo_contenido === "imagen" && msg.url_archivo) {
-                                return <img src={msg.url_archivo} alt="" className="rounded-lg max-h-60 object-cover" />;
+                              if (isImageMessage(msg)) {
+                                const slug = slugFoto(getDisplayName(clienteActual, selectedConv));
+                                return (
+                                  <ChatImage
+                                    src={msg.url_archivo}
+                                    filename={guessImageFilename(String(msg.url_archivo), `foto-${slug}-${isMe ? "enviada" : "cliente"}`)}
+                                  />
+                                );
                               }
                               return <p className="text-sm whitespace-pre-wrap leading-relaxed">{msg.contenido}</p>;
                             })()}
@@ -2187,20 +2237,48 @@ export default function CRMApp() {
                       </select>
                     </div>
 
+                    {(() => {
+                      const fotos = fotosDelCliente(clienteActual, mensajes);
+                      return (
                     <div className="bg-background p-4 rounded-xl border border-border space-y-3">
-                      <h4 className="text-[10px] font-bold text-gray-500 uppercase tracking-wider flex items-center gap-1.5"><ImageIcon className="w-3.5 h-3.5" /> Fotos Recibidas</h4>
+                      <div className="flex items-center justify-between gap-2">
+                        <h4 className="text-[10px] font-bold text-gray-500 uppercase tracking-wider flex items-center gap-1.5"><ImageIcon className="w-3.5 h-3.5" /> Fotos Recibidas</h4>
+                        {fotos.all.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={descargarFotosCliente}
+                            disabled={descargandoFotos}
+                            className="text-[10px] text-purple-300 hover:text-purple-200 flex items-center gap-1 disabled:opacity-50"
+                            title="Descargar todas las fotos del cliente"
+                          >
+                            <Download className="w-3 h-3" /> {descargandoFotos ? "Descargando..." : "Descargar todas"}
+                          </button>
+                        )}
+                      </div>
                       <div className="grid grid-cols-3 gap-2">
                         {clienteActual.foto_url ? (
-                          <a href={clienteActual.foto_url} target="_blank" rel="noreferrer" className="aspect-square rounded-lg bg-surface border border-border overflow-hidden group relative"><img src={clienteActual.foto_url} alt="Cliente" className="w-full h-full object-cover" /><span className="absolute inset-0 bg-black/70 opacity-0 group-hover:opacity-100 flex items-center justify-center text-[10px] text-white font-semibold transition-opacity">Cliente</span></a>
+                          <ChatImage src={clienteActual.foto_url} variant="thumb" label="Cliente" filename={`foto-${slugFoto(getDisplayName(clienteActual, selectedConv))}-cliente.jpg`} />
                         ) : (<div className="aspect-square rounded-lg bg-surface/40 border border-dashed border-border flex flex-col items-center justify-center text-[9px] text-gray-600"><span>Foto</span><span>Cliente</span></div>)}
                         {clienteActual.foto_otra_persona ? (
-                          <a href={clienteActual.foto_otra_persona} target="_blank" rel="noreferrer" className="aspect-square rounded-lg bg-surface border border-border overflow-hidden group relative"><img src={clienteActual.foto_otra_persona} alt="Pareja" className="w-full h-full object-cover" /><span className="absolute inset-0 bg-black/70 opacity-0 group-hover:opacity-100 flex items-center justify-center text-[10px] text-white font-semibold transition-opacity">Pareja</span></a>
+                          <ChatImage src={clienteActual.foto_otra_persona} variant="thumb" label="Pareja" filename={`foto-${slugFoto(getDisplayName(clienteActual, selectedConv))}-pareja.jpg`} />
                         ) : (<div className="aspect-square rounded-lg bg-surface/40 border border-dashed border-border flex flex-col items-center justify-center text-[9px] text-gray-600"><span>Foto</span><span>Pareja</span></div>)}
                         {clienteActual.foto_mano ? (
-                          <a href={clienteActual.foto_mano} target="_blank" rel="noreferrer" className="aspect-square rounded-lg bg-surface border border-border overflow-hidden group relative"><img src={clienteActual.foto_mano} alt="Palma Mano" className="w-full h-full object-cover" /><span className="absolute inset-0 bg-black/70 opacity-0 group-hover:opacity-100 flex items-center justify-center text-[10px] text-white font-semibold transition-opacity">Palma</span></a>
+                          <ChatImage src={clienteActual.foto_mano} variant="thumb" label="Palma" filename={`foto-${slugFoto(getDisplayName(clienteActual, selectedConv))}-palma.jpg`} />
                         ) : (<div className="aspect-square rounded-lg bg-surface/40 border border-dashed border-border flex flex-col items-center justify-center text-[9px] text-gray-600"><span>Foto</span><span>Mano</span></div>)}
                       </div>
+                      {fotos.delChat.length > 0 && (
+                        <div className="space-y-2 pt-1">
+                          <p className="text-[10px] text-gray-500 font-bold uppercase tracking-wider">En el chat ({fotos.delChat.length})</p>
+                          <div className="grid grid-cols-3 gap-2">
+                            {fotos.delChat.map((foto) => (
+                              <ChatImage key={foto.id || foto.url} src={foto.url} variant="thumb" label={foto.label} filename={foto.filename} />
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
+                      );
+                    })()}
 
                     <div className="bg-background p-4 rounded-xl border border-border space-y-3">
                       <h4 className="text-[10px] font-bold text-gray-500 uppercase tracking-wider flex items-center gap-1.5"><CheckSquare className="w-3.5 h-3.5" /> Checklist y Tareas</h4>
@@ -2387,7 +2465,7 @@ export default function CRMApp() {
                     <div className="bg-amber-950/20 border border-amber-900/30 rounded-xl p-3 flex items-start gap-2 text-xs text-amber-200/80"><AlertTriangle className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" /><p>Esta conversación está archivada porque no hubo respuesta en más de 7 días. Puedes restaurarla para que vuelva a la bandeja principal o enviar un mensaje y se restaurará automáticamente.</p></div>
                     {mensajes.map((msg) => {
                       const isMe = msg.tipo === "enviado";
-                      return (<div key={msg.id} className={`flex ${isMe ? "justify-end" : "justify-start"}`}><div className={`max-w-[85%] md:max-w-[70%] rounded-2xl px-3 py-2 shadow-sm ${isMe ? "bg-purple-600 text-white rounded-br-none opacity-90" : "bg-surface border border-border text-gray-300 rounded-bl-none opacity-80"}`}>{(() => { const isAudioMsg = msg.tipo_contenido === "audio" || msg.contenido === "[audio]" || msg.contenido === "[nota_de_voz]" || (msg.url_archivo && (msg.url_archivo.startsWith("data:audio/") || /\.(ogg|opus|webm|mp3|wav|m4a|aac)($|\?)/i.test(msg.url_archivo))); if (isAudioMsg && msg.url_archivo) { return <VoiceNotePlayer src={msg.url_archivo} isMe={isMe} />; } if (msg.tipo_contenido === "imagen" && msg.url_archivo) { return <img src={msg.url_archivo} alt="" className="rounded-lg max-h-60 object-cover" />; } return <p className="text-sm whitespace-pre-wrap leading-relaxed">{msg.contenido}</p>; })()}<span className={`block text-[9px] mt-1 ${isMe ? "text-purple-200 text-right" : "text-gray-500"}`}>{new Date(msg.creado_en).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span></div></div>);
+                      return (<div key={msg.id} className={`flex ${isMe ? "justify-end" : "justify-start"}`}><div className={`max-w-[85%] md:max-w-[70%] rounded-2xl px-3 py-2 shadow-sm ${isMe ? "bg-purple-600 text-white rounded-br-none opacity-90" : "bg-surface border border-border text-gray-300 rounded-bl-none opacity-80"}`}>{(() => { const isAudioMsg = msg.tipo_contenido === "audio" || msg.contenido === "[audio]" || msg.contenido === "[nota_de_voz]" || (msg.url_archivo && (msg.url_archivo.startsWith("data:audio/") || /\.(ogg|opus|webm|mp3|wav|m4a|aac)($|\?)/i.test(msg.url_archivo))); if (isAudioMsg && msg.url_archivo) { return <VoiceNotePlayer src={msg.url_archivo} isMe={isMe} />; } if (isImageMessage(msg)) { return <ChatImage src={msg.url_archivo} filename={guessImageFilename(String(msg.url_archivo), `foto-${slugFoto(getDisplayName(clienteActual, selectedConv))}-${isMe ? "enviada" : "cliente"}`)} />; } return <p className="text-sm whitespace-pre-wrap leading-relaxed">{msg.contenido}</p>; })()}<span className={`block text-[9px] mt-1 ${isMe ? "text-purple-200 text-right" : "text-gray-500"}`}>{new Date(msg.creado_en).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span></div></div>);
                     })}
                     <div ref={messagesEndRef} />
                   </div>

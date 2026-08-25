@@ -97,7 +97,7 @@ export default function CRMApp() {
   const [showMobileDetails, setShowMobileDetails] = useState(false);
   
   // ARCHIVADOS & ELIMINAR
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState<{ convId: string; clienteId: string } | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [filtroArchivados, setFiltroArchivados] = useState<"todos" | "evolution" | "meta_business">("todos");
   const [searchArchivados, setSearchArchivados] = useState("");
@@ -876,23 +876,116 @@ export default function CRMApp() {
     }
   }
 
-  async function eliminarConversacionDefinitivo(convId: string) {
+  // El botón está en una conversación, pero la eliminación es del CLIENTE
+  // completo. Guardamos ambos ids al abrir el modal para no dejar datos de
+  // otras conversaciones del mismo número por fuera.
+  function solicitarEliminarCliente(conv: any) {
+    if (!conv?.cliente_id) {
+      alert("No se pudo identificar el cliente de esta conversación.");
+      return;
+    }
+    setShowDeleteConfirm({ convId: String(conv.id), clienteId: String(conv.cliente_id) });
+  }
+
+  function errorIndicaFuncionNoDisponible(error: any): boolean {
+    const mensaje = String(error?.message || error || "").toLowerCase();
+    return error?.code === "pgrst202"
+      || mensaje.includes("eliminar_cliente_completo")
+      || mensaje.includes("could not find the function");
+  }
+
+  function errorIndicaTablaNoDisponible(error: any, tabla: string): boolean {
+    const mensaje = String(error?.message || error || "").toLowerCase();
+    return (error?.code === "pgrst205" || mensaje.includes("does not exist") || mensaje.includes("could not find the table"))
+      && mensaje.includes(tabla.toLowerCase());
+  }
+
+  // Respaldo para instalaciones que todavía no tienen la migración de la RPC.
+  // La RPC es la ruta principal porque ejecuta todo en una sola transacción.
+  async function eliminarClientePorTablas(clienteId: string) {
+    const { data: convs, error: convsError } = await supabase
+      .from("conversaciones")
+      .select("id")
+      .eq("cliente_id", clienteId);
+    if (convsError) throw convsError;
+
+    const convIds = (convs || []).map((conv: any) => conv.id).filter(Boolean);
+
+    // Borrar primero las tablas que pueden impedir borrar conversaciones o el cliente.
+    const { error: recordatoriosError } = await supabase
+      .from("recordatorios_whatsapp")
+      .delete()
+      .eq("cliente_id", clienteId);
+    if (recordatoriosError && !errorIndicaTablaNoDisponible(recordatoriosError, "recordatorios_whatsapp")) throw recordatoriosError;
+
+    const { error: reglasClienteError } = await supabase
+      .from("cerebro_reglas")
+      .delete()
+      .eq("cliente_id", clienteId);
+    if (reglasClienteError && !errorIndicaTablaNoDisponible(reglasClienteError, "cerebro_reglas")) throw reglasClienteError;
+
+    if (convIds.length > 0) {
+      const { error: reglasConvError } = await supabase.from("cerebro_reglas").delete().in("conversacion_id", convIds);
+      if (reglasConvError && !errorIndicaTablaNoDisponible(reglasConvError, "cerebro_reglas")) throw reglasConvError;
+
+      const { error: mensajesError } = await supabase.from("mensajes").delete().in("conversacion_id", convIds);
+      if (mensajesError) throw mensajesError;
+    }
+
+    const eliminaciones = await Promise.all([
+      supabase.from("tareas").delete().eq("cliente_id", clienteId),
+      supabase.from("pagos").delete().eq("cliente_id", clienteId),
+      supabase.from("conversaciones").delete().eq("cliente_id", clienteId),
+    ]);
+    const errorEliminacion = eliminaciones.find((resultado) => resultado.error)?.error;
+    if (errorEliminacion) throw errorEliminacion;
+
+    const { error: clienteError } = await supabase.from("clientes").delete().eq("id", clienteId);
+    if (clienteError) throw clienteError;
+  }
+
+  async function eliminarClienteDefinitivo(clienteId: string) {
+    if (isDeleting) return;
     setIsDeleting(true);
     try {
-      await supabase.from("mensajes").delete().eq("conversacion_id", convId);
-      const { error: convError } = await supabase.from("conversaciones").delete().eq("id", convId);
-      if (convError) throw convError;
-      setConversaciones(prev => prev.filter(c => c.id !== convId));
-      if (selectedConv?.id === convId) {
+      const resultado = await supabase.rpc("eliminar_cliente_completo", { p_cliente_id: clienteId });
+      if (resultado.error) {
+        if (!errorIndicaFuncionNoDisponible(resultado.error)) throw resultado.error;
+        // Compatibilidad temporal mientras se aplica la migración en Supabase.
+        await eliminarClientePorTablas(clienteId);
+      }
+
+      setConversaciones(prev => prev.filter(c => c.cliente_id !== clienteId));
+      setTodosClientes(prev => prev.filter(c => c.id !== clienteId));
+      setTodosPagos(prev => prev.filter(p => p.cliente_id !== clienteId));
+      setTodosTareas(prev => prev.filter(t => t.cliente_id !== clienteId));
+      if (selectedConv?.cliente_id === clienteId) {
         setSelectedConv(null);
         setClienteActual(null);
+        setMensajes([]);
+        setPagosCliente([]);
+        setTareasCliente([]);
+        setShowMobileDetails(false);
+        setIsEditingNombre(false);
+        setIsEditingNotas(false);
       }
       setShowDeleteConfirm(null);
+
+      // El realtime normalmente actualiza estas listas; el refetch también
+      // limpia cualquier tarjeta que estuviera abierta en otra pestaña.
+      void fetchConversaciones();
+      void fetchTodosClientes();
+      void fetchTodosPagos();
+      void fetchTodasTareas();
     } catch (e: any) {
-      console.error("Error eliminando conversación:", e);
-      alert("Error al eliminar: " + (e.message || "desconocido"));
+      console.error("Error eliminando cliente completo:", e);
+      const mensaje = errorIndicaFuncionNoDisponible(e)
+        ? "Falta aplicar en Supabase la migración supabase/migrations/20260904_eliminar_cliente_completo.sql."
+        : (e?.message || "desconocido");
+      alert("No se pudo eliminar el cliente completo: " + mensaje);
+    } finally {
+      setIsDeleting(false);
     }
-    setIsDeleting(false);
   }
 
   function autoArchivarInactivos() {
@@ -1985,7 +2078,7 @@ export default function CRMApp() {
                         </button>
                         <div className="absolute right-2 top-2 hidden group-hover:flex items-center gap-1 bg-surface border border-border rounded-lg p-1 shadow-lg">
                           <button onClick={(e) => { e.stopPropagation(); archivarConversacion(conv.id, true); }} className="p-1.5 text-amber-400 hover:bg-amber-950/50 rounded-md transition-colors" title="Archivar"><Archive className="w-3.5 h-3.5" /></button>
-                          <button onClick={(e) => { e.stopPropagation(); setShowDeleteConfirm(conv.id); }} className="p-1.5 text-red-400 hover:bg-red-950/50 rounded-md transition-colors" title="Eliminar"><Trash2 className="w-3.5 h-3.5" /></button>
+                          <button onClick={(e) => { e.stopPropagation(); solicitarEliminarCliente(conv); }} className="p-1.5 text-red-400 hover:bg-red-950/50 rounded-md transition-colors" title="Eliminar"><Trash2 className="w-3.5 h-3.5" /></button>
                         </div>
                       </div>
                     );
@@ -2028,7 +2121,7 @@ export default function CRMApp() {
                         </button>
                       ))}
                       <button onClick={() => archivarConversacion(selectedConv.id, true)} className="p-2 text-amber-400 hover:bg-amber-950/30 rounded-lg border border-amber-900/30 transition-colors" title="Archivar"><Archive className="w-4 h-4" /></button>
-                      <button onClick={() => setShowDeleteConfirm(selectedConv.id)} className="p-2 text-red-400 hover:bg-red-950/30 rounded-lg border border-red-900/30 transition-colors" title="Eliminar"><Trash2 className="w-4 h-4" /></button>
+                      <button onClick={() => solicitarEliminarCliente(selectedConv)} className="p-2 text-red-400 hover:bg-red-950/30 rounded-lg border border-red-900/30 transition-colors" title="Eliminar"><Trash2 className="w-4 h-4" /></button>
                       <button onClick={() => setShowMobileDetails(true)} className="md:hidden p-2 text-gray-400"><Info className="w-5 h-5" /></button>
                     </div>
                   </header>
@@ -2161,7 +2254,7 @@ export default function CRMApp() {
                       <button onClick={() => archivarConversacion(selectedConv.id, true)} className="flex-1 flex justify-center items-center gap-1.5 py-2 rounded-lg bg-amber-950/30 border border-amber-800/50 text-amber-400 hover:bg-amber-900/30 text-xs font-medium transition-all">
                         <Archive className="w-3.5 h-3.5" /> Archivar
                       </button>
-                      <button onClick={() => setShowDeleteConfirm(selectedConv.id)} className="flex-1 flex justify-center items-center gap-1.5 py-2 rounded-lg bg-red-950/30 border border-red-800/50 text-red-400 hover:bg-red-900/30 text-xs font-medium transition-all">
+                      <button onClick={() => solicitarEliminarCliente(selectedConv)} className="flex-1 flex justify-center items-center gap-1.5 py-2 rounded-lg bg-red-950/30 border border-red-800/50 text-red-400 hover:bg-red-900/30 text-xs font-medium transition-all">
                         <Trash2 className="w-3.5 h-3.5" /> Eliminar
                       </button>
                     </div>
@@ -2437,7 +2530,7 @@ export default function CRMApp() {
                         </button>
                         <div className="absolute right-2 top-2 hidden group-hover:flex items-center gap-1 bg-surface border border-border rounded-lg p-1 shadow-lg">
                           <button onClick={(e) => { e.stopPropagation(); archivarConversacion(conv.id, false); }} className="p-1.5 text-emerald-400 hover:bg-emerald-950/50 rounded-md transition-colors" title="Restaurar"><ArchiveRestore className="w-3.5 h-3.5" /></button>
-                          <button onClick={(e) => { e.stopPropagation(); setShowDeleteConfirm(conv.id); }} className="p-1.5 text-red-400 hover:bg-red-950/50 rounded-md transition-colors" title="Eliminar"><Trash2 className="w-3.5 h-3.5" /></button>
+                          <button onClick={(e) => { e.stopPropagation(); solicitarEliminarCliente(conv); }} className="p-1.5 text-red-400 hover:bg-red-950/50 rounded-md transition-colors" title="Eliminar"><Trash2 className="w-3.5 h-3.5" /></button>
                         </div>
                       </div>
                     );
@@ -2457,7 +2550,7 @@ export default function CRMApp() {
                     </div>
                     <div className="flex items-center gap-2">
                       <button onClick={() => archivarConversacion(selectedConv.id, false)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-900/30 border border-emerald-800/50 text-emerald-300 hover:bg-emerald-900/50 text-xs font-medium transition-colors"><ArchiveRestore className="w-4 h-4" /> Restaurar</button>
-                      <button onClick={() => setShowDeleteConfirm(selectedConv.id)} className="p-2 text-red-400 hover:bg-red-950/30 rounded-lg border border-red-900/30 transition-colors"><Trash2 className="w-4 h-4" /></button>
+                      <button onClick={() => solicitarEliminarCliente(selectedConv)} className="p-2 text-red-400 hover:bg-red-950/30 rounded-lg border border-red-900/30 transition-colors"><Trash2 className="w-4 h-4" /></button>
                       <button onClick={() => setShowMobileDetails(true)} className="md:hidden p-2 text-gray-400"><Info className="w-5 h-5" /></button>
                     </div>
                   </header>
@@ -3050,13 +3143,18 @@ export default function CRMApp() {
         {tab === "cerebro" && <CerebroPanel />}
       </main>
 
-      {/* MODAL CONFIRMAR ELIMINAR */}
+      {/* MODAL CONFIRMAR ELIMINACIÓN COMPLETA DEL CLIENTE */}
       {showDeleteConfirm && (
         <div className="fixed inset-0 z-[60] bg-black/70 flex items-center justify-center p-4 backdrop-blur-md">
           <div className="w-full max-w-sm bg-surface border border-red-900/50 rounded-2xl p-6 space-y-4 shadow-2xl">
-            <div className="flex items-center gap-3 text-red-400"><div className="w-10 h-10 rounded-full bg-red-950/50 border border-red-800 flex items-center justify-center"><Trash2 className="w-5 h-5" /></div><div><h3 className="text-base font-bold text-gray-100">¿Eliminar conversación?</h3><p className="text-xs text-gray-400">Esta acción no se puede deshacer</p></div></div>
-            <div className="bg-red-950/20 border border-red-900/30 rounded-xl p-3 text-xs text-gray-300">Se borrarán <span className="text-red-300 font-bold">todos los mensajes</span> de esta conversación de forma permanente. El cliente y sus pagos se mantendrán.</div>
-            <div className="flex gap-2"><button onClick={() => setShowDeleteConfirm(null)} disabled={isDeleting} className="flex-1 py-2.5 rounded-xl bg-surface border border-border text-gray-300 hover:bg-surfaceHover text-sm font-medium transition-colors disabled:opacity-50">Cancelar</button><button onClick={() => eliminarConversacionDefinitivo(showDeleteConfirm)} disabled={isDeleting} className="flex-1 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-bold transition-colors disabled:opacity-50 flex items-center justify-center gap-2">{isDeleting ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}{isDeleting ? "Eliminando..." : "Sí, eliminar"}</button></div>
+            <div className="flex items-center gap-3 text-red-400">
+              <div className="w-10 h-10 rounded-full bg-red-950/50 border border-red-800 flex items-center justify-center"><Trash2 className="w-5 h-5" /></div>
+              <div><h3 className="text-base font-bold text-gray-100">¿Eliminar cliente y todos sus datos?</h3><p className="text-xs text-gray-400">Esta acción no se puede deshacer</p></div>
+            </div>
+            <div className="bg-red-950/20 border border-red-900/30 rounded-xl p-3 text-xs text-gray-300 leading-relaxed">
+              Se eliminarán permanentemente del CRM <span className="text-red-300 font-bold">todas sus conversaciones, mensajes, fotos, audios, notas, tareas, pagos, recordatorios y datos asociados</span>. Si vuelve a escribir, se creará desde cero como un lead nuevo.
+            </div>
+            <div className="flex gap-2"><button onClick={() => setShowDeleteConfirm(null)} disabled={isDeleting} className="flex-1 py-2.5 rounded-xl bg-surface border border-border text-gray-300 hover:bg-surfaceHover text-sm font-medium transition-colors disabled:opacity-50">Cancelar</button><button onClick={() => eliminarClienteDefinitivo(showDeleteConfirm.clienteId)} disabled={isDeleting} className="flex-1 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-bold transition-colors disabled:opacity-50 flex items-center justify-center gap-2">{isDeleting ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}{isDeleting ? "Eliminando todo..." : "Sí, eliminar todo"}</button></div>
           </div>
         </div>
       )}

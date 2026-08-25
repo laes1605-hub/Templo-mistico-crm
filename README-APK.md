@@ -197,6 +197,11 @@ npx cap add android
 - Ejecuta la migración SQL en Supabase: `supabase/migrations/20260824_archivado_eliminado.sql`
 - Ve a Supabase > SQL Editor > Pega el contenido > Run
 
+**Eliminar un cliente completamente**
+- El botón **Eliminar** borra el cliente físico y toda la información que el CRM tenga guardada: conversaciones, mensajes, archivos asociados, notas, tareas, pagos, recordatorios y reglas de Cerebro vinculadas.
+- Ejecuta también `supabase/migrations/20260904_eliminar_cliente_completo.sql` en Supabase > SQL Editor > Run.
+- No se archiva ni se marca como perdido: al volver a escribir desde ese número, el webhook creará un cliente nuevo en **Nuevo Lead**.
+
 ---
 
 ## 📋 Checklist migración Supabase

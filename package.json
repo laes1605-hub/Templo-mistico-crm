@@ -16,7 +16,9 @@
     "start": "next start",
     "lint": "next lint",
     "build:luna": "node n8n/build-luna-workflow.mjs",
-    "check:luna": "node scripts/validar-workflow-luna.mjs"
+    "check:luna": "node scripts/validar-workflow-luna.mjs",
+    "test:eliminar": "sucrase-node scripts/prueba-eliminar-cliente.ts",
+    "test:eliminar:sql": "node scripts/prueba-eliminar-cliente-sql.mjs"
   },
   "dependencies": {
     "@capacitor-community/contacts": "^8.0.0",

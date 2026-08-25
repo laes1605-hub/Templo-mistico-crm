@@ -37,6 +37,65 @@ const ESTADO_PERSONAL_A_TEMPLO: Record<string, string> = {
   perdido: "perdido_templo",
 };
 
+// Resumen que devuelve /api/clientes/eliminar al borrar un cliente por completo.
+type ResumenEliminacion = {
+  cliente: string;
+  crm: {
+    cliente_eliminado: number;
+    conversaciones_eliminadas: number;
+    mensajes_eliminados: number;
+    pagos_eliminados: number;
+    tareas_eliminadas: number;
+    recordatorios_eliminados: number;
+    reglas_cerebro_eliminadas: number;
+    otras_tablas?: Record<string, number>;
+  } | null;
+  chatwoot: {
+    conversaciones: number;
+    eliminadas: number;
+    ya_no_existian: number;
+    memoria_vaciada: number;
+    fichas_luna_borradas: number;
+    omitidas: number;
+  } | null;
+  advertencias: string[];
+};
+
+// Textos del resumen que se muestra al terminar de eliminar un cliente.
+function lineasResumenCrm(crm: ResumenEliminacion["crm"]): string[] {
+  if (!crm) return ["Datos borrados de Supabase."];
+  const otras = Object.entries(crm.otras_tablas || {}).filter(([, cantidad]) => Number(cantidad) > 0);
+  return [
+    `Cliente borrado de la base de datos (${crm.cliente_eliminado}).`,
+    `${crm.conversaciones_eliminadas} conversación(es) y ${crm.mensajes_eliminados} mensaje(s).`,
+    `${crm.pagos_eliminados} pago(s), ${crm.tareas_eliminadas} tarea(s) y ${crm.recordatorios_eliminados} recordatorio(s).`,
+    `${crm.reglas_cerebro_eliminadas} regla(s) del Cerebro que lo mencionaban.`,
+    ...otras.map(([tabla, cantidad]) => `${cantidad} fila(s) más en ${tabla}.`),
+  ];
+}
+
+function lineasResumenChatwoot(chatwoot: ResumenEliminacion["chatwoot"]): string[] {
+  if (!chatwoot) return [];
+  if (chatwoot.conversaciones === 0) return ["No había chat de WhatsApp asociado."];
+  const lineas: string[] = [];
+  if (chatwoot.eliminadas > 0) {
+    lineas.push(`${chatwoot.eliminadas} chat(s) de WhatsApp borrados por completo.`);
+  }
+  if (chatwoot.memoria_vaciada > 0) {
+    lineas.push(`${chatwoot.memoria_vaciada} memoria(s) de Luna vaciadas (motivo, nombres, fotos y etapa).`);
+  }
+  if (chatwoot.fichas_luna_borradas > 0) {
+    lineas.push(`${chatwoot.fichas_luna_borradas} ficha(s) de Luna eliminadas.`);
+  }
+  if (chatwoot.ya_no_existian > 0) {
+    lineas.push(`${chatwoot.ya_no_existian} chat(s) que ya no existían en WhatsApp.`);
+  }
+  if (chatwoot.omitidas > 0) {
+    lineas.push(`${chatwoot.omitidas} chat(s) de WhatsApp sin tocar.`);
+  }
+  return lineas.length > 0 ? lineas : ["Sin cambios en WhatsApp."];
+}
+
 export default function CRMApp() {
   // Subcategoría especial de chats: "Por leer" (chats de TODAS las categorías
   // con mensajes pendientes por leer). No es una etapa del pipeline.
@@ -100,6 +159,10 @@ export default function CRMApp() {
   // ARCHIVADOS & ELIMINAR
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<{ convId: string; clienteId: string } | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  // Resultado de la eliminación completa (se muestra en el mismo modal).
+  const [resultadoEliminar, setResultadoEliminar] = useState<ResumenEliminacion | null>(null);
+  // Chatwoot no permitió borrar la memoria de Luna: se ofrece seguir "sólo CRM".
+  const [bloqueoChatwoot, setBloqueoChatwoot] = useState<{ clienteId: string; detalle: string[] } | null>(null);
   const [filtroArchivados, setFiltroArchivados] = useState<"todos" | "evolution" | "meta_business">("todos");
   const [searchArchivados, setSearchArchivados] = useState("");
   const [searchChats, setSearchChats] = useState("");
@@ -913,7 +976,15 @@ export default function CRMApp() {
       alert("No se pudo identificar el cliente de esta conversación.");
       return;
     }
+    setResultadoEliminar(null);
+    setBloqueoChatwoot(null);
     setShowDeleteConfirm({ convId: String(conv.id), clienteId: String(conv.cliente_id) });
+  }
+
+  function cerrarModalEliminar() {
+    setShowDeleteConfirm(null);
+    setResultadoEliminar(null);
+    setBloqueoChatwoot(null);
   }
 
   function errorIndicaFuncionNoDisponible(error: any): boolean {
@@ -973,43 +1044,103 @@ export default function CRMApp() {
     if (clienteError) throw clienteError;
   }
 
-  async function eliminarClienteDefinitivo(clienteId: string) {
+  // Borra al cliente de Supabase sin pasar por el endpoint (respaldo para una
+  // APK antigua o una instalación sin el route desplegado).
+  async function eliminarSoloSupabase(clienteId: string) {
+    const resultado = await supabase.rpc("eliminar_cliente_completo", { p_cliente_id: clienteId });
+    if (resultado.error) {
+      if (!errorIndicaFuncionNoDisponible(resultado.error)) throw resultado.error;
+      // Compatibilidad temporal mientras se aplica la migración en Supabase.
+      await eliminarClientePorTablas(clienteId);
+    }
+  }
+
+  function limpiarEstadoLocalCliente(clienteId: string) {
+    setConversaciones(prev => prev.filter(c => c.cliente_id !== clienteId));
+    setTodosClientes(prev => prev.filter(c => c.id !== clienteId));
+    setTodosPagos(prev => prev.filter(p => p.cliente_id !== clienteId));
+    setTodosTareas(prev => prev.filter(t => t.cliente_id !== clienteId));
+    if (selectedConv?.cliente_id === clienteId) {
+      setSelectedConv(null);
+      setClienteActual(null);
+      setMensajes([]);
+      setPagosCliente([]);
+      setTareasCliente([]);
+      setContactoGuardado(null);
+      setShowMobileDetails(false);
+      setIsEditingNombre(false);
+      setIsEditingNotas(false);
+    }
+
+    // El realtime normalmente actualiza estas listas; el refetch también
+    // limpia cualquier tarjeta que estuviera abierta en otra pestaña.
+    void fetchConversaciones();
+    void fetchTodosClientes();
+    void fetchTodosPagos();
+    void fetchTodasTareas();
+  }
+
+  // Elimina TODO: CRM + Supabase + el historial y las fichas de Luna en
+  // WhatsApp/Chatwoot. El trabajo pesado lo hace /api/clientes/eliminar porque
+  // el token de Chatwoot no puede viajar en el navegador.
+  async function eliminarClienteDefinitivo(clienteId: string, soloCrm: boolean = false) {
     if (isDeleting) return;
     setIsDeleting(true);
+    setBloqueoChatwoot(null);
     try {
-      const resultado = await supabase.rpc("eliminar_cliente_completo", { p_cliente_id: clienteId });
-      if (resultado.error) {
-        if (!errorIndicaFuncionNoDisponible(resultado.error)) throw resultado.error;
-        // Compatibilidad temporal mientras se aplica la migración en Supabase.
-        await eliminarClientePorTablas(clienteId);
+      let respuesta: Response | null = null;
+      try {
+        respuesta = await fetch("/api/clientes/eliminar", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ clienteId, soloCrm }),
+        });
+      } catch (errorRed) {
+        console.warn("Endpoint de eliminación no disponible, se borra directo en Supabase:", errorRed);
+        respuesta = null;
       }
 
-      setConversaciones(prev => prev.filter(c => c.cliente_id !== clienteId));
-      setTodosClientes(prev => prev.filter(c => c.id !== clienteId));
-      setTodosPagos(prev => prev.filter(p => p.cliente_id !== clienteId));
-      setTodosTareas(prev => prev.filter(t => t.cliente_id !== clienteId));
-      if (selectedConv?.cliente_id === clienteId) {
-        setSelectedConv(null);
-        setClienteActual(null);
-        setMensajes([]);
-        setPagosCliente([]);
-        setTareasCliente([]);
-        setShowMobileDetails(false);
-        setIsEditingNombre(false);
-        setIsEditingNotas(false);
-      }
-      setShowDeleteConfirm(null);
+      const esJson = Boolean(
+        respuesta && (respuesta.headers.get("content-type") || "").includes("application/json")
+      );
 
-      // El realtime normalmente actualiza estas listas; el refetch también
-      // limpia cualquier tarjeta que estuviera abierta en otra pestaña.
-      void fetchConversaciones();
-      void fetchTodosClientes();
-      void fetchTodosPagos();
-      void fetchTodasTareas();
+      if (!respuesta || !esJson) {
+        // Sin endpoint (APK antigua / export estático): se borra Supabase desde
+        // el navegador. La memoria de Luna en WhatsApp queda intacta.
+        await eliminarSoloSupabase(clienteId);
+        limpiarEstadoLocalCliente(clienteId);
+        setResultadoEliminar({
+          cliente: "",
+          crm: null,
+          chatwoot: null,
+          advertencias: [
+            "Se eliminó del CRM y de Supabase, pero no se pudo borrar el historial ni las fichas de Luna de WhatsApp: esta versión no tiene el endpoint /api/clientes/eliminar.",
+          ],
+        });
+        return;
+      }
+
+      const data = await respuesta.json();
+
+      // Chatwoot no dejó borrar la memoria de Luna: no tocamos nada todavía.
+      if (respuesta.status === 409 && data?.bloqueo === "chatwoot") {
+        setBloqueoChatwoot({ clienteId, detalle: Array.isArray(data.detalle) ? data.detalle : [] });
+        return;
+      }
+
+      if (!respuesta.ok) throw new Error(data?.error || `Error ${respuesta.status}`);
+
+      limpiarEstadoLocalCliente(clienteId);
+      setResultadoEliminar({
+        cliente: data.cliente || "",
+        crm: data.crm || null,
+        chatwoot: data.chatwoot || null,
+        advertencias: Array.isArray(data.advertencias) ? data.advertencias : [],
+      });
     } catch (e: any) {
       console.error("Error eliminando cliente completo:", e);
       const mensaje = errorIndicaFuncionNoDisponible(e)
-        ? "Falta aplicar en Supabase la migración supabase/migrations/20260904_eliminar_cliente_completo.sql."
+        ? "Falta aplicar en Supabase la migración supabase/migrations/20260905_eliminar_cliente_total.sql."
         : (e?.message || "desconocido");
       alert("No se pudo eliminar el cliente completo: " + mensaje);
     } finally {
@@ -3196,15 +3327,61 @@ export default function CRMApp() {
       {/* MODAL CONFIRMAR ELIMINACIÓN COMPLETA DEL CLIENTE */}
       {showDeleteConfirm && (
         <div className="fixed inset-0 z-[60] bg-black/70 flex items-center justify-center p-4 backdrop-blur-md">
-          <div className="w-full max-w-sm bg-surface border border-red-900/50 rounded-2xl p-6 space-y-4 shadow-2xl">
-            <div className="flex items-center gap-3 text-red-400">
-              <div className="w-10 h-10 rounded-full bg-red-950/50 border border-red-800 flex items-center justify-center"><Trash2 className="w-5 h-5" /></div>
-              <div><h3 className="text-base font-bold text-gray-100">¿Eliminar cliente y todos sus datos?</h3><p className="text-xs text-gray-400">Esta acción no se puede deshacer</p></div>
-            </div>
-            <div className="bg-red-950/20 border border-red-900/30 rounded-xl p-3 text-xs text-gray-300 leading-relaxed">
-              Se eliminarán permanentemente del CRM <span className="text-red-300 font-bold">todas sus conversaciones, mensajes, fotos, audios, notas, tareas, pagos, recordatorios y datos asociados</span>. Si vuelve a escribir, se creará desde cero como un lead nuevo.
-            </div>
-            <div className="flex gap-2"><button onClick={() => setShowDeleteConfirm(null)} disabled={isDeleting} className="flex-1 py-2.5 rounded-xl bg-surface border border-border text-gray-300 hover:bg-surfaceHover text-sm font-medium transition-colors disabled:opacity-50">Cancelar</button><button onClick={() => eliminarClienteDefinitivo(showDeleteConfirm.clienteId)} disabled={isDeleting} className="flex-1 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-bold transition-colors disabled:opacity-50 flex items-center justify-center gap-2">{isDeleting ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}{isDeleting ? "Eliminando todo..." : "Sí, eliminar todo"}</button></div>
+          <div className="w-full max-w-sm bg-surface border border-red-900/50 rounded-2xl p-6 space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto">
+            {resultadoEliminar ? (
+              <>
+                <div className="flex items-center gap-3 text-emerald-400">
+                  <div className="w-10 h-10 rounded-full bg-emerald-950/50 border border-emerald-800 flex items-center justify-center"><CheckCircle2 className="w-5 h-5" /></div>
+                  <div><h3 className="text-base font-bold text-gray-100">Cliente eliminado por completo</h3><p className="text-xs text-gray-400 break-all">{resultadoEliminar.cliente || "Se borró de todos lados"}</p></div>
+                </div>
+                <div className="bg-emerald-950/20 border border-emerald-900/40 rounded-xl p-3 text-xs text-gray-300 space-y-1">
+                  <p className="text-emerald-300 font-bold uppercase tracking-wider text-[10px] mb-1">CRM y Supabase</p>
+                  {lineasResumenCrm(resultadoEliminar.crm).map((linea, i) => <p key={i}>• {linea}</p>)}
+                  {resultadoEliminar.chatwoot ? (
+                    <>
+                      <p className="text-emerald-300 font-bold uppercase tracking-wider text-[10px] mt-2 mb-1">WhatsApp y fichas de Luna</p>
+                      {lineasResumenChatwoot(resultadoEliminar.chatwoot).map((linea, i) => <p key={i}>• {linea}</p>)}
+                    </>
+                  ) : null}
+                </div>
+                {resultadoEliminar.advertencias.length > 0 && (
+                  <div className="bg-amber-950/25 border border-amber-800/40 rounded-xl p-3 text-[11px] text-amber-200 space-y-1.5">
+                    {resultadoEliminar.advertencias.map((aviso, i) => (
+                      <p key={i} className="flex gap-2"><AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />{aviso}</p>
+                    ))}
+                  </div>
+                )}
+                <div className="bg-surface/60 border border-border rounded-xl p-3 text-[11px] text-gray-400 leading-relaxed">Si este número vuelve a escribir, entra como <span className="text-gray-200 font-bold">lead nuevo</span>: sin etapa, sin notas y con las fichas de Luna reiniciadas.</div>
+                <button onClick={cerrarModalEliminar} className="w-full py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-sm font-bold transition-colors">Listo</button>
+              </>
+            ) : bloqueoChatwoot ? (
+              <>
+                <div className="flex items-center gap-3 text-amber-400">
+                  <div className="w-10 h-10 rounded-full bg-amber-950/50 border border-amber-800 flex items-center justify-center"><AlertTriangle className="w-5 h-5" /></div>
+                  <div><h3 className="text-base font-bold text-gray-100">No se pudo borrar la memoria de Luna</h3><p className="text-xs text-gray-400">No se eliminó nada todavía</p></div>
+                </div>
+                <div className="bg-amber-950/25 border border-amber-800/40 rounded-xl p-3 text-[11px] text-amber-100 leading-relaxed space-y-1.5">
+                  <p>WhatsApp (Chatwoot) no dejó borrar las fichas y la memoria de Luna de este cliente.</p>
+                  {bloqueoChatwoot.detalle.map((detalle, i) => <p key={i} className="text-amber-200/80">• {detalle}</p>)}
+                  <p className="text-amber-200/80">Revisa que el token de Chatwoot sea de administrador (variable CHATWOOT_API_TOKEN en Vercel).</p>
+                </div>
+                <div className="bg-surface/60 border border-border rounded-xl p-3 text-[11px] text-gray-400 leading-relaxed">Si continuas, el cliente se borra del CRM y de Supabase, <span className="text-gray-200 font-bold">pero Luna puede seguir recordando el caso</span> cuando vuelva a escribir.</div>
+                <div className="flex gap-2"><button onClick={cerrarModalEliminar} disabled={isDeleting} className="flex-1 py-2.5 rounded-xl bg-surface border border-border text-gray-300 hover:bg-surfaceHover text-sm font-medium transition-colors disabled:opacity-50">Cancelar</button><button onClick={() => eliminarClienteDefinitivo(bloqueoChatwoot.clienteId, true)} disabled={isDeleting} className="flex-1 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-sm font-bold transition-colors disabled:opacity-50 flex items-center justify-center gap-2">{isDeleting ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}{isDeleting ? "Eliminando..." : "Eliminar solo del CRM"}</button></div>
+              </>
+            ) : (
+              <>
+                <div className="flex items-center gap-3 text-red-400">
+                  <div className="w-10 h-10 rounded-full bg-red-950/50 border border-red-800 flex items-center justify-center"><Trash2 className="w-5 h-5" /></div>
+                  <div><h3 className="text-base font-bold text-gray-100">¿Eliminar cliente y todos sus datos?</h3><p className="text-xs text-gray-400">Esta acción no se puede deshacer</p></div>
+                </div>
+                <div className="bg-red-950/20 border border-red-900/30 rounded-xl p-3 text-xs text-gray-300 leading-relaxed space-y-1.5">
+                  <p>Se eliminan permanentemente <span className="text-red-300 font-bold">todas sus conversaciones, mensajes, fotos, audios, notas, tareas, pagos, recordatorios y reglas del Cerebro</span> del CRM y de Supabase.</p>
+                  <p>También se borra <span className="text-red-300 font-bold">su chat de WhatsApp y las fichas de Luna</span> (motivo del caso, nombres, fotos y etapa que Luna ya aprendió).</p>
+                </div>
+                <div className="bg-surface/60 border border-border rounded-xl p-3 text-[11px] text-gray-400 leading-relaxed">Si vuelve a escribir, se crea desde cero como <span className="text-gray-200 font-bold">lead nuevo</span>, con las fichas de Luna reiniciadas.</div>
+                <div className="flex gap-2"><button onClick={cerrarModalEliminar} disabled={isDeleting} className="flex-1 py-2.5 rounded-xl bg-surface border border-border text-gray-300 hover:bg-surfaceHover text-sm font-medium transition-colors disabled:opacity-50">Cancelar</button><button onClick={() => eliminarClienteDefinitivo(showDeleteConfirm.clienteId)} disabled={isDeleting} className="flex-1 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-bold transition-colors disabled:opacity-50 flex items-center justify-center gap-2">{isDeleting ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}{isDeleting ? "Eliminando todo..." : "Sí, eliminar todo"}</button></div>
+              </>
+            )}
           </div>
         </div>
       )}

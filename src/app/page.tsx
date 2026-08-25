@@ -8,6 +8,7 @@ import ChatImage from "../components/ChatImage";
 import CerebroPanel from "../components/CerebroPanel";
 import AjustesPanel from "../components/AjustesPanel";
 import { downloadMany, guessImageFilename, isImageMessage } from "../lib/download-media";
+import { guardarContactoEnTelefono } from "../lib/contacts";
 import { initTheme } from "../lib/theme";
 import {
   initializeNotificationChannels,
@@ -22,7 +23,7 @@ import {
   Mic, Paperclip, ArrowLeft, Info, ListTodo, CheckSquare, Square, MailOpen,
   Sparkles, Play, Pause, RefreshCw, Image as ImageIcon, ChevronDown, ChevronRight, Download,
   Archive, ArchiveRestore, Search, AlertTriangle,
-  StickyNote, FileText, Coins, Globe, Percent, Save, Eye, EyeOff, Palette, Power, User, Landmark
+  StickyNote, FileText, Coins, Globe, Percent, Save, Eye, EyeOff, Palette, Power, User, Landmark, UserPlus
 } from "lucide-react";
 
 // Equivalencias de etapas Personal → Templo (para re-enrutar leads por número)
@@ -154,6 +155,8 @@ export default function CRMApp() {
   const liveAudioCtxRef = useRef<AudioContext | null>(null);
   const liveBarsIntervalRef = useRef<any>(null);
   const [descargandoFotos, setDescargandoFotos] = useState(false);
+  const [guardandoContacto, setGuardandoContacto] = useState(false);
+  const [contactoGuardado, setContactoGuardado] = useState<"nativo" | "vcf" | null>(null);
 
   const [showAdmin, setShowAdmin] = useState(false);
   const [showAjustes, setShowAjustes] = useState(false);
@@ -484,6 +487,32 @@ export default function CRMApp() {
     if (manual) return manual;
     const num = getTelefonoE164(cliente, conv);
     return num || "Sin número";
+  }
+
+  async function guardarContactoCliente() {
+    if (!clienteActual || guardandoContacto) return;
+    const telefono = getTelefonoE164(clienteActual, selectedConv);
+    if (!telefono) {
+      alert("Este cliente no tiene un número de teléfono válido para guardarlo.");
+      return;
+    }
+
+    const nombre = getDisplayName(clienteActual, selectedConv);
+    setGuardandoContacto(true);
+    try {
+      const resultado = await guardarContactoEnTelefono(nombre, telefono);
+      setContactoGuardado(resultado.native ? "nativo" : "vcf");
+      if (resultado.native) {
+        alert(`Contacto guardado en el teléfono: ${nombre} (${telefono})`);
+      } else {
+        alert(`Se descargó ${resultado.fileName || "el contacto.vcf"}. Ábrelo en el teléfono para añadirlo a Contactos.`);
+      }
+    } catch (e: any) {
+      console.error("Error guardando contacto:", e);
+      alert(e?.message || "No se pudo guardar el contacto en el teléfono.");
+    } finally {
+      setGuardandoContacto(false);
+    }
   }
 
   function getAvatarInitial(displayName: string) {
@@ -1013,6 +1042,7 @@ export default function CRMApp() {
   async function selectConversation(conv: any) {
     setSelectedConv(conv);
     setClienteActual(conv.clientes);
+    setContactoGuardado(null);
     // Al abrir un chat, mostrar su categoría en la subpestaña correspondiente
     const esSpamCliente = conv.clientes?.es_spam === true;
     const estCliente = esSpamCliente
@@ -1101,6 +1131,7 @@ export default function CRMApp() {
     setClienteActual({ ...clienteActual, nombre_manual: nuevoNombre || null, nombre: nuevoNombre || "Sin Nombre" });
     setConversaciones(prev => prev.map(c => c.cliente_id === clienteActual.id ? { ...c, clientes: { ...c.clientes, nombre_manual: nuevoNombre || null, nombre: nuevoNombre || "Sin Nombre" } } : c));
     setTodosClientes(prev => prev.map(c => c.id === clienteActual.id ? { ...c, nombre_manual: nuevoNombre || null, nombre: nuevoNombre || "Sin Nombre" } : c));
+    setContactoGuardado(null);
     setIsEditingNombre(false);
   }
 
@@ -2236,6 +2267,15 @@ export default function CRMApp() {
                         <Phone className="w-3 h-3 text-purple-400 flex-shrink-0" />
                         {getTelefonoE164(clienteActual, selectedConv) || "Sin número"}
                       </p>
+                      <button
+                        onClick={guardarContactoCliente}
+                        disabled={guardandoContacto || contactoGuardado === "nativo" || !getTelefonoE164(clienteActual, selectedConv)}
+                        className={`w-full flex items-center justify-center gap-2 py-2 rounded-lg border text-xs font-semibold transition-all disabled:opacity-50 ${contactoGuardado ? "bg-emerald-950/40 border-emerald-800/60 text-emerald-300" : "bg-purple-950/20 border-purple-800/50 text-purple-300 hover:bg-purple-900/40 hover:border-purple-600"}`}
+                        title="Guardar en los contactos del teléfono"
+                      >
+                        <UserPlus className="w-3.5 h-3.5" />
+                        {guardandoContacto ? "Guardando contacto..." : contactoGuardado === "nativo" ? "Contacto guardado en el teléfono" : contactoGuardado === "vcf" ? "Contacto descargado (.vcf)" : "Guardar en teléfono"}
+                      </button>
                       {!getNombreManual(clienteActual) && (
                         <p className="text-[10px] text-gray-500 mt-1.5 italic">Sin nombre asignado — toca ✏️ para ponerle uno</p>
                       )}
@@ -2575,7 +2615,17 @@ export default function CRMApp() {
                 <aside className={`w-full md:w-80 lg:w-96 border-l border-border bg-surface/95 overflow-y-auto absolute inset-0 z-30 md:relative flex flex-col ${!showMobileDetails ? "hidden md:flex" : "flex"}`}>
                   <header className="md:hidden flex items-center p-4 border-b border-border bg-background sticky top-0 z-10"><button onClick={() => setShowMobileDetails(false)} className="p-2 -ml-2 text-gray-400"><ArrowLeft className="w-5 h-5" /></button><h2 className="font-bold ml-2">Ficha Archivada</h2></header>
                   <div className="p-5 space-y-5">
-                    <div className="text-center"><div className="w-20 h-20 mx-auto rounded-full bg-surface border-2 border-amber-700 flex items-center justify-center text-2xl font-bold text-amber-300 mb-3 overflow-hidden shadow-lg">{clienteActual.foto_url ? <img src={clienteActual.foto_url} alt="" className="w-full h-full object-cover" /> : (() => { const dn = getDisplayName(clienteActual, selectedConv); return dn.startsWith("+") ? <Phone className="w-8 h-8" /> : <span>{dn.charAt(0) || "W"}</span>; })()}</div><h3 className="text-base font-bold text-gray-100">{getDisplayName(clienteActual, selectedConv)}</h3><p className="text-xs text-gray-400 mt-0.5 font-mono flex items-center justify-center gap-1"><Phone className="w-3 h-3" /> {getTelefonoE164(clienteActual, selectedConv) || "Sin número"}</p></div>
+                    <div className="text-center"><div className="w-20 h-20 mx-auto rounded-full bg-surface border-2 border-amber-700 flex items-center justify-center text-2xl font-bold text-amber-300 mb-3 overflow-hidden shadow-lg">{clienteActual.foto_url ? <img src={clienteActual.foto_url} alt="" className="w-full h-full object-cover" /> : (() => { const dn = getDisplayName(clienteActual, selectedConv); return dn.startsWith("+") ? <Phone className="w-8 h-8" /> : <span>{dn.charAt(0) || "W"}</span>; })()}</div><h3 className="text-base font-bold text-gray-100">{getDisplayName(clienteActual, selectedConv)}</h3><p className="text-xs text-gray-400 mt-0.5 font-mono flex items-center justify-center gap-1"><Phone className="w-3 h-3" /> {getTelefonoE164(clienteActual, selectedConv) || "Sin número"}</p>
+                      <button
+                        onClick={guardarContactoCliente}
+                        disabled={guardandoContacto || contactoGuardado === "nativo" || !getTelefonoE164(clienteActual, selectedConv)}
+                        className={`w-full mt-3 flex items-center justify-center gap-2 py-2 rounded-lg border text-xs font-semibold transition-all disabled:opacity-50 ${contactoGuardado ? "bg-emerald-950/40 border-emerald-800/60 text-emerald-300" : "bg-amber-950/20 border-amber-800/50 text-amber-300 hover:bg-amber-900/40 hover:border-amber-600"}`}
+                        title="Guardar en los contactos del teléfono"
+                      >
+                        <UserPlus className="w-3.5 h-3.5" />
+                        {guardandoContacto ? "Guardando contacto..." : contactoGuardado === "nativo" ? "Contacto guardado en el teléfono" : contactoGuardado === "vcf" ? "Contacto descargado (.vcf)" : "Guardar en teléfono"}
+                      </button>
+                    </div>
                     <button onClick={() => archivarConversacion(selectedConv.id, false)} className="w-full flex justify-center items-center gap-1.5 py-2.5 rounded-lg bg-emerald-900/30 border border-emerald-800 text-emerald-300 hover:bg-emerald-900/50 text-xs font-bold transition-all"><ArchiveRestore className="w-4 h-4" /> Restaurar a bandeja</button>
                     {/* Notas en archivados también */}
                     {(clienteActual.notas_personales || clienteActual.detalles_caso) && (

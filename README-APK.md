@@ -182,13 +182,13 @@ npx cap add android
 - Los permisos se declaran en `android/app/src/main/AndroidManifest.xml`. Si un permiso no está
   declarado ahí, Android no lo muestra en *Ajustes > Apps > Templo Místico CRM > Permisos* y la
   app no puede pedirlo (las notas de voz con `getUserMedia` no funcionan sin `RECORD_AUDIO`).
-- Este repo ya declara: `RECORD_AUDIO`, `MODIFY_AUDIO_SETTINGS`, `CAMERA`,
+- Este repo ya declara: `READ/WRITE_CONTACTS`, `RECORD_AUDIO`, `MODIFY_AUDIO_SETTINGS`, `CAMERA`,
   `READ_MEDIA_IMAGES/VIDEO/AUDIO` (Android 13+), `READ/WRITE_EXTERNAL_STORAGE` (Android 12-/9-),
   `POST_NOTIFICATIONS`, `SCHEDULE_EXACT_ALARM`, `USE_EXACT_ALARM` y `VIBRATE`.
 - Tras cambiar el manifest **hay que recompilar el APK** y reinstalarlo; los permisos no se
   actualizan en el APK ya instalado.
-- Con el APK nuevo: la app pide cada permiso en el momento de usarlo (notas de voz → micrófono,
-  foto/cámara, notificaciones en Ajustes). También puedes concederlos a mano en
+- Con el APK nuevo: la app pide cada permiso en el momento de usarlo (guardar contacto → contactos,
+  nota de voz → micrófono, foto/cámara, notificaciones en Ajustes). También puedes concederlos a mano en
   *Ajustes > Apps > Templo Místico CRM > Permisos*.
 - Nota: reproducir sonidos no requiere permiso en Android; solo grabar audio (`RECORD_AUDIO`) y
   notificaciones en Android 13+ (`POST_NOTIFICATIONS`).
@@ -201,6 +201,11 @@ npx cap add android
 - El botón **Eliminar** borra el cliente físico y toda la información que el CRM tenga guardada: conversaciones, mensajes, archivos asociados, notas, tareas, pagos, recordatorios y reglas de Cerebro vinculadas.
 - Ejecuta también `supabase/migrations/20260904_eliminar_cliente_completo.sql` en Supabase > SQL Editor > Run.
 - No se archiva ni se marca como perdido: al volver a escribir desde ese número, el webhook creará un cliente nuevo en **Nuevo Lead**.
+
+**Guardar clientes en el teléfono**
+- En la APK, el botón **Guardar en teléfono** crea directamente el contacto en la agenda usando el nombre y el número que aparecen en la ficha.
+- La primera vez Android solicitará los permisos de contactos. Después de modificar esta función hay que recompilar la APK con `npm run cap:build:android`.
+- En la versión web/PWA se descarga un archivo `.vcf`; ábrelo en el teléfono para importarlo a Contactos.
 
 ---
 

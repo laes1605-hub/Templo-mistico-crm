@@ -19,6 +19,7 @@
     "check:luna": "node scripts/validar-workflow-luna.mjs"
   },
   "dependencies": {
+    "@capacitor-community/contacts": "^8.0.0",
     "@capacitor/android": "^8.5.0",
     "@capacitor/cli": "^8.5.0",
     "@capacitor/core": "^8.5.0",

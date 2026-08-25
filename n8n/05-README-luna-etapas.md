@@ -192,6 +192,29 @@ Dos soluciones, según el caso:
 
 > El audio, la foto o el texto no influyen en esa decisión: el corte es solo por etapa.
 
+## Delay natural de respuesta (escribiendo…)
+
+Para que Luna no responda como un robot, antes de mandar el texto el flujo hace:
+
+1. **Debounce** (`Wait1`): espera 5 segundos para ver si el cliente sigue escribiendo y no
+   responderle dos veces a un mismo mensaje en ráfaga.
+2. **"Escribiendo…"** (`Enviar Escribiendo`): avisa por WhatsApp con la presencia `composing`.
+3. **Delay** (`Calcular Delay` + `Wait`): Luna "lee" (pausa aleatoria de 1.2s–3.2s) y después
+   "escribe" a un ritmo proporcional a la longitud del mensaje, con una variación aleatoria de
+   ±25% y tope de 20s. El indicador de escritura dura lo mismo que el delay y se apaga justo
+   antes de que llegue el mensaje.
+
+> ⚠️ Los nodos `Wait` y `Wait1` deben quedar con **Wait Unit = Seconds**. n8n los crea por
+> defecto en **hours**: si al importar ves que el delay queda en horas, cambia la unidad a
+> `seconds` (o regenera el workflow con `npm run build:luna`, que ya los deja en segundos).
+
+Ajustes (en el nodo `Calcular Delay`):
+
+- `pausaLecturaSeg`: el rango de "leer y pensar" (por defecto 1.2s–3.2s).
+- Los tramos de `tipeoSeg`: cuánto "tarda en escribir" según la longitud del mensaje.
+- `Math.min(20, …)`: el tope máximo en segundos.
+- `Math.max(2, …)`: el mínimo, para que nunca responda instantáneo.
+
 ## Verificación
 
 ```bash
@@ -236,3 +259,5 @@ lead de pareja turno a turno. `npm run build:luna` regenera el JSON desde
   prosperidad…): constante `CATALOGO` en `n8n/luna/code/construir-prompt.js`.
 - **Anti-atasco**: si un lead llega a 5 mensajes sin que se sepa el tipo de trabajo, se asume
   `personal` y avanza a Datos (constante en `aplicar-transicion.js`).
+- **Delay natural y "escribiendo…"**: nodo `Calcular Delay` (pausa de lectura, ritmo de tipeo y
+  tope). Ver la sección «Delay natural de respuesta».

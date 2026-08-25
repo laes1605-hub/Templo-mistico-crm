@@ -9,7 +9,10 @@
       },
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2.1,
-      "position": [1104, -1264],
+      "position": [
+        1104,
+        -1264
+      ],
       "id": "b2cfe02c-896a-4ebb-9a5d-9e4f0d10fa01",
       "name": "Webhook",
       "webhookId": "392c0aa6-5ae8-474f-be1c-b0d826b3ae26"
@@ -17,19 +20,32 @@
     {
       "parameters": {
         "conditions": {
-          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
           "conditions": [
             {
               "id": "88aa8155-42f8-4366-a8b7-0acf00e9dc8f",
               "leftValue": "={{ $json.body.message_type }}",
               "rightValue": "incoming",
-              "operator": { "type": "string", "operation": "equals", "name": "filter.operator.equals" }
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
             },
             {
               "id": "bee0aa9b-b0b8-4064-acfa-8d0d8400c1e6",
               "leftValue": "={{ $json.body.event }}",
               "rightValue": "message_created",
-              "operator": { "type": "string", "operation": "equals", "name": "filter.operator.equals" }
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
             }
           ],
           "combinator": "and"
@@ -38,15 +54,23 @@
       },
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
-      "position": [1328, -1360],
+      "position": [
+        1328,
+        -1360
+      ],
       "id": "cd99bf1b-7eea-4b8a-a0fc-c590251aea82",
       "name": "If"
     },
     {
-      "parameters": { "amount": "={{ $('Calcular Delay').item.json.delay }}" },
+      "parameters": {
+        "amount": "={{ $('Calcular Delay').item.json.delay }}"
+      },
       "type": "n8n-nodes-base.wait",
       "typeVersion": 1.1,
-      "position": [10288, -1440],
+      "position": [
+        10288,
+        -1440
+      ],
       "id": "2ccb732f-3588-42f9-9a9f-8f34809f3eb7",
       "name": "Wait",
       "webhookId": "0a431c10-5b19-480f-8a65-4fe6719d71d4"
@@ -58,8 +82,14 @@
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
-            { "name": "api_access_token", "value": "KKaF2gF4bJZvnSkqKnR42zD8" },
-            { "name": "Content-Type", "value": "application/json" }
+            {
+              "name": "api_access_token",
+              "value": "KKaF2gF4bJZvnSkqKnR42zD8"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
           ]
         },
         "sendBody": true,
@@ -70,7 +100,10 @@
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.5,
-      "position": [10512, -1440],
+      "position": [
+        10512,
+        -1440
+      ],
       "id": "74a04d9f-38ae-4db8-b2e8-06af22a9b687",
       "name": "chatwoot1"
     },
@@ -81,8 +114,14 @@
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
-            { "name": "apikey", "value": "25bbc50b8bfeb365633899951d2b9a6c4110f94e08535133d0953da151b4a1d3" },
-            { "name": "Content-Type", "value": "application/json" }
+            {
+              "name": "apikey",
+              "value": "25bbc50b8bfeb365633899951d2b9a6c4110f94e08535133d0953da151b4a1d3"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
           ]
         },
         "sendBody": true,
@@ -92,7 +131,10 @@
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.5,
-      "position": [10064, -1440],
+      "position": [
+        10064,
+        -1440
+      ],
       "id": "cd27dbb5-411f-4780-a43f-c3333c89d62a",
       "name": "Enviar Escribiendo"
     },
@@ -102,7 +144,10 @@
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [9840, -1440],
+      "position": [
+        9840,
+        -1440
+      ],
       "id": "f6df806b-f67e-4b7a-a460-e13e8ebd117f",
       "name": "Calcular Delay"
     },
@@ -110,12 +155,22 @@
       "parameters": {
         "url": "=https://crmesteban.duckdns.org/api/v1/accounts/1/conversations/{{ $json.body.conversation.id }}/messages?per_page=50",
         "sendHeaders": true,
-        "headerParameters": { "parameters": [{ "name": "api_access_token", "value": "KKaF2gF4bJZvnSkqKnR42zD8" }] },
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api_access_token",
+              "value": "KKaF2gF4bJZvnSkqKnR42zD8"
+            }
+          ]
+        },
         "options": {}
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.5,
-      "position": [5584, -1536],
+      "position": [
+        5584,
+        -1536
+      ],
       "id": "a805975c-fc2b-4bec-9c63-5dd3fc7be003",
       "name": "Historial"
     },
@@ -123,12 +178,29 @@
       "parameters": {
         "url": "={{ $json.body.attachments[0].data_url }}",
         "sendHeaders": true,
-        "headerParameters": { "parameters": [{ "name": "api_access_token", "value": "KKaF2gF4bJZvnSkqKnR42zD8" }] },
-        "options": { "response": { "response": { "fullResponse": true, "responseFormat": "file" } } }
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api_access_token",
+              "value": "KKaF2gF4bJZvnSkqKnR42zD8"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "responseFormat": "file"
+            }
+          }
+        }
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.5,
-      "position": [2448, -1680],
+      "position": [
+        2448,
+        -1680
+      ],
       "id": "194b083f-831b-4754-a99f-6f62b9f0e566",
       "name": "Descargar Audio"
     },
@@ -137,22 +209,45 @@
         "method": "POST",
         "url": "https://api.groq.com/openai/v1/audio/transcriptions",
         "sendHeaders": true,
-        "headerParameters": { "parameters": [{ "name": "Authorization", "value": "={{ 'Bearer ' + $env.GROQ_API_KEY }}" }] },
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.GROQ_API_KEY }}"
+            }
+          ]
+        },
         "sendBody": true,
         "contentType": "multipart-form-data",
         "bodyParameters": {
           "parameters": [
-            { "parameterType": "formBinaryData", "name": "file", "inputDataFieldName": "data" },
-            { "name": "model", "value": "whisper-large-v3" },
-            { "name": "language", "value": "es" },
-            { "name": "response_format", "value": "json" }
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "data"
+            },
+            {
+              "name": "model",
+              "value": "whisper-large-v3"
+            },
+            {
+              "name": "language",
+              "value": "es"
+            },
+            {
+              "name": "response_format",
+              "value": "json"
+            }
           ]
         },
         "options": {}
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.5,
-      "position": [2896, -1680],
+      "position": [
+        2896,
+        -1680
+      ],
       "id": "c236c61b-73dc-44e5-a873-1c5cb84fd71f",
       "name": "Transcribir Audio"
     },
@@ -162,7 +257,10 @@
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [3120, -1680],
+      "position": [
+        3120,
+        -1680
+      ],
       "id": "da01e412-ab1a-430b-9e3f-2607d63a91c8",
       "name": "Inyectar Texto"
     },
@@ -172,7 +270,10 @@
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2672, -1680],
+      "position": [
+        2672,
+        -1680
+      ],
       "id": "1a7ef786-2622-45e4-a622-3a7bc02e0e3c",
       "name": "Renombrar Audio"
     },
@@ -182,12 +283,20 @@
           "values": [
             {
               "conditions": {
-                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
                 "conditions": [
                   {
                     "leftValue": "={{ $json.body.attachments && $json.body.attachments[0] ? $json.body.attachments[0].file_type : 'texto' }}",
                     "rightValue": "audio",
-                    "operator": { "type": "string", "operation": "equals" },
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
                     "id": "043c279c-1fb9-4850-8c99-d1eba4968968"
                   }
                 ],
@@ -198,13 +307,22 @@
             },
             {
               "conditions": {
-                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
                 "conditions": [
                   {
                     "id": "b92112da-b42c-4fdd-b933-f276a5917c84",
                     "leftValue": "={{ $json.body.attachments && $json.body.attachments[0] ? $json.body.attachments[0].file_type : 'texto' }}",
                     "rightValue": "image",
-                    "operator": { "type": "string", "operation": "equals", "name": "filter.operator.equals" }
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
                   }
                 ],
                 "combinator": "and"
@@ -214,11 +332,17 @@
             }
           ]
         },
-        "options": { "fallbackOutput": "extra", "renameFallbackOutput": "texto" }
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "texto"
+        }
       },
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3.4,
-      "position": [2224, -1552],
+      "position": [
+        2224,
+        -1552
+      ],
       "id": "1808a022-962c-41d8-8e9a-376d0245d219",
       "name": "Tipo de Mensaje"
     },
@@ -229,8 +353,14 @@
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
-            { "name": "Content-Type", "value": "application/json" },
-            { "name": "Authorization", "value": "={{ 'Bearer ' + $env.OPENAI_API_KEY }}" }
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.OPENAI_API_KEY }}"
+            }
           ]
         },
         "sendBody": true,
@@ -240,7 +370,10 @@
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.5,
-      "position": [2896, -1392],
+      "position": [
+        2896,
+        -1392
+      ],
       "id": "79ca4a43-11a0-43d6-b74d-3e970596ab58",
       "name": "Analizar Imagen"
     },
@@ -248,41 +381,76 @@
       "parameters": {
         "url": "={{ $json.body.attachments[0].data_url }}",
         "sendHeaders": true,
-        "headerParameters": { "parameters": [{ "name": "api_access_token", "value": "KKaF2gF4bJZvnSkqKnR42zD8" }] },
-        "options": { "response": { "response": { "responseFormat": "file" } } }
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api_access_token",
+              "value": "KKaF2gF4bJZvnSkqKnR42zD8"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.5,
-      "position": [2448, -1392],
+      "position": [
+        2448,
+        -1392
+      ],
       "id": "cebdf721-8bbf-42d1-bf1b-be32c787d721",
       "name": "Descargar Imagen"
     },
     {
-      "parameters": { "jsCode": "__STUB_PREPARAR_IMAGEN__" },
+      "parameters": {
+        "jsCode": "__STUB_PREPARAR_IMAGEN__"
+      },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2672, -1392],
+      "position": [
+        2672,
+        -1392
+      ],
       "id": "d8eab5e4-c9f0-4589-a409-6973e8399003",
       "name": "Preparar Imagen"
     },
     {
-      "parameters": { "jsCode": "__STUB_INYECTAR_ANALISIS__" },
+      "parameters": {
+        "jsCode": "__STUB_INYECTAR_ANALISIS__"
+      },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [3120, -1392],
+      "position": [
+        3120,
+        -1392
+      ],
       "id": "1dd05ce3-c6f3-4ee4-9c3a-ee29bc8e91c4",
       "name": "Inyectar Analisis"
     },
     {
       "parameters": {
         "conditions": {
-          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
           "conditions": [
             {
               "id": "b28abad5-323d-494a-9268-294ed8e09654",
               "leftValue": "={{ $json.body.sender.phone_number }}",
               "rightValue": "+573054021111",
-              "operator": { "type": "string", "operation": "equals", "name": "filter.operator.equals" }
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
             }
           ],
           "combinator": "and"
@@ -291,7 +459,10 @@
       },
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
-      "position": [1552, -1360],
+      "position": [
+        1552,
+        -1360
+      ],
       "id": "cf2f7daa-f5db-4a87-9d13-fc3a7246760d",
       "name": "Es el Maestro?"
     },
@@ -301,20 +472,32 @@
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1776, -1200],
+      "position": [
+        1776,
+        -1200
+      ],
       "id": "b64df5ae-f681-4adf-b755-d18b3f1c4285",
       "name": "Detectar Comando"
     },
     {
       "parameters": {
         "conditions": {
-          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
           "conditions": [
             {
               "id": "9b32a294-4c00-49c7-b7e2-2820266326bd",
               "leftValue": "={{ $json.comando }}",
               "rightValue": "listar_consultas",
-              "operator": { "type": "string", "operation": "equals", "name": "filter.operator.equals" }
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
             }
           ],
           "combinator": "and"
@@ -323,7 +506,10 @@
       },
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
-      "position": [2000, -1200],
+      "position": [
+        2000,
+        -1200
+      ],
       "id": "d6e5ad52-6828-4912-a9c8-aac2eaaa3faf",
       "name": "Que Comando?"
     },
@@ -331,12 +517,22 @@
       "parameters": {
         "url": "https://crmesteban.duckdns.org/api/v1/accounts/1/conversations?labels[]=consulta-pendiente&status=open",
         "sendHeaders": true,
-        "headerParameters": { "parameters": [{ "name": "api_access_token", "value": "KKaF2gF4bJZvnSkqKnR42zD8" }] },
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api_access_token",
+              "value": "KKaF2gF4bJZvnSkqKnR42zD8"
+            }
+          ]
+        },
         "options": {}
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.5,
-      "position": [2224, -1200],
+      "position": [
+        2224,
+        -1200
+      ],
       "id": "2e73005c-556a-4734-8968-53095fee1c1a",
       "name": "Obtener Consultas Pendientes"
     },
@@ -347,22 +543,37 @@
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
-            { "name": "apikey", "value": "25bbc50b8bfeb365633899951d2b9a6c4110f94e08535133d0953da151b4a1d3" },
-            { "name": "Content-Type", "value": "application/json" }
+            {
+              "name": "apikey",
+              "value": "25bbc50b8bfeb365633899951d2b9a6c4110f94e08535133d0953da151b4a1d3"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
           ]
         },
         "sendBody": true,
         "bodyParameters": {
           "parameters": [
-            { "name": "number", "value": "573054021111" },
-            { "name": "text", "value": "={{ $json.mensaje }}" }
+            {
+              "name": "number",
+              "value": "573054021111"
+            },
+            {
+              "name": "text",
+              "value": "={{ $json.mensaje }}"
+            }
           ]
         },
         "options": {}
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.5,
-      "position": [2672, -1200],
+      "position": [
+        2672,
+        -1200
+      ],
       "id": "edf92503-ff44-483e-9083-109b8c0266fc",
       "name": "Enviar Lista al Maestro"
     },
@@ -372,7 +583,10 @@
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2448, -1200],
+      "position": [
+        2448,
+        -1200
+      ],
       "id": "8ed900d6-b49d-4844-90e6-9c7849793be2",
       "name": "Formatear Todo"
     },
@@ -382,20 +596,32 @@
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [9392, -1536],
+      "position": [
+        9392,
+        -1536
+      ],
       "id": "ef982188-c78c-4d0f-bae3-e5cbdd0eed39",
       "name": "Verificar si Enviar Audio"
     },
     {
       "parameters": {
         "conditions": {
-          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
           "conditions": [
             {
               "id": "0f380656-3afd-4ca9-9b5d-47d5ebbf9d35",
               "leftValue": "={{ $json.clienteEnvioAudio.toString() }}",
               "rightValue": "true",
-              "operator": { "type": "string", "operation": "equals", "name": "filter.operator.equals" }
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
             }
           ],
           "combinator": "and"
@@ -404,7 +630,10 @@
       },
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
-      "position": [9616, -1536],
+      "position": [
+        9616,
+        -1536
+      ],
       "id": "0c7df8c5-ea56-4707-8bba-17c0a1f744cc",
       "name": "Enviar Audio?"
     },
@@ -415,18 +644,33 @@
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
-            { "name": "Authorization", "value": "Bearer sk-fish-l-O20-fXkkh15dOpXhxh5prGYH6hf15uAPVgyrBMZZM" },
-            { "name": "Content-Type", "value": "application/json" }
+            {
+              "name": "Authorization",
+              "value": "Bearer sk-fish-l-O20-fXkkh15dOpXhxh5prGYH6hf15uAPVgyrBMZZM"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
           ]
         },
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={\n  \"text\": \"={{ $json.textoLimpio || $json.textoRespuesta }}\",\n  \"reference_id\": \"be2d2e9342cd4201b690500c4e35d008\",\n  \"format\": \"opus\",\n  \"sample_rate\": 48000,\n  \"normalize\": true,\n  \"latency\": \"normal\"\n}",
-        "options": { "response": { "response": { "responseFormat": "file" } } }
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.5,
-      "position": [10064, -1632],
+      "position": [
+        10064,
+        -1632
+      ],
       "id": "e8506b61-27ee-4a62-b16d-04d1aff8163e",
       "name": "Generar Audio Luna"
     },
@@ -436,7 +680,10 @@
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [9840, -1632],
+      "position": [
+        9840,
+        -1632
+      ],
       "id": "f72b63e8-65a2-4cda-bb3f-98be400c4392",
       "name": "Preparar Body Audio"
     },
@@ -446,7 +693,10 @@
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [6032, -1536],
+      "position": [
+        6032,
+        -1536
+      ],
       "id": "7d100713-ccfe-4686-b852-81e25811d6c9",
       "name": "Debug Contexto"
     },
@@ -456,15 +706,23 @@
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [3344, -1536],
+      "position": [
+        3344,
+        -1536
+      ],
       "id": "f0136a9c-09d7-4ab1-a326-3861b8dfe789",
       "name": "Guardar Timestamp"
     },
     {
-      "parameters": { "amount": 15 },
+      "parameters": {
+        "amount": 15
+      },
       "type": "n8n-nodes-base.wait",
       "typeVersion": 1.1,
-      "position": [3568, -1536],
+      "position": [
+        3568,
+        -1536
+      ],
       "id": "03db8ef9-5dab-4460-927c-4b85124445b0",
       "name": "Wait1",
       "webhookId": "9637e7fe-7046-470f-859e-f34c7b7bae7d"
@@ -473,12 +731,22 @@
       "parameters": {
         "url": "=https://crmesteban.duckdns.org/api/v1/accounts/1/conversations/{{ $json.conversationId || $json.body?.conversation?.id || $('Webhook').first().json.body?.conversation?.id }}/messages",
         "sendHeaders": true,
-        "headerParameters": { "parameters": [{ "name": "api_access_token", "value": "KKaF2gF4bJZvnSkqKnR42zD8" }] },
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api_access_token",
+              "value": "KKaF2gF4bJZvnSkqKnR42zD8"
+            }
+          ]
+        },
         "options": {}
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.5,
-      "position": [3792, -1536],
+      "position": [
+        3792,
+        -1536
+      ],
       "id": "44ea18de-5953-42c9-9f90-641433699592",
       "name": "Verificar Ultimo Mensaje"
     },
@@ -488,20 +756,32 @@
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [4016, -1536],
+      "position": [
+        4016,
+        -1536
+      ],
       "id": "9a7ac74a-5286-4ea3-be68-f6d6f4d600bb",
       "name": "Soy el Ultimo?"
     },
     {
       "parameters": {
         "conditions": {
-          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
           "conditions": [
             {
               "id": "28eb2ee0-6648-45c8-a7c4-d85122080619",
               "leftValue": "={{ $json.soyElUltimo.toString() }}",
               "rightValue": "true",
-              "operator": { "type": "string", "operation": "equals", "name": "filter.operator.equals" }
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
             }
           ],
           "combinator": "and"
@@ -510,7 +790,10 @@
       },
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
-      "position": [4240, -1536],
+      "position": [
+        4240,
+        -1536
+      ],
       "id": "0d3679f7-8403-4696-aa4c-ef7f2d149a7f",
       "name": "Continuar Procesamiento?"
     },
@@ -520,7 +803,10 @@
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [4464, -1536],
+      "position": [
+        4464,
+        -1536
+      ],
       "id": "4275dcd6-cd2e-4ad6-bba7-6f8500c9105e",
       "name": "Consolidar Lista"
     },
@@ -528,20 +814,35 @@
       "parameters": {
         "url": "=https://crmesteban.duckdns.org/api/v1/accounts/1/conversations/{{ $('Webhook').item.json.body.conversation.id }}",
         "sendHeaders": true,
-        "headerParameters": { "parameters": [{ "name": "api_access_token", "value": "KKaF2gF4bJZvnSkqKnR42zD8" }] },
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api_access_token",
+              "value": "KKaF2gF4bJZvnSkqKnR42zD8"
+            }
+          ]
+        },
         "options": {}
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.5,
-      "position": [4688, -1536],
+      "position": [
+        4688,
+        -1536
+      ],
       "id": "a1909ffc-64fc-47c3-ac7c-1316d68beda0",
       "name": "Obtener Checklist"
     },
     {
-      "parameters": { "jsCode": "__STUB_CHECKLIST__" },
+      "parameters": {
+        "jsCode": "__STUB_CHECKLIST__"
+      },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [4912, -1536],
+      "position": [
+        4912,
+        -1536
+      ],
       "id": "ea1268f6-7c14-4452-97db-5b42ca15b6b3",
       "name": "Analizar y Actualizar Checklist"
     },
@@ -551,20 +852,32 @@
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [5136, -1536],
+      "position": [
+        5136,
+        -1536
+      ],
       "id": "ff35219d-9823-4773-a1a6-91d59a2e609f",
       "name": "Verificar Intervencion Humana"
     },
     {
       "parameters": {
         "conditions": {
-          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
           "conditions": [
             {
               "id": "36ce5a35-b3df-4433-8ca9-f3cf485273e9",
               "leftValue": "={{ $json.debeResponder.toString() }}",
               "rightValue": "true",
-              "operator": { "type": "string", "operation": "equals", "name": "filter.operator.equals" }
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
             }
           ],
           "combinator": "and"
@@ -573,7 +886,10 @@
       },
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
-      "position": [5360, -1536],
+      "position": [
+        5360,
+        -1536
+      ],
       "id": "8013e948-5975-4cab-bfd3-7f566ccd8673",
       "name": "Bot Puede Responder?"
     },
@@ -584,8 +900,14 @@
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
-            { "name": "Authorization", "value": "={{ 'Bearer ' + $env.OPENAI_API_KEY }}" },
-            { "name": "Content-Type", "value": "application/json" }
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.OPENAI_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
           ]
         },
         "sendBody": true,
@@ -596,7 +918,10 @@
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.5,
-      "position": [7824, -1456],
+      "position": [
+        7824,
+        -1456
+      ],
       "id": "4268d6e1-7752-4337-80b6-c76929ab4ebc",
       "name": "Clasificar Lead"
     },
@@ -606,7 +931,10 @@
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [8048, -1456],
+      "position": [
+        8048,
+        -1456
+      ],
       "id": "f5b7a0f9-3fcc-43a1-bf2a-dc3f53ab22a0",
       "name": "Extraer Clasificacion"
     },
@@ -614,12 +942,22 @@
       "parameters": {
         "url": "=https://crmesteban.duckdns.org/api/v1/accounts/1/conversations/{{ $('Extraer Clasificacion').item.json.conversationId }}",
         "sendHeaders": true,
-        "headerParameters": { "parameters": [{ "name": "api_access_token", "value": "KKaF2gF4bJZvnSkqKnR42zD8" }] },
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api_access_token",
+              "value": "KKaF2gF4bJZvnSkqKnR42zD8"
+            }
+          ]
+        },
         "options": {}
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.5,
-      "position": [8272, -1456],
+      "position": [
+        8272,
+        -1456
+      ],
       "id": "0a5703cb-5cc2-43db-af1d-55cefbdac014",
       "name": "Quitar Etiquetas Anteriores"
     },
@@ -629,7 +967,10 @@
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [8496, -1456],
+      "position": [
+        8496,
+        -1456
+      ],
       "id": "3e0e81ce-f3d7-4fb2-a7b3-814381196809",
       "name": "Preparar Etiquetas"
     },
@@ -640,8 +981,14 @@
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
-            { "name": "api_access_token", "value": "KKaF2gF4bJZvnSkqKnR42zD8" },
-            { "name": "Content-Type", "value": "application/json" }
+            {
+              "name": "api_access_token",
+              "value": "KKaF2gF4bJZvnSkqKnR42zD8"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
           ]
         },
         "sendBody": true,
@@ -651,20 +998,32 @@
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.5,
-      "position": [8720, -1456],
+      "position": [
+        8720,
+        -1456
+      ],
       "id": "2c08a484-407c-4a59-ae02-d124a899cb7f",
       "name": "Actualizar Etiqueta Chatwoot"
     },
     {
       "parameters": {
         "conditions": {
-          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 3 },
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
           "conditions": [
             {
               "id": "8fb444d3-f56d-408e-8d30-da2be59f04b8",
               "leftValue": "={{ $('Extraer Clasificacion').item.json.clasificacion }}",
               "rightValue": "CALIENTE",
-              "operator": { "type": "string", "operation": "equals", "name": "filter.operator.equals" }
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
             }
           ],
           "combinator": "and"
@@ -674,7 +1033,10 @@
       },
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
-      "position": [8944, -1456],
+      "position": [
+        8944,
+        -1456
+      ],
       "id": "dea9a4c6-da9d-4ac6-898a-70f5939bd32f",
       "name": "Es Caliente?"
     },
@@ -685,8 +1047,14 @@
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
-            { "name": "apikey", "value": "25bbc50b8bfeb365633899951d2b9a6c4110f94e08535133d0953da151b4a1d3" },
-            { "name": "Content-Type", "value": "application/json" }
+            {
+              "name": "apikey",
+              "value": "25bbc50b8bfeb365633899951d2b9a6c4110f94e08535133d0953da151b4a1d3"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
           ]
         },
         "sendBody": true,
@@ -696,7 +1064,10 @@
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.5,
-      "position": [9168, -1456],
+      "position": [
+        9168,
+        -1456
+      ],
       "id": "40c8ffa5-f6eb-4ad8-8bb0-b7b27fe9c90b",
       "name": "Notificar Maestro Lead Caliente"
     },
@@ -706,7 +1077,10 @@
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [7600, -1456],
+      "position": [
+        7600,
+        -1456
+      ],
       "id": "95ff2e5f-778d-47bf-8c90-c8b9c6d0dbf6",
       "name": "Preparar Body Clasificacion"
     },
@@ -716,17 +1090,23 @@
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [6928, -1600],
+      "position": [
+        6928,
+        -1600
+      ],
       "id": "f8f17c8d-f57c-42d7-b833-2a54988a9326",
       "name": "Preparar Body Backup"
     },
     {
       "parameters": {
-        "jsCode": "// =====================================================\n// CONFIGURACIÓN DE SUPABASE (Templo Místico)\n// =====================================================\nconst SUPABASE_URL = \"https://qrrkokfmbdtodrqbfehs.supabase.co\";\nconst SUPABASE_KEY = \"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFycmtva2ZtYmR0b2RycWJmZWhzIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NzE5NTU0NSwiZXhwIjoyMTAyNzcxNTQ1fQ.bFwt6pAidvSEEuv3UNuKeZYwkfB-d2OPgMHM8MmwcD8\";\n\nconst headers = {\n  \"apikey\": SUPABASE_KEY,\n  \"Authorization\": `Bearer ${SUPABASE_KEY}`,\n  \"Content-Type\": \"application/json\",\n  \"Prefer\": \"return=representation\"\n};\n\n// =====================================================\n// EXTRAER DATOS DEL EVENTO DE CHATWOOT\n// =====================================================\nconst rawInput = $input.first().json;\nconst body = rawInput.body || rawInput;\n\nif (!body || !body.conversation) {\n  return [{ json: { sincronizado: false, motivo: \"No es evento de conversacion valido\" } }];\n}\n\nconst conv = body.conversation;\nconst sender = body.sender || conv.meta?.sender || {};\nconst contact = body.contact || conv.meta?.sender || conv.contact || {};\n\n// Funciones auxiliares para teléfono\nfunction soloDigitos(v) { return String(v || \"\").replace(/\\D/g, \"\"); }\nfunction pareceTelefonoReal(v) {\n  const d = soloDigitos(v);\n  if (d.length < 8 || d.length > 15) return false;\n  if (/^0{2,}/.test(d)) return false;\n  return true;\n}\nfunction normalizarTelefono(v) {\n  let d = soloDigitos(v);\n  if (!d) return \"\";\n  if (d.length === 10 && d.startsWith(\"3\")) d = \"57\" + d;\n  return \"+\" + d;\n}\n\nconst candidatos = [\n  sender.phone_number,\n  contact.phone_number,\n  conv?.meta?.sender?.phone_number,\n  body?.conversation?.meta?.sender?.phone_number,\n  sender.identifier,\n  contact.identifier\n];\n\nlet telefono = \"\";\nfor (const c of candidatos) {\n  if (pareceTelefonoReal(c)) {\n    telefono = normalizarTelefono(c);\n    break;\n  }\n}\n\nif (!telefono) {\n  telefono = `revisar_${conv.id}`;\n}\n\nconst telefonoDisplay = telefono.startsWith(\"revisar_\") ? \"Sin teléfono\" : telefono;\nconst nombreCliente = sender.name || \"Cliente WhatsApp\";\nconst fotoUrl = sender.avatar_url || null;\n\nconst attrs = conv.custom_attributes || {};\nconst tipoTrabajo = attrs.tipo_trabajo || null;\nconst nombreOtraPersona = attrs.nombre_otra_persona || null;\nconst fotoOtraPersona = attrs.foto_otra_persona || null;\nconst fotoMano = attrs.foto_mano || null;\n\nconst contenidoMensaje = body.content || \"\";\nconst msgTypeRaw = String(body.message_type ?? \"\").toLowerCase();\nconst messageType = (msgTypeRaw === \"0\" || msgTypeRaw === \"incoming\") ? \"recibido\" : \"enviado\";\n\nlet tipoContenido = \"texto\";\nlet urlArchivo = null;\n\nif (body.attachments && body.attachments.length > 0) {\n  const att = body.attachments[0];\n  urlArchivo = att.data_url || att.file_url || null;\n  if (att.file_type === \"audio\") tipoContenido = \"audio\";\n  else if (att.file_type === \"image\") tipoContenido = \"imagen\";\n  else tipoContenido = \"archivo\";\n}\n\n// =====================================================\n// PROCESO DE GUARDADO EN SUPABASE\n// =====================================================\nlet clienteId = null;\nlet conversacionId = null;\nlet logPasos = [];\nlet errorPaso = null;\n\ntry {\n  // ---------------------------------------------------\n  // PASO 1: CLIENTE\n  // ---------------------------------------------------\n  const buscarCliente = await this.helpers.httpRequest({\n    method: \"GET\",\n    url: `${SUPABASE_URL}/rest/v1/clientes?telefono=eq.${encodeURIComponent(telefono)}&select=id`,\n    headers: headers,\n    json: true\n  });\n\n  if (Array.isArray(buscarCliente) && buscarCliente.length > 0) {\n    clienteId = buscarCliente[0].id;\n    await this.helpers.httpRequest({\n      method: \"PATCH\",\n      url: `${SUPABASE_URL}/rest/v1/clientes?id=eq.${clienteId}`,\n      headers: headers,\n      body: {\n        nombre: nombreCliente,\n        foto_url: fotoUrl,\n        tipo_trabajo: tipoTrabajo,\n        nombre_otra_persona: nombreOtraPersona,\n        foto_otra_persona: fotoOtraPersona,\n        foto_mano: fotoMano,\n        telefono_display: telefonoDisplay,\n        actualizado_en: new Date().toISOString()\n      },\n      json: true\n    });\n    logPasos.push(`Cliente actualizado (ID: ${clienteId})`);\n  } else {\n    const nuevoCliente = await this.helpers.httpRequest({\n      method: \"POST\",\n      url: `${SUPABASE_URL}/rest/v1/clientes`,\n      headers: headers,\n      body: [{\n        telefono: telefono,\n        telefono_display: telefonoDisplay,\n        nombre: nombreCliente,\n        foto_url: fotoUrl,\n        tipo_trabajo: tipoTrabajo,\n        nombre_otra_persona: nombreOtraPersona,\n        foto_otra_persona: fotoOtraPersona,\n        foto_mano: fotoMano\n      }],\n      json: true\n    });\n    clienteId = nuevoCliente[0]?.id;\n    logPasos.push(`Cliente creado (ID: ${clienteId})`);\n  }\n\n  // ---------------------------------------------------\n  // PASO 2: CONVERSACIÓN\n  // ---------------------------------------------------\n  if (clienteId) {\n    const buscarConv = await this.helpers.httpRequest({\n      method: \"GET\",\n      url: `${SUPABASE_URL}/rest/v1/conversaciones?chatwoot_conversation_id=eq.${conv.id}&select=id`,\n      headers: headers,\n      json: true\n    });\n\n    const datosConv = {\n      cliente_id: clienteId,\n      chatwoot_conversation_id: conv.id,\n      numero_whatsapp: telefono,\n      fuente: conv.inbox_id === 5 ?\"meta_business\" : \"evolution\",\n      ultimo_mensaje: contenidoMensaje || (tipoContenido !== \"texto\" ? `[${tipoContenido}]` : \"\"),\n      ultimo_mensaje_en: new Date().toISOString(),\n      actualizado_en: new Date().toISOString()\n    };\n\n    if (Array.isArray(buscarConv) && buscarConv.length > 0) {\n      conversacionId = buscarConv[0].id;\n      await this.helpers.httpRequest({\n        method: \"PATCH\",\n        url: `${SUPABASE_URL}/rest/v1/conversaciones?id=eq.${conversacionId}`,\n        headers: headers,\n        body: datosConv,\n        json: true\n      });\n      logPasos.push(`Conversacion actualizada (ID: ${conversacionId})`);\n    } else {\n      const nuevaConv = await this.helpers.httpRequest({\n        method: \"POST\",\n        url: `${SUPABASE_URL}/rest/v1/conversaciones`,\n        headers: headers,\n        body: [datosConv],\n        json: true\n      });\n      conversacionId = nuevaConv[0]?.id;\n      logPasos.push(`Conversacion creada (ID: ${conversacionId})`);\n    }\n  }\n\n  // ---------------------------------------------------\n  // PASO 3: MENSAJE (Con Anti-Duplicado)\n  // ---------------------------------------------------\n  if (conversacionId && (contenidoMensaje || urlArchivo)) {\n    let yaExiste = false;\n\n    try {\n      const desde = new Date(Date.now() - 20000).toISOString();\n      const existentes = await this.helpers.httpRequest({\n        method: \"GET\",\n        url: `${SUPABASE_URL}/rest/v1/mensajes?conversacion_id=eq.${conversacionId}&tipo=eq.${messageType}&creado_en=gte.${desde}&select=id,contenido,tipo_contenido`,\n        headers: headers,\n        json: true\n      });\n\n      if (Array.isArray(existentes)) {\n        yaExiste = existentes.some((m) => {\n          const c1 = (m.contenido || \"\").trim();\n          const c2 = (contenidoMensaje || \"\").trim();\n          const sameContent = c1 === c2 || c1 === `[${tipoContenido}]` || c2 === `[${m.tipo_contenido}]`;\n          const sameType = (m.tipo_contenido || \"texto\") === tipoContenido;\n          return sameContent && sameType;\n        });\n      }\n    } catch (eDedupe) {\n      yaExiste = false;\n    }\n\n    if (!yaExiste) {\n      await this.helpers.httpRequest({\n        method: \"POST\",\n        url: `${SUPABASE_URL}/rest/v1/mensajes`,\n        headers: headers,\n        body: [{\n          conversacion_id: conversacionId,\n          tipo: messageType,\n          contenido: contenidoMensaje || (tipoContenido !== \"texto\" ? `[${tipoContenido}]` : \"\"),\n          tipo_contenido: tipoContenido,\n          url_archivo: urlArchivo,\n          creado_en: new Date().toISOString()\n        }],\n        json: true\n      });\n      logPasos.push(\"Mensaje guardado con éxito\");\n    } else {\n      logPasos.push(\"Mensaje duplicado omitido\");\n    }\n  }\n\n} catch (err) {\n  errorPaso = err.message || JSON.stringify(err);\n  logPasos.push(`Error en proceso: ${errorPaso}`);\n}\n\nreturn [{\n  json: {\n    sincronizado: errorPaso === null,\n    clienteId,\n    conversacionId,\n    logPasos,\n    error: errorPaso\n  }\n}];"
+        "jsCode": "// =====================================================\n// CONFIGURACIÓN DE SUPABASE (Templo Místico)\n// =====================================================\nconst SUPABASE_URL = \"https://qrrkokfmbdtodrqbfehs.supabase.co\";\nconst SUPABASE_KEY = \"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFycmtva2ZtYmR0b2RycWJmZWhzIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NzE5NTU0NSwiZXhwIjoyMTAyNzcxNTQ1fQ.bFwt6pAidvSEEuv3UNuKeZYwkfB-d2OPgMHM8MmwcD8\";\n\nconst headers = {\n  \"apikey\": SUPABASE_KEY,\n  \"Authorization\": `Bearer ${SUPABASE_KEY}`,\n  \"Content-Type\": \"application/json\",\n  \"Prefer\": \"return=representation\"\n};\n\n// =====================================================\n// EXTRAER DATOS DEL EVENTO DE CHATWOOT\n// =====================================================\nconst rawInput = $input.first().json;\nconst body = rawInput.body || rawInput;\n\nif (!body || !body.conversation) {\n  return [{ json: { sincronizado: false, motivo: \"No es evento de conversacion valido\" } }];\n}\n\nconst conv = body.conversation;\nconst sender = body.sender || conv.meta?.sender || {};\nconst contact = body.contact || conv.meta?.sender || conv.contact || {};\n\n// Funciones auxiliares para teléfono\nfunction soloDigitos(v) { return String(v || \"\").replace(/\\D/g, \"\"); }\nfunction pareceTelefonoReal(v) {\n  const d = soloDigitos(v);\n  if (d.length < 8 || d.length > 15) return false;\n  if (/^0{2,}/.test(d)) return false;\n  return true;\n}\nfunction normalizarTelefono(v) {\n  let d = soloDigitos(v);\n  if (!d) return \"\";\n  if (d.length === 10 && d.startsWith(\"3\")) d = \"57\" + d;\n  return \"+\" + d;\n}\n\nconst candidatos = [\n  sender.phone_number,\n  contact.phone_number,\n  conv?.meta?.sender?.phone_number,\n  body?.conversation?.meta?.sender?.phone_number,\n  sender.identifier,\n  contact.identifier\n];\n\nlet telefono = \"\";\nfor (const c of candidatos) {\n  if (pareceTelefonoReal(c)) {\n    telefono = normalizarTelefono(c);\n    break;\n  }\n}\n\nif (!telefono) {\n  telefono = `revisar_${conv.id}`;\n}\n\nconst telefonoDisplay = telefono.startsWith(\"revisar_\") ? \"Sin teléfono\" : telefono;\nconst nombreCliente = sender.name || \"Cliente WhatsApp\";\nconst fotoUrl = sender.avatar_url || null;\n\nconst attrs = conv.custom_attributes || {};\nconst tipoTrabajo = attrs.tipo_trabajo || null;\nconst nombreOtraPersona = attrs.nombre_otra_persona || null;\nconst fotoOtraPersona = attrs.foto_otra_persona || null;\nconst fotoMano = attrs.foto_mano || null;\n\nconst contenidoMensaje = body.content || \"\";\nconst msgTypeRaw = String(body.message_type ?? \"\").toLowerCase();\nconst messageType = (msgTypeRaw === \"0\" || msgTypeRaw === \"incoming\") ? \"recibido\" : \"enviado\";\n\nlet tipoContenido = \"texto\";\nlet urlArchivo = null;\n\nif (body.attachments && body.attachments.length > 0) {\n  const att = body.attachments[0];\n  urlArchivo = att.data_url || att.file_url || null;\n  if (att.file_type === \"audio\") tipoContenido = \"audio\";\n  else if (att.file_type === \"image\") tipoContenido = \"imagen\";\n  else tipoContenido = \"archivo\";\n}\n\n// =====================================================\n// PROCESO DE GUARDADO EN SUPABASE\n// =====================================================\nlet clienteId = null;\nlet conversacionId = null;\nlet logPasos = [];\nlet errorPaso = null;\n\ntry {\n  // ---------------------------------------------------\n  // PASO 1: CLIENTE\n  // ---------------------------------------------------\n  const buscarCliente = await this.helpers.httpRequest({\n    method: \"GET\",\n    url: `${SUPABASE_URL}/rest/v1/clientes?telefono=eq.${encodeURIComponent(telefono)}&select=id`,\n    headers: headers,\n    json: true\n  });\n\n  if (Array.isArray(buscarCliente) && buscarCliente.length > 0) {\n    clienteId = buscarCliente[0].id;\n    await this.helpers.httpRequest({\n      method: \"PATCH\",\n      url: `${SUPABASE_URL}/rest/v1/clientes?id=eq.${clienteId}`,\n      headers: headers,\n      body: {\n        nombre: nombreCliente,\n        foto_url: fotoUrl,\n        tipo_trabajo: tipoTrabajo,\n        nombre_otra_persona: nombreOtraPersona,\n        foto_otra_persona: fotoOtraPersona,\n        foto_mano: fotoMano,\n        telefono_display: telefonoDisplay,\n        actualizado_en: new Date().toISOString()\n      },\n      json: true\n    });\n    logPasos.push(`Cliente actualizado (ID: ${clienteId})`);\n  } else {\n    const nuevoCliente = await this.helpers.httpRequest({\n      method: \"POST\",\n      url: `${SUPABASE_URL}/rest/v1/clientes`,\n      headers: headers,\n      body: [{\n        telefono: telefono,\n        telefono_display: telefonoDisplay,\n        nombre: nombreCliente,\n        foto_url: fotoUrl,\n        tipo_trabajo: tipoTrabajo,\n        nombre_otra_persona: nombreOtraPersona,\n        foto_otra_persona: fotoOtraPersona,\n        foto_mano: fotoMano\n      }],\n      json: true\n    });\n    clienteId = nuevoCliente[0]?.id;\n    logPasos.push(`Cliente creado (ID: ${clienteId})`);\n  }\n\n  // ---------------------------------------------------\n  // PASO 2: CONVERSACIÓN\n  // ---------------------------------------------------\n  if (clienteId) {\n    const buscarConv = await this.helpers.httpRequest({\n      method: \"GET\",\n      url: `${SUPABASE_URL}/rest/v1/conversaciones?chatwoot_conversation_id=eq.${conv.id}&select=id`,\n      headers: headers,\n      json: true\n    });\n\n    const datosConv = {\n      cliente_id: clienteId,\n      chatwoot_conversation_id: conv.id,\n      numero_whatsapp: telefono,\n      fuente: conv.inbox_id === 5 ?\"meta_business\" : \"evolution\",\n      ultimo_mensaje: contenidoMensaje || (tipoContenido !== \"texto\" ? `[${tipoContenido}]` : \"\"),\n      ultimo_mensaje_en: new Date().toISOString(),\n      actualizado_en: new Date().toISOString()\n    };\n\n    if (Array.isArray(buscarConv) && buscarConv.length > 0) {\n      conversacionId = buscarConv[0].id;\n      await this.helpers.httpRequest({\n        method: \"PATCH\",\n        url: `${SUPABASE_URL}/rest/v1/conversaciones?id=eq.${conversacionId}`,\n        headers: headers,\n        body: datosConv,\n        json: true\n      });\n      logPasos.push(`Conversacion actualizada (ID: ${conversacionId})`);\n    } else {\n      const nuevaConv = await this.helpers.httpRequest({\n        method: \"POST\",\n        url: `${SUPABASE_URL}/rest/v1/conversaciones`,\n        headers: headers,\n        body: [datosConv],\n        json: true\n      });\n      conversacionId = nuevaConv[0]?.id;\n      logPasos.push(`Conversacion creada (ID: ${conversacionId})`);\n    }\n  }\n\n  // ---------------------------------------------------\n  // PASO 3: MENSAJE (Anti-duplicado por ID de Chatwoot)\n  // Antes se comparaba el contenido, y como los audios y las fotos se guardan\n  // como \"[audio]\"/\"[imagen]\", el segundo audio caia como duplicado y se perdia.\n  // ---------------------------------------------------\n  if (conversacionId && (contenidoMensaje || urlArchivo)) {\n    const chatwootMessageId = body.id ||\n      (body.messages && body.messages[0] && body.messages[0].id) || null;\n    let yaExiste = false;\n\n    // 1) Via principal: el ID del mensaje en Chatwoot (unico e irrepetible)\n    if (chatwootMessageId) {\n      try {\n        const porId = await this.helpers.httpRequest({\n          method: \"GET\",\n          url: `${SUPABASE_URL}/rest/v1/mensajes?conversacion_id=eq.${conversacionId}&chatwoot_message_id=eq.${encodeURIComponent(chatwootMessageId)}&select=id`,\n          headers: headers,\n          json: true\n        });\n        yaExiste = Array.isArray(porId) && porId.length > 0;\n      } catch (eId) {\n        // La columna puede no existir aun: se usa el respaldo de abajo.\n        yaExiste = false;\n      }\n    }\n\n    // 2) Respaldo: misma huella (tipo + contenido + archivo) en 20 segundos.\n    //    Para audios y fotos la huella es la URL del archivo, no el contenido.\n    if (!yaExiste && !chatwootMessageId) {\n      try {\n        const desde = new Date(Date.now() - 20000).toISOString();\n        const existentes = await this.helpers.httpRequest({\n          method: \"GET\",\n          url: `${SUPABASE_URL}/rest/v1/mensajes?conversacion_id=eq.${conversacionId}&tipo=eq.${messageType}&creado_en=gte.${desde}&select=id,contenido,tipo_contenido,url_archivo`,\n          headers: headers,\n          json: true\n        });\n        if (Array.isArray(existentes)) {\n          yaExiste = existentes.some((m) => {\n            const mismoTipo = (m.tipo_contenido || \"texto\") === tipoContenido;\n            if (!mismoTipo) return false;\n            if (tipoContenido === \"texto\") {\n              return (m.contenido || \"\").trim() === (contenidoMensaje || \"\").trim();\n            }\n            return Boolean(urlArchivo) && (m.url_archivo || \"\") === urlArchivo;\n          });\n        }\n      } catch (eDedupe) {\n        yaExiste = false;\n      }\n    }\n\n    if (!yaExiste) {\n      const fila = {\n        conversacion_id: conversacionId,\n        tipo: messageType,\n        contenido: contenidoMensaje || (tipoContenido !== \"texto\" ? `[${tipoContenido}]` : \"\"),\n        tipo_contenido: tipoContenido,\n        url_archivo: urlArchivo,\n        creado_en: new Date().toISOString()\n      };\n      if (chatwootMessageId) fila.chatwoot_message_id = String(chatwootMessageId);\n      try {\n        await this.helpers.httpRequest({\n          method: \"POST\",\n          url: `${SUPABASE_URL}/rest/v1/mensajes`,\n          headers: headers,\n          body: [fila],\n          json: true\n        });\n        logPasos.push(\"Mensaje guardado con éxito\");\n      } catch (eInsert) {\n        // Si falta la columna chatwoot_message_id, se guarda sin ella.\n        delete fila.chatwoot_message_id;\n        await this.helpers.httpRequest({\n          method: \"POST\",\n          url: `${SUPABASE_URL}/rest/v1/mensajes`,\n          headers: headers,\n          body: [fila],\n          json: true\n        });\n        logPasos.push(\"Mensaje guardado sin id de Chatwoot\");\n      }\n    } else {\n      logPasos.push(\"Mensaje duplicado omitido\");\n    }\n  }\n\n} catch (err) {\n  errorPaso = err.message || JSON.stringify(err);\n  logPasos.push(`Error en proceso: ${errorPaso}`);\n}\n\nreturn [{\n  json: {\n    sincronizado: errorPaso === null,\n    clienteId,\n    conversacionId,\n    logPasos,\n    error: errorPaso\n  }\n}];"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1328, -1168],
+      "position": [
+        1328,
+        -1168
+      ],
       "id": "dcc0aefa-31b6-45c1-a30f-efb53b90e366",
       "name": "Sincronizar Supabase"
     },
@@ -736,20 +1116,32 @@
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1776, -1536],
+      "position": [
+        1776,
+        -1536
+      ],
       "id": "b8d7179c-7b2e-467a-a8fe-216c3691ba45",
       "name": "Verificar CRM"
     },
     {
       "parameters": {
         "conditions": {
-          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 3 },
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
           "conditions": [
             {
               "id": "5cba788b-755a-439f-bd95-a12dd0d938ef",
               "leftValue": "={{ $json.botPuedeContestar }}",
               "rightValue": "true",
-              "operator": { "type": "string", "operation": "equals", "name": "filter.operator.equals" }
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
             }
           ],
           "combinator": "and"
@@ -759,7 +1151,10 @@
       },
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
-      "position": [2000, -1536],
+      "position": [
+        2000,
+        -1536
+      ],
       "id": "9f7124dc-1f4c-4c34-8930-915a4b571709",
       "name": "Bot Puede Contestar?"
     },
@@ -770,19 +1165,30 @@
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
-            { "name": "Content-Type", "value": "application/json" },
-            { "name": "Authorization", "value": "={{ 'Bearer ' + $env.OPENAI_API_KEY }}" }
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.OPENAI_API_KEY }}"
+            }
           ]
         },
         "sendBody": true,
         "contentType": "raw",
         "rawContentType": "application/json",
         "body": "={{ $json.bodyString }}",
-        "options": { "timeout": 30000 }
+        "options": {
+          "timeout": 30000
+        }
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.5,
-      "position": [6704, -1536],
+      "position": [
+        6704,
+        -1536
+      ],
       "id": "e85958d6-1ef7-4586-a96e-775ae96f120a",
       "name": "OpenAI Respuesta",
       "retryOnFail": true,
@@ -797,8 +1203,14 @@
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
-            { "name": "Authorization", "value": "={{ 'Bearer ' + $env.OPENAI_API_KEY }}" },
-            { "name": "Content-Type", "value": "application/json" }
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.OPENAI_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
           ]
         },
         "sendBody": true,
@@ -809,7 +1221,10 @@
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.5,
-      "position": [7152, -1600],
+      "position": [
+        7152,
+        -1600
+      ],
       "id": "c57b990e-5f2e-4ca6-88ad-3f8a4f89e506",
       "name": "OpenAI Backup"
     },
@@ -818,23 +1233,49 @@
         "method": "POST",
         "url": "=https://crmesteban.duckdns.org/api/v1/accounts/1/conversations/{{ $json.conversationId }}/messages",
         "sendHeaders": true,
-        "headerParameters": { "parameters": [{ "name": "api_access_token", "value": "KKaF2gF4bJZvnSkqKnR42zD8" }] },
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api_access_token",
+              "value": "KKaF2gF4bJZvnSkqKnR42zD8"
+            }
+          ]
+        },
         "sendBody": true,
         "contentType": "multipart-form-data",
         "bodyParameters": {
           "parameters": [
-            { "name": "message_type", "value": "outgoing" },
-            { "parameterType": "formBinaryData", "name": "attachments[]", "inputDataFieldName": "data" },
-            { "name": "private", "value": "false" },
-            { "name": "content", "value": "🎤 Nota de voz" },
-            { "name": "is_voice_message", "value": "true" }
+            {
+              "name": "message_type",
+              "value": "outgoing"
+            },
+            {
+              "parameterType": "formBinaryData",
+              "name": "attachments[]",
+              "inputDataFieldName": "data"
+            },
+            {
+              "name": "private",
+              "value": "false"
+            },
+            {
+              "name": "content",
+              "value": "🎤 Nota de voz"
+            },
+            {
+              "name": "is_voice_message",
+              "value": "true"
+            }
           ]
         },
         "options": {}
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.5,
-      "position": [10512, -1632],
+      "position": [
+        10512,
+        -1632
+      ],
       "id": "7b4db3cc-8e85-4285-90b1-e2d1f743b0c7",
       "name": "Enviar Audio Chatwoot"
     },
@@ -844,7 +1285,10 @@
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [10288, -1632],
+      "position": [
+        10288,
+        -1632
+      ],
       "id": "ea603c2d-dd85-44d8-9af8-f449d1dcb13a",
       "name": "Preparar OGG para WhatsApp"
     },
@@ -852,29 +1296,64 @@
       "parameters": {
         "url": "https://templo-mistico-crm.vercel.app/api/cerebro/memoria",
         "sendQuery": true,
-        "queryParameters": { "parameters": [{ "name": "limit", "value": "40" }, { "name": "track", "value": "1" }] },
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "limit",
+              "value": "40"
+            },
+            {
+              "name": "track",
+              "value": "1"
+            }
+          ]
+        },
         "sendHeaders": true,
-        "headerParameters": { "parameters": [{ "name": "x-cerebro-secret", "value": "Teamo30111616@" }] },
-        "options": { "response": { "response": { "neverError": true } }, "timeout": 8000 }
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-cerebro-secret",
+              "value": "Teamo30111616@"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          },
+          "timeout": 8000
+        }
       },
       "id": "6ac5d234-12a7-429c-8252-829af8f3d0bc",
       "name": "Cerebro · Leer memoria",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [6256, -1536],
+      "position": [
+        6256,
+        -1536
+      ],
       "onError": "continueRegularOutput",
       "notes": "Devuelve { prompt, total, reglas } con las reglas aprobadas del Cerebro IA."
     },
     {
-      "parameters": { "jsCode": "__STUB_CIERRE__" },
+      "parameters": {
+        "jsCode": "__STUB_CIERRE__"
+      },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [7376, -1536],
+      "position": [
+        7376,
+        -1536
+      ],
       "id": "510de7c2-5587-4f71-8a7e-22a8a5574b9e",
       "name": "Detectar Cierre"
     }
   ],
   "connections": {},
   "pinData": {},
-  "meta": { "instanceId": "e939822674a19b6f6c775df659e246dc314f7389ccf6cae835c3c53a6b0489fe" }
+  "meta": {
+    "instanceId": "e939822674a19b6f6c775df659e246dc314f7389ccf6cae835c3c53a6b0489fe"
+  }
 }

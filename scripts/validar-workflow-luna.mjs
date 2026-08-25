@@ -328,7 +328,7 @@ ok(v.body.content.startsWith("[IMAGEN ANALIZADA]"), "el analisis queda como mens
 grupo("4. Fusionar Memoria — guarda sin pisar y asigna fotos");
 const codeFusion = jsDe(wf, "Fusionar Memoria");
 
-async function fusionar({ attrs = {}, ia = null, foto = null, etapa = "datos" }) {
+async function fusionar({ attrs = {}, ia = null, foto = null, etapa = "datos", texto = "mensaje del turno" }) {
   const refs = {
     "Leer Estado del Lead": {
       body: { conversation: { id: 55 } },
@@ -346,7 +346,8 @@ async function fusionar({ attrs = {}, ia = null, foto = null, etapa = "datos" })
       telefono: "+573001112233",
       chatwootUrl: "https://crm/x"
     },
-    "Consolidar Lista": { listaConsolidada: "mensaje del turno", body: { conversation: { id: 55 } } }
+    "Consolidar Lista": { listaConsolidada: texto, body: { conversation: { id: 55 } } },
+    Historial: { payload: [{ id: 1, message_type: 0, content: texto, created_at: 1 }] }
   };
   if (foto) refs["Inyectar Analisis"] = { fotoEvento: foto };
   const entrada = ia
@@ -392,6 +393,35 @@ ok(f.salida.faltantes.length === 0, "personal completo: nombre + foto + palma");
 ok(f.salida.contextoMemoria.includes("prohibido pedir nombres o fotos de otra persona"), "en personal se bloquea pedir datos de terceros");
 
 // Persistencia
+// Clasificacion por lo que dice el cliente (aunque la IA no responda)
+f = await fusionar({ attrs: {}, ia: null, etapa: "sin_respuesta", texto: "Hola, perdi a mi pareja hace dos anos, terminamos y quiero recuperarla." });
+ok(f.salida.checklist.tipo_trabajo === "pareja", '«quiero recuperar a mi pareja» → PAREJA aunque la IA no responda', f.salida.checklist.tipo_trabajo);
+
+f = await fusionar({ attrs: {}, ia: null, etapa: "sin_respuesta", texto: "Necesito un trabajo para ganar en los juegos de azar, el chance." });
+ok(f.salida.checklist.tipo_trabajo === "personal", '«ganar en los juegos de azar» → PERSONAL aunque la IA no responda', f.salida.checklist.tipo_trabajo);
+
+f = await fusionar({ attrs: {}, ia: null, etapa: "sin_respuesta", texto: "Mi esposa se fue con otro y quiero que vuelva conmigo." });
+ok(f.salida.checklist.tipo_trabajo === "pareja", '«mi esposa se fue, quiero que vuelva» → PAREJA', f.salida.checklist.tipo_trabajo);
+
+f = await fusionar({ attrs: {}, ia: null, etapa: "sin_respuesta", texto: "Siento una energia muy pesada, creo que me hicieron brujeria y tengo mal de ojo." });
+ok(f.salida.checklist.tipo_trabajo === "personal", '«brujeria y mal de ojo» → PERSONAL', f.salida.checklist.tipo_trabajo);
+
+// Una clasificacion mala se corrige mientras no se haya recogido nada
+f = await fusionar({ attrs: { tipo_trabajo: "personal" }, ia: { tipo_trabajo: "pareja", motivo_conocido: true }, etapa: "sin_respuesta", texto: "Quiero recuperar a mi esposa, se fue con otro." });
+ok(f.salida.checklist.tipo_trabajo === "pareja", "corrige un tipo mal clasificado mientras no haya datos", f.salida.checklist.tipo_trabajo);
+
+f = await fusionar({ attrs: { tipo_trabajo: "personal", nombre_cliente: "Ana Perez", foto_cliente: true }, ia: { tipo_trabajo: "pareja" }, etapa: "datos", texto: "Quiero recuperar a mi esposa." });
+ok(f.salida.checklist.tipo_trabajo === "personal", "no cambia el tipo cuando ya se recogieron datos", f.salida.checklist.tipo_trabajo);
+
+// Objetivo unico de la etapa, en la memoria y en la ficha
+f = await fusionar({ attrs: {}, ia: null, etapa: "sin_respuesta", texto: "Quiero recuperar a mi pareja." });
+ok(f.salida.contextoMemoria.includes("OBJETIVO UNICO DE ESTA ETAPA"), "la memoria declara el objetivo unico de la etapa");
+ok(/PERSONAL o de PAREJA/.test(f.salida.contextoMemoria), "  y en Sin respuesta el objetivo es clasificar el trabajo");
+const ficha = f.llamadas.find(l => l.url.includes("/messages") && l.body && l.body.private === true);
+ok(Boolean(ficha), "la ficha privada se genera cuando Luna aprende algo");
+ok(ficha && ficha.body.content.includes("Objetivo de esta etapa"), "  y la ficha dice cual es el objetivo de la etapa");
+ok(ficha && ficha.body.content.includes("POR DEFINIR") === false, "  y reporta el tipo ya definido");
+
 f = await fusionar({ attrs: { tipo_trabajo: "pareja", nombre_cliente: "Ana" }, ia: { nombre_otra_persona: "Karla", motivo_conocido: true, motivo_categoria: "retorno" } });
 const aChatwoot = f.llamadas.find((l) => l.url.includes("/custom_attributes"));
 ok(Boolean(aChatwoot), "guarda el checklist en Chatwoot custom_attributes");
@@ -742,6 +772,49 @@ ok(!/nombre completo|foto tuya/i.test(r.pul.textoRespuesta), "  el mensaje final
 ok(/Maestro/.test(r.pul.textoRespuesta), "  solo retiene al cliente hasta la llamada", r.pul.textoRespuesta);
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+grupo("10. Sincronizar Supabase — los mensajes del cliente no se pierden");
+const codeSync = jsDe(wf, "Sincronizar Supabase");
+
+async function sincronizar({ messageId, tipoContenido = "audio", existentesPorId = [], content = "" }) {
+  const posts = [];
+  const body = {
+    id: messageId,
+    message_type: "incoming",
+    content: content,
+    conversation: { id: 3564, meta: { sender: { phone_number: "+573112100475", name: "Ana" } }, custom_attributes: {} },
+    sender: { phone_number: "+573112100475", name: "Ana" },
+    attachments: tipoContenido === "texto" ? [] : [{ file_type: tipoContenido, data_url: "https://cdn/" + messageId + ".ogg" }]
+  };
+  await correr(codeSync, {
+    entrada: { body },
+    http: async (opts) => {
+      if (opts.url.includes("/rest/v1/clientes?telefono=eq.")) return [{ id: "cli-1" }];
+      if (opts.url.includes("/rest/v1/conversaciones?chatwoot_conversation_id=")) return [{ id: "conv-1" }];
+      if (opts.url.includes("/rest/v1/mensajes?")) return existentesPorId;
+      if (opts.method === "POST" && opts.url.endsWith("/rest/v1/mensajes")) { posts.push(opts.body[0]); return [{}]; }
+      return {};
+    }
+  });
+  return { posts };
+}
+
+let sy = await sincronizar({ messageId: 101 });
+ok(sy.posts.length === 1, "un audio del cliente se guarda en el dashboard", JSON.stringify(sy.posts[0]));
+ok(sy.posts[0] && sy.posts[0].chatwoot_message_id === "101", "  guardando el id del mensaje de Chatwoot");
+
+sy = await sincronizar({ messageId: 102 });
+ok(sy.posts.length === 1, "un SEGUNDO audio seguido tambien se guarda (antes se descartaba como duplicado)");
+
+sy = await sincronizar({ messageId: 103, tipoContenido: "image" });
+ok(sy.posts.length === 1 && sy.posts[0].tipo_contenido === "imagen", "las fotos del cliente tambien se guardan");
+
+sy = await sincronizar({ messageId: 104, tipoContenido: "texto", content: "hola Luna" });
+ok(sy.posts.length === 1 && sy.posts[0].contenido === "hola Luna", "y los mensajes de texto");
+
+sy = await sincronizar({ messageId: 101, existentesPorId: [{ id: "m-1" }] });
+ok(sy.posts.length === 0, "el mismo mensaje repetido por el webhook si se descarta (no se duplica)");
+
 // ---------------------------------------------------------------------------
 console.log("\n────────────────────────────────────────");
 console.log("Pruebas: " + pruebas + "  |  Fallos: " + fallos);

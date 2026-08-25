@@ -55,9 +55,12 @@ aprende algo nuevo, para que el Maestro la vea en el CRM.
 
 ## Instalación
 
-1. Ejecuta `supabase/migrations/20260902_luna_etapas_expediente.sql` en el SQL Editor de Supabase.
-   Agrega `motivo_consulta`, `motivo_categoria` y `luna_etapa` a `clientes`, y crea las etapas
-   **Sin respuesta / Datos / Por consulta** solo si tu pipeline no las tiene ya con ese nombre.
+1. Ejecuta en el SQL Editor de Supabase, en este orden:
+   - `supabase/migrations/20260902_luna_etapas_expediente.sql` → agrega `motivo_consulta`,
+     `motivo_categoria` y `luna_etapa` a `clientes`, y crea las etapas **Sin respuesta / Datos /
+     Por consulta** solo si tu pipeline no las tiene ya con ese nombre.
+   - `supabase/migrations/20260903_mensajes_id_chatwoot.sql` → agrega `chatwoot_message_id` a
+     `mensajes` (arregla los mensajes del cliente que no aparecían en el dashboard).
 2. **Importa `n8n/IMPORTAR-EN-N8N.json`** ← llaves dentro, no usa `$env`, cero configuración.
 
    | Archivo | Para qué |
@@ -103,6 +106,37 @@ Al mover el lead, Luna escribe la clave real que corresponde a ese nombre dentro
 cliente (por eso un lead del Templo cae en `etapa_templo_...` y uno del personal en la suya).
 Si la etapa destino no existe en el pipeline, **no inventa una clave**: deja el aviso en
 `_debug.errorEstado`.
+
+## Cómo se decide si el trabajo es PERSONAL o de PAREJA
+
+Dos fuentes, y las dos tienen que fallar para que Luna no sepa:
+
+1. **Extracción con IA** (`Analizar Caso con IA`): lee la conversación y devuelve JSON con
+   `tipo_trabajo`, `motivo_categoria`, `motivo_resumen` y los nombres.
+2. **Clasificador por palabras** (`Fusionar Memoria`): cuenta coincidencias de dos listas
+   (pareja: *pareja, esposa, ex, recuperar, amarre, retorno, dominio, alejamiento…* /
+   personal: *suerte, dinero, chance, lotería, juegos, limpieza, mal de ojo, protección…*)
+   y gana la que más pese. Funciona **aunque la IA no responda**.
+
+Si la clasificación salió mal, **se corrige sola** mientras no se haya recogido ningún dato
+(sin nombres ni fotos) y la IA y las palabras coincidan en el tipo correcto. Una vez que Luna
+ya pidió datos, el tipo queda fijo para no moverle el piso al cliente.
+
+Cada etapa tiene **un único objetivo** y Luna lo lleva escrito en su memoria y en la ficha:
+
+| Etapa | Objetivo único |
+|---|---|
+| Lead Nuevo | Saludar, presentarse y abrir el caso. Nada de datos. |
+| Sin respuesta | Saber **por qué viene** y si es **personal o pareja**. Nada de datos. |
+| Datos | Completar **solo** lo pendiente. Nunca el motivo. |
+| Por consulta | Retener al cliente hasta la llamada. No pedir nada. |
+
+## Mensajes del cliente que no aparecían en el dashboard
+
+El anti-duplicado de `Sincronizar Supabase` comparaba el **contenido**, y los audios y fotos se
+guardan como `[audio]`/`[imagen]`: el segundo audio seguido se consideraba duplicado y se
+descartaba. Ahora se deduplica con el **ID del mensaje de Chatwoot** (único), con respaldo por
+huella (tipo + URL del archivo) si aún no ejecutaste la migración.
 
 ## Si Luna no responde y la ejecución se detiene en `Luna Actua en esta Etapa?`
 

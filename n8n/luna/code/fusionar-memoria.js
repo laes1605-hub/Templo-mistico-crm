@@ -24,6 +24,14 @@ const attrs = estado.attrs || {};
 const conversationId = estado.conversationId;
 const etapa = estado.etapa || "lead_nuevo";
 
+const OBJETIVOS_ETAPA = {
+  lead_nuevo: "Saludar, presentarte como Luna y abrir el caso con UNA pregunta. Nada de datos ni de agendar.",
+  sin_respuesta: "Descubrir POR QUE viene y si el trabajo es PERSONAL o de PAREJA. Nada de nombres, fotos ni palma.",
+  datos: "Completar UNICAMENTE los datos marcados como pendientes. Nunca volver a preguntar el motivo.",
+  por_consulta: "Retener al cliente hasta que el Maestro llame. No pedir nada de nada."
+};
+const NOMBRES_ETAPA_FICHA = { lead_nuevo: "Lead Nuevo", sin_respuesta: "Sin respuesta", datos: "Datos", por_consulta: "Por consulta" };
+
 const bool = (v) => v === true || v === "true" || v === 1 || v === "1";
 const txt = (v) => (v === null || v === undefined) ? "" : String(v).trim();
 const novedades = [];
@@ -110,6 +118,50 @@ if (ia && typeof ia === "object") {
 }
 
 // -----------------------------------------------------
+// B2) CLASIFICADOR DETERMINISTA (respaldo si la IA falla o duda)
+// -----------------------------------------------------
+const PALABRAS_PAREJA = [
+  "pareja", "novio", "novia", "esposo", "esposa", "marido", "mujer", "concubina", "concubino",
+  "exnovio", "exnovia", "ex novio", "ex novia", " ex ", "amarre", "amarres", "amarrar", "amarrado",
+  "retorno", "retornar", "recuperar", "recuperarlo", "recuperarla", "volver con", "vuelva conmigo",
+  "reconquistar", "enamorar", "enamore", "dominio", "dominar", "dominante", "alejamiento", "alejar",
+  "endulzamiento", "endulzar", "infiel", "infidelidad", "amante", "me dejo", "me dejo", "se fue",
+  "terminamos", "separamos", "separacion", "reconcili", "sexo", "acostar", "intimidad",
+  "que me quiera", "que se fije", "conquistar", "controlar", "obedezca", "ligadura", "esa persona"
+];
+const PALABRAS_PERSONAL = [
+  "suerte", "prosperidad", "abundancia", "dinero", "empleo", "trabajo", "negocio", "empresa",
+  "limpieza", "limpias", "amuleto", "proteccion", "brujeria", "mal de ojo", "envidia",
+  "mala vibra", "energia negativa", "chance", "loteria", "casino", "apuestas", "juego", "juegos",
+  "azar", "salud", "caminos", "abrir caminos", "entierro", "salamiento", "prospero", "progresar"
+];
+
+function clasificarPorPalabras(texto) {
+  const t = " " + String(texto || "").toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "") + " ";
+  let pareja = 0;
+  let personal = 0;
+  for (const p of PALABRAS_PAREJA) if (t.indexOf(p) !== -1) pareja++;
+  for (const p of PALABRAS_PERSONAL) if (t.indexOf(p) !== -1) personal++;
+  if (pareja > personal) return "pareja";
+  if (personal > pareja) return "personal";
+  return "";
+}
+
+// Texto de los ultimos turnos del cliente (para clasificar con respaldo)
+let textoParaClasificar = "";
+try { textoParaClasificar += " " + ($("Consolidar Lista").first().json.listaConsolidada || ""); } catch (e) {}
+try {
+  const hist = $("Historial").first().json.payload || [];
+  const delCliente = hist
+    .filter(m => (m.message_type === 0 || m.message_type === "incoming") && m.private !== true && m.content)
+    .sort((a, b) => (a.created_at || 0) - (b.created_at || 0))
+    .slice(-10);
+  textoParaClasificar += " " + delCliente.map(m => m.content).join(" ");
+} catch (e) {}
+const tipoPorPalabras = clasificarPorPalabras(textoParaClasificar);
+
+// -----------------------------------------------------
 // C) FOTO DE ESTE TURNO (asignacion determinista)
 // -----------------------------------------------------
 let fotoEvento = null;
@@ -173,6 +225,30 @@ if (checklist.tipo_trabajo) {
     if (!asignarFoto(f)) sinAsignar.push(f);
   }
   fotosPendientes = sinAsignar;
+}
+
+// -----------------------------------------------------
+// B3) EL TIPO DE TRABAJO NO QUEDA MAL PEGADO
+// Si se clasifico mal y todavia no se recogio ningun dato, se corrige.
+// Hace falta que la IA y las palabras coincidan para no cambiar a lo loco.
+// -----------------------------------------------------
+const sinDatosAun = !checklist.nombre_cliente && !checklist.nombre_otra_persona &&
+  !checklist.foto_cliente && !checklist.foto_otra_persona && !checklist.foto_mano;
+const etapaTemprana = ["lead_nuevo", "sin_respuesta"].indexOf(etapa) !== -1;
+const tipoPorIa = (ia && typeof ia === "object") ? txt(ia.tipo_trabajo).toLowerCase() : "";
+
+if (checklist.tipo_trabajo && sinDatosAun && etapaTemprana && tipoPorPalabras &&
+    tipoPorIa === tipoPorPalabras && tipoPorPalabras !== checklist.tipo_trabajo) {
+  const anterior = checklist.tipo_trabajo;
+  checklist.tipo_trabajo = tipoPorPalabras;
+  if (tipoPorPalabras === "personal") checklist.nombre_otra_persona = "";
+  novedades.push("tipo_trabajo_corregido:" + anterior + "→" + tipoPorPalabras);
+}
+
+// Si la IA no dijo nada util, el respaldo por palabras decide
+if (!checklist.tipo_trabajo && tipoPorPalabras) {
+  checklist.tipo_trabajo = tipoPorPalabras;
+  novedades.push("tipo_trabajo_por_palabras:" + tipoPorPalabras);
 }
 
 // -----------------------------------------------------
@@ -273,7 +349,10 @@ if (estado.clienteId) {
 let errorNota = null;
 if (novedades.length > 0) {
   const partes = [];
+  partes.push("Etapa: " + (NOMBRES_ETAPA_FICHA[etapa] || etapa));
+  partes.push("Objetivo de esta etapa: " + (OBJETIVOS_ETAPA[etapa] || "Atender el caso."));
   if (checklist.tipo_trabajo) partes.push("Tipo: " + checklist.tipo_trabajo.toUpperCase());
+  else partes.push("Tipo: POR DEFINIR (falta saber si es personal o de pareja)");
   if (checklist.motivo_categoria) partes.push("Motivo: " + checklist.motivo_categoria);
   if (checklist.motivo_resumen) partes.push("Caso: " + checklist.motivo_resumen);
   if (checklist.nombre_cliente) partes.push("Cliente: " + checklist.nombre_cliente);
@@ -335,6 +414,7 @@ if (checklist.tipo_trabajo === "pareja") {
 }
 
 let contextoMemoria = "ETAPA ACTUAL DEL LEAD: " + (estado.etapaNombre || etapa).toUpperCase() + "\n";
+contextoMemoria += "🎯 OBJETIVO UNICO DE ESTA ETAPA (no hagas nada mas): " + (OBJETIVOS_ETAPA[etapa] || "Atender el caso.") + "\n";
 contextoMemoria += "DATOS YA GUARDADOS EN TU ARCHIVO:\n" + (recibido.length ? recibido.join("\n") : "(ninguno todavia)") + "\n";
 contextoMemoria += "DATOS PENDIENTES:\n" + (pendiente.length ? pendiente.join("\n") : "(ninguno, ya tienes todo)") + "\n";
 if (checklist.tipo_trabajo === "pareja") contextoMemoria += "⛔ En trabajo de PAREJA esta prohibido pedir la palma de la mano.\n";

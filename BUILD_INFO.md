@@ -26,13 +26,14 @@
 - supabase/migrations/20260829_nombre_manual_prioridad_telefono.sql
 - supabase/migrations/20260830_enrutar_leads_por_numero.sql
 - supabase/migrations/20260902_luna_etapas_expediente.sql  ← nueva (Luna por etapas)
+- supabase/migrations/20260903_mensajes_id_chatwoot.sql   ← nueva (mensajes perdidos)
 
 ## Luna por etapas (nuevo)
 - Workflow importable: `n8n/05-luna-etapas.json` (docs en `n8n/05-README-luna-etapas.md`)
 - Luna solo responde en Lead Nuevo, Sin respuesta, Datos y Por consulta; en el resto se calla
 - Motor de etapas + archivo persistente (motivo, tipo de trabajo, nombres y fotos) para que
   Luna no vuelva a pedir lo que ya le entregaron
-- Verificación: `npm run check:luna` (152 pruebas sobre el código real de los nodos) — ✅ 0 fallos
+- Verificación: `npm run check:luna` (169 pruebas sobre el código real de los nodos) — ✅ 0 fallos
 - Regenerar: `npm run build:luna` → `IMPORTAR-EN-N8N.json` (importar en n8n, llaves dentro,
   sin versionar) y `05-luna-etapas.github.json` (versionado, sin secretos, usa $env)
 - El n8n del Templo tiene N8N_BLOCK_ENV_ACCESS_IN_NODE: por eso el archivo importable

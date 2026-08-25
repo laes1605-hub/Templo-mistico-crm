@@ -135,6 +135,15 @@ if (consultaCompleta) {
   bloqueEtapa += " Tu archivo indica que YA TIENES TODOS LOS DATOS.";
 }
 
+bloqueEtapa += [
+  "",
+  "REGLA DE ENFOQUE: en esta etapa tienes UN UNICO OBJETIVO y es el que esta arriba.",
+  "- No pidas nada que no pertenezca al objetivo de la etapa.",
+  "- Si el cliente se desvia o te da un dato que no toca, agradecelo en media frase, guardalo y vuelve al objetivo.",
+  "- Si el cliente te cuenta mas del caso, escuchalo y validalo, pero no conviertas eso en un interrogatorio.",
+  "- Una sola pregunta por mensaje, y que sirva al objetivo de la etapa."
+].join("\n");
+
 let systemPrompt = [
   PERSONA,
   "",

@@ -650,6 +650,15 @@ export default function CRMApp() {
   }
 
   async function fetchConversaciones() {
+    // Si el mismo cliente escribió al WhatsApp API y al Personal, conservar
+    // Personal como conversación principal y copiar allí todo el historial.
+    // La RPC es idempotente; si la migración aún no fue aplicada, no bloquea
+    // la carga normal del CRM.
+    try {
+      await supabase.rpc("unificar_conversaciones_whatsapp");
+    } catch (e) {
+      console.warn("No se pudo unificar el historial WhatsApp todavía:", e);
+    }
     const { data } = await supabase.from("conversaciones").select("*, clientes(*)").order("ultimo_mensaje_en", { ascending: false });
     if (data) setConversaciones(data);
     setLoadingChats(false);

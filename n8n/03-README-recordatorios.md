@@ -1,5 +1,7 @@
 # Recordatorios de WhatsApp API por etapa
 
+El JSON es un **workflow completo e independiente**. En n8n impórtalo como un workflow nuevo y desactiva el workflow anterior para no duplicar envíos.
+
 Archivos:
 
 - `03-recordatorios-whatsapp-por-etapa.json`: workflow importable en n8n.

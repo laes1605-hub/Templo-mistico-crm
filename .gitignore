@@ -17,3 +17,7 @@ android/build
 # Capacitor
 .capacitor
 
+
+# Llaves reales de Luna: la variante importable con claves dentro no se sube
+n8n/luna/secrets.local.json
+n8n/*.local.json

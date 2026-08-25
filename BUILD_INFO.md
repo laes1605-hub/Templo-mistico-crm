@@ -1,8 +1,8 @@
 # Build Info - Templo Místico CRM
 
-**Fecha:** Sun Aug 24 23:31 UTC 2026
-**Commit:** (ver git log — build desde rama `arena/01a035ee-templo-mistico-crm`)
-**Branch:** arena/01a035ee-templo-mistico-crm
+**Fecha:** Mon Aug 25 (rama `arena/01a036a2-templo-mistico-crm`)
+**Commit:** (ver git log)
+**Branch:** arena/01a036a2-templo-mistico-crm
 
 ## Build Next.js
 - Comando: npm run build
@@ -25,6 +25,17 @@
 ## Migraciones pendientes (Supabase SQL Editor)
 - supabase/migrations/20260829_nombre_manual_prioridad_telefono.sql
 - supabase/migrations/20260830_enrutar_leads_por_numero.sql
+- supabase/migrations/20260902_luna_etapas_expediente.sql  ← nueva (Luna por etapas)
+
+## Luna por etapas (nuevo)
+- Workflow importable: `n8n/05-luna-etapas.json` (docs en `n8n/05-README-luna-etapas.md`)
+- Luna solo responde en Lead Nuevo, Sin respuesta, Datos y Por consulta; en el resto se calla
+- Motor de etapas + archivo persistente (motivo, tipo de trabajo, nombres y fotos) para que
+  Luna no vuelva a pedir lo que ya le entregaron
+- Verificación: `npm run check:luna` (123 pruebas sobre el código real de los nodos) — ✅ 0 fallos
+- Regenerar el JSON: `npm run build:luna` (genera `05-luna-etapas.json` sin llaves y
+  `05-luna-etapas.local.json` con llaves, este último ignorado por git)
+- Llaves OpenAI/Groq por variable de entorno de n8n: `OPENAI_API_KEY`, `GROQ_API_KEY`
 
 ## Nuevas funciones de este build
 - Número de teléfono con prioridad sobre el nombre (formato +país, ej: +573054021111)

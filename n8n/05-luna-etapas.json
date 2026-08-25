@@ -1,0 +1,2142 @@
+{
+  "name": "Luna · Asistente por Etapas (Templo Mistico)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "chatwoot-mensaje",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        1104,
+        -1264
+      ],
+      "id": "b2cfe02c-896a-4ebb-9a5d-9e4f0d10fa01",
+      "name": "Webhook",
+      "webhookId": "392c0aa6-5ae8-474f-be1c-b0d826b3ae26"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "88aa8155-42f8-4366-a8b7-0acf00e9dc8f",
+              "leftValue": "={{ $json.body.message_type }}",
+              "rightValue": "incoming",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            },
+            {
+              "id": "bee0aa9b-b0b8-4064-acfa-8d0d8400c1e6",
+              "leftValue": "={{ $json.body.event }}",
+              "rightValue": "message_created",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1328,
+        -1360
+      ],
+      "id": "cd99bf1b-7eea-4b8a-a0fc-c590251aea82",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "amount": "={{ $('Calcular Delay').item.json.delay }}"
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        10288,
+        -1440
+      ],
+      "id": "2ccb732f-3588-42f9-9a9f-8f34809f3eb7",
+      "name": "Wait",
+      "webhookId": "0a431c10-5b19-480f-8a65-4fe6719d71d4"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://crmesteban.duckdns.org/api/v1/accounts/1/conversations/{{ $('Pulir y Auditar Respuesta').first().json.conversationId || $('Webhook').first().json.body?.conversation?.id || $json.conversationId }}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api_access_token",
+              "value": "KKaF2gF4bJZvnSkqKnR42zD8"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({   content: $('Pulir y Auditar Respuesta').first().json.choices?.[0]?.message?.content || $('Pulir y Auditar Respuesta').first().json.textoRespuesta || $json.textoRespuesta || $json.content || \"\",   message_type: \"outgoing\",   private: false }) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        10512,
+        -1440
+      ],
+      "id": "74a04d9f-38ae-4db8-b2e8-06af22a9b687",
+      "name": "Enviar Mensaje Chatwoot",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://evo.crmesteban.duckdns.org/chat/sendPresence/personal",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "25bbc50b8bfeb365633899951d2b9a6c4110f94e08535133d0953da151b4a1d3"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"number\": \"={{ ($('Verificar CRM').first().json.crmTelefono || $('Pulir y Auditar Respuesta').first().json.contactPhone || $('Webhook').first().json.body?.sender?.phone_number || '').replace(/[^0-9]/g, '') }}\",\n  \"presence\": \"composing\",\n  \"delay\": 10000\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        10064,
+        -1440
+      ],
+      "id": "cd27dbb5-411f-4780-a43f-c3333c89d62a",
+      "name": "Enviar Escribiendo",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const respuesta = $input.first().json.choices[0].message.content;\nconst longitud = respuesta.length;\n\nlet delaySegundos;\n\nif (longitud < 50) {\n  delaySegundos = 3;\n} else if (longitud < 150) {\n  delaySegundos = 5;\n} else if (longitud < 300) {\n  delaySegundos = 10;\n} else if (longitud < 500) {\n  delaySegundos = 15;\n} else {\n  delaySegundos = 20;\n}\n\nlet numeroCliente = $('Webhook').first().json.body.conversation?.meta?.sender?.identifier || \n                    $('Webhook').first().json.body.sender?.identifier || \"\";\nnumeroCliente = numeroCliente.split('@')[0];\n\n// Pasar tambien el flag de consulta lista\nconst consultaLista = $input.first().json.consultaLista || false;\nconst contactName = $input.first().json.contactName || \"Cliente\";\nconst contactPhone = $input.first().json.contactPhone || \"\";\nconst chatwootUrl = $input.first().json.chatwootUrl || \"\";\n\nreturn [\n  {\n    json: {\n      content: respuesta,\n      delay: delaySegundos,\n      delayMs: delaySegundos * 1000,\n      numero: numeroCliente,\n      consultaLista: consultaLista,\n      contactName: contactName,\n      contactPhone: contactPhone,\n      chatwootUrl: chatwootUrl\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        9840,
+        -1440
+      ],
+      "id": "f6df806b-f67e-4b7a-a460-e13e8ebd117f",
+      "name": "Calcular Delay"
+    },
+    {
+      "parameters": {
+        "url": "=https://crmesteban.duckdns.org/api/v1/accounts/1/conversations/{{ $('Webhook').first().json.body.conversation.id }}/messages?per_page=50",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api_access_token",
+              "value": "KKaF2gF4bJZvnSkqKnR42zD8"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        6480,
+        -1776
+      ],
+      "id": "a805975c-fc2b-4bec-9c63-5dd3fc7be003",
+      "name": "Historial"
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.body.attachments[0].data_url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api_access_token",
+              "value": "KKaF2gF4bJZvnSkqKnR42zD8"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        2448,
+        -1680
+      ],
+      "id": "194b083f-831b-4754-a99f-6f62b9f0e566",
+      "name": "Descargar Audio"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/audio/transcriptions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.GROQ_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "data"
+            },
+            {
+              "name": "model",
+              "value": "whisper-large-v3"
+            },
+            {
+              "name": "language",
+              "value": "es"
+            },
+            {
+              "name": "response_format",
+              "value": "json"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        2896,
+        -1680
+      ],
+      "id": "c236c61b-73dc-44e5-a873-1c5cb84fd71f",
+      "name": "Transcribir Audio",
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3
+    },
+    {
+      "parameters": {
+        "jsCode": "const textoTranscrito = $input.first().json.text || \"\";\nconst webhookData = $('Webhook').first().json.body;\n\n// Marcar el mensaje con tipo audio y timestamp\nwebhookData.content = `[AUDIO ${new Date().toISOString()}]: ${textoTranscrito}`;\nwebhookData._tipoMensaje = \"audio\";\nwebhookData._transcripcion = textoTranscrito;\nwebhookData._timestamp = Date.now();\n\nreturn [\n  {\n    json: {\n      body: webhookData\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3120,
+        -1680
+      ],
+      "id": "da01e412-ab1a-430b-9e3f-2607d63a91c8",
+      "name": "Inyectar Texto"
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\n\nfor (const item of items) {\n  if (item.binary && item.binary.data) {\n    // Cambiar el nombre del archivo con extensión válida\n    item.binary.data.fileName = 'audio.ogg';\n    item.binary.data.mimeType = 'audio/ogg';\n  }\n}\n\nreturn items;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2672,
+        -1680
+      ],
+      "id": "1a7ef786-2622-45e4-a622-3a7bc02e0e3c",
+      "name": "Renombrar Audio"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.body.attachments && $json.body.attachments[0] ? $json.body.attachments[0].file_type : 'texto' }}",
+                    "rightValue": "audio",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "043c279c-1fb9-4850-8c99-d1eba4968968"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "audio"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "b92112da-b42c-4fdd-b933-f276a5917c84",
+                    "leftValue": "={{ $json.body.attachments && $json.body.attachments[0] ? $json.body.attachments[0].file_type : 'texto' }}",
+                    "rightValue": "image",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "imagen"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "texto"
+        }
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        2224,
+        -1552
+      ],
+      "id": "1808a022-962c-41d8-8e9a-376d0245d219",
+      "name": "Tipo de Mensaje"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.OPENAI_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.bodyString }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        2896,
+        -1392
+      ],
+      "id": "79ca4a43-11a0-43d6-b74d-3e970596ab58",
+      "name": "Analizar Imagen",
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.body.attachments[0].data_url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api_access_token",
+              "value": "KKaF2gF4bJZvnSkqKnR42zD8"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        2448,
+        -1392
+      ],
+      "id": "cebdf721-8bbf-42d1-bf1b-be32c787d721",
+      "name": "Descargar Imagen"
+    },
+    {
+      "parameters": {
+        "jsCode": "// =====================================================\n// PREPARAR IMAGEN PARA OPENAI VISION (v2 — clasificador estricto)\n// Devuelve el body de la peticion y la URL original de la foto\n// (la URL se guarda en el checklist para enviarsela al Maestro).\n// =====================================================\nconst input = $input.first();\nconst item = input.json || {};\nconst binary = input.binary || {};\n\nlet imageUrl = \"\";\n\n// 1) URL publica directa (Chatwoot data_url / file_url)\nlet rawUrl = item.url || item.file_url || item.data_url || \"\";\nif (!rawUrl && item.body && item.body.attachments && item.body.attachments[0]) {\n  rawUrl = item.body.attachments[0].data_url || item.body.attachments[0].file_url || \"\";\n}\nif (!rawUrl && item.attachments && item.attachments[0]) {\n  rawUrl = item.attachments[0].data_url || item.attachments[0].file_url || \"\";\n}\nif (rawUrl && /^https?:\\/\\//i.test(rawUrl)) imageUrl = rawUrl;\n\n// 2) Binario de n8n (funciona tambien con filesystem-v2)\nif (!imageUrl && binary && Object.keys(binary).length > 0) {\n  const key = binary.data ? \"data\" : Object.keys(binary)[0];\n  const mime = binary[key].mimeType || \"image/jpeg\";\n  const buffer = await this.helpers.getBinaryDataBuffer(0, key);\n  imageUrl = \"data:\" + mime + \";base64,\" + buffer.toString(\"base64\");\n}\n\nif (!imageUrl || imageUrl.indexOf(\"filesystem-v2\") !== -1) {\n  throw new Error(\"No se pudo extraer la imagen. Revisa el nodo 'Descargar Imagen'.\");\n}\n\nconst promptText = [\n  \"Eres un analista de imagenes para un gabinete espiritual. Analiza la foto y responde SOLO con JSON valido, sin markdown, sin texto antes ni despues, con este formato exacto:\",\n  '{\"contenido\":\"rostro|pareja|palma|otro\",\"personas_visibles\":0,\"es_palma\":false,\"manos_visibles\":0,\"calidad\":\"buena|regular|mala\",\"descripcion\":\"maximo 25 palabras\"}',\n  \"\",\n  \"REGLAS DE CLASIFICACION:\",\n  '- \"rostro\": hay UNA sola persona visible (selfie, retrato, foto de perfil).',\n  '- \"pareja\": hay DOS o mas personas visibles en la misma foto (pareja, matrimonio, familia). Cuenta muy bien los rostros, incluidos los del fondo o recortados.',\n  '- \"palma\": lo principal es la palma de una mano abierta (lectura de mano). Si se ve una mano cerrada, de espaldas o un brazo, usa \"otro\".',\n  '- \"otro\": cualquier otra cosa (objetos, velas, amuletos, capturas de pantalla, fotos demasiado borrosas).',\n  \"- personas_visibles: numero exacto de personas (0 si es una palma o un objeto).\",\n  \"- es_palma: true solo si la palma abierta es el contenido principal de la foto.\",\n  \"- manos_visibles: cantidad de manos que se ven (0 si no hay).\",\n  '- calidad: \"mala\" si esta borrosa, oscura o cortada al punto de no poder identificar a la persona o la palma.',\n  \"- descripcion: en espanol, objetiva, sin inventar nombres.\"\n].join(\"\\n\");\n\nconst body = {\n  model: \"gpt-4o-mini\",\n  messages: [\n    {\n      role: \"user\",\n      content: [\n        { type: \"text\", text: promptText },\n        { type: \"image_url\", image_url: { url: imageUrl } }\n      ]\n    }\n  ],\n  temperature: 0,\n  max_tokens: 300,\n  response_format: { type: \"json_object\" }\n};\n\nreturn [{\n  json: {\n    body: body,\n    bodyString: JSON.stringify(body),\n    fotoUrl: (rawUrl && /^https?:\\/\\//i.test(rawUrl)) ? rawUrl : \"\",\n    imageUrl: imageUrl.substring(0, 80) + \"...\"\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2672,
+        -1392
+      ],
+      "id": "d8eab5e4-c9f0-4589-a409-6973e8399003",
+      "name": "Preparar Imagen",
+      "notes": "Vision v2: clasifica la foto en rostro / pareja / palma y conserva la URL."
+    },
+    {
+      "parameters": {
+        "jsCode": "// =====================================================\n// INYECTAR ANALISIS DE IMAGEN (v2)\n// - Interpreta el JSON de OpenAI Vision (con respaldo por palabras clave).\n// - Devuelve fotoEvento {tipo: rostro|pareja|palma|otro, ...} para que\n//   \"Fusionar Memoria\" asigne la foto al hueco correcto segun el tipo de trabajo.\n// - Reconstruye body.content para que \"Consolidar Lista\" vea el analisis\n//   como el mensaje actual del cliente.\n// =====================================================\nconst input = $input.first();\nconst raw = input.json || {};\n\nlet textoVision = \"\";\ntry {\n  if (raw.choices && raw.choices[0] && raw.choices[0].message) {\n    textoVision = raw.choices[0].message.content || \"\";\n  } else if (raw.body && raw.body.choices && raw.body.choices[0]) {\n    textoVision = raw.body.choices[0].message.content || \"\";\n  } else if (typeof raw.textoAnalisis === \"string\") {\n    textoVision = raw.textoAnalisis;\n  }\n} catch (e) {\n  textoVision = \"\";\n}\n\n// --- Parseo tolerante del JSON de Vision ---\nlet datos = null;\nif (textoVision) {\n  try {\n    datos = JSON.parse(textoVision);\n  } catch (e) {\n    const m = textoVision.match(/\\{[\\s\\S]*\\}/);\n    if (m) {\n      try { datos = JSON.parse(m[0]); } catch (e2) { datos = null; }\n    }\n  }\n}\n\nlet contenido = \"otro\";\nlet personas = 0;\nlet esPalma = false;\nlet manos = 0;\nlet calidad = \"regular\";\nlet descripcion = \"\";\n\nif (datos && typeof datos === \"object\") {\n  contenido = String(datos.contenido || \"otro\").toLowerCase().trim();\n  personas = parseInt(datos.personas_visibles, 10);\n  if (isNaN(personas)) personas = 0;\n  esPalma = datos.es_palma === true || String(datos.es_palma).toLowerCase() === \"true\";\n  manos = parseInt(datos.manos_visibles, 10);\n  if (isNaN(manos)) manos = 0;\n  calidad = String(datos.calidad || \"regular\").toLowerCase().trim();\n  descripcion = String(datos.descripcion || \"\").trim();\n  if (contenido === \"mano\" || contenido === \"manos\") { contenido = \"palma\"; esPalma = true; }\n} else {\n  // Respaldo: si Vision no devolvio JSON util, se deduce por palabras clave.\n  const t = textoVision.toLowerCase();\n  if (t.indexOf(\"palma\") !== -1 || t.indexOf(\"mano\") !== -1) { contenido = \"palma\"; esPalma = true; }\n  else if (t.indexOf(\"dos personas\") !== -1 || t.indexOf(\"2 personas\") !== -1 || t.indexOf(\"pareja\") !== -1) { contenido = \"pareja\"; personas = 2; }\n  else if (t.indexOf(\"persona\") !== -1 || t.indexOf(\"rostro\") !== -1 || t.indexOf(\"cara\") !== -1) { contenido = \"rostro\"; personas = 1; }\n  descripcion = textoVision.substring(0, 140);\n}\n\n// Tipo canonico usado por el checklist\nlet tipo = \"otro\";\nif (esPalma || contenido === \"palma\") tipo = \"palma\";\nelse if (personas >= 2 || contenido === \"pareja\" || contenido === \"dos_personas\") tipo = \"pareja\";\nelse if (personas === 1 || contenido === \"rostro\" || contenido === \"persona_unica\") tipo = \"rostro\";\n\n// URL de la foto (la guarda \"Preparar Imagen\")\nlet fotoUrl = \"\";\ntry { fotoUrl = $(\"Preparar Imagen\").first().json.fotoUrl || \"\"; } catch (e) {}\n\nconst fotoEvento = {\n  tipo: tipo,\n  personas: personas,\n  esPalma: esPalma,\n  manos: manos,\n  calidad: calidad,\n  descripcion: descripcion,\n  url: fotoUrl,\n  cuando: new Date().toISOString()\n};\n\nconst textoAnalisis =\n  \"[IMAGEN ANALIZADA] tipo=\" + tipo +\n  \" personas=\" + personas +\n  \" palma=\" + (esPalma ? \"si\" : \"no\") +\n  \" calidad=\" + calidad +\n  \" detalle=\" + (descripcion || \"sin descripcion\");\n\n// Reconstruir el body del webhook con el analisis como contenido del mensaje.\nlet webhookBody = {};\ntry { webhookBody = $(\"Webhook\").first().json.body || {}; } catch (e) {}\n\nconst nuevoBody = JSON.parse(JSON.stringify(webhookBody || {}));\nnuevoBody.content = textoAnalisis;\nnuevoBody._tipoMensaje = \"imagen\";\nnuevoBody._fotoEvento = fotoEvento;\n\nreturn [{\n  json: {\n    body: nuevoBody,\n    fotoEvento: fotoEvento,\n    textoAnalisis: textoAnalisis,\n    clasificacionDetectada: tipo,\n    rawVisionText: textoVision\n  },\n  binary: input.binary || {}\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3120,
+        -1392
+      ],
+      "id": "1dd05ce3-c6f3-4ee4-9c3a-ee29bc8e91c4",
+      "name": "Inyectar Analisis"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "b28abad5-323d-494a-9268-294ed8e09654",
+              "leftValue": "={{ $json.body.sender.phone_number }}",
+              "rightValue": "+573054021111",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1552,
+        -1360
+      ],
+      "id": "cf2f7daa-f5db-4a87-9d13-fc3a7246760d",
+      "name": "Es el Maestro?"
+    },
+    {
+      "parameters": {
+        "jsCode": "const mensaje = ($input.first().json.body.content || \"\").toLowerCase().trim();\n\nlet comando = \"desconocido\";\n\n// Detectar diferentes formas de preguntar por consultas\nif (mensaje.includes(\"consulta\") || \n    mensaje.includes(\"cuantas\") || \n    mensaje.includes(\"cuantos\") ||\n    mensaje.includes(\"lista\") ||\n    mensaje.includes(\"pendiente\")) {\n  comando = \"listar_consultas\";\n}\n\n// Detectar si quiere marcar como atendida\nif (mensaje.includes(\"atendida\") || \n    mensaje.includes(\"completada\") ||\n    mensaje.includes(\"hecha\")) {\n  comando = \"marcar_atendida\";\n}\n\nreturn [{\n  json: {\n    comando: comando,\n    mensajeOriginal: mensaje,\n    conversationId: $input.first().json.body.conversation.id\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1776,
+        -1200
+      ],
+      "id": "b64df5ae-f681-4adf-b755-d18b3f1c4285",
+      "name": "Detectar Comando"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "9b32a294-4c00-49c7-b7e2-2820266326bd",
+              "leftValue": "={{ $json.comando }}",
+              "rightValue": "listar_consultas",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2000,
+        -1200
+      ],
+      "id": "d6e5ad52-6828-4912-a9c8-aac2eaaa3faf",
+      "name": "Que Comando?"
+    },
+    {
+      "parameters": {
+        "url": "https://crmesteban.duckdns.org/api/v1/accounts/1/conversations?labels[]=consulta-pendiente&status=open",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api_access_token",
+              "value": "KKaF2gF4bJZvnSkqKnR42zD8"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        2224,
+        -1200
+      ],
+      "id": "2e73005c-556a-4734-8968-53095fee1c1a",
+      "name": "Obtener Consultas Pendientes"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://evo.crmesteban.duckdns.org/message/sendText/personal",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "25bbc50b8bfeb365633899951d2b9a6c4110f94e08535133d0953da151b4a1d3"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "number",
+              "value": "573054021111"
+            },
+            {
+              "name": "text",
+              "value": "={{ $json.mensaje }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        2672,
+        -1200
+      ],
+      "id": "edf92503-ff44-483e-9083-109b8c0266fc",
+      "name": "Enviar Lista al Maestro"
+    },
+    {
+      "parameters": {
+        "jsCode": "const respuesta = $input.first().json;\nconst conversaciones = respuesta.data?.payload || [];\nconst total = conversaciones.length;\n\nlet mensaje = \"\";\n\nif (total === 0) {\n  mensaje = \"🙏 No tienes consultas pendientes en este momento.\\n\\n_Cuando un cliente complete todos sus datos, apareceran aqui._\";\n} else {\n  mensaje = `🔔 *Consultas pendientes: ${total}*\\n\\n`;\n  \n  conversaciones.forEach((conv, index) => {\n    const nombre = conv.meta?.sender?.name || \"Sin nombre\";\n    const telefono = conv.meta?.sender?.phone_number || \"Sin teléfono\";\n    \n    // Detectar tipo de servicio del último mensaje\n    const mensajes = conv.messages || [];\n    const mensajesCliente = mensajes.filter(m => m.message_type === 0 && m.content);\n    const todosMensajes = mensajesCliente.map(m => m.content).join(\" \").toLowerCase();\n    \n    let tipoServicio = \"Consulta general\";\n    if (todosMensajes.includes(\"amarre\")) tipoServicio = \"Amarre\";\n    else if (todosMensajes.includes(\"retorno\") || todosMensajes.includes(\"recuperar\")) tipoServicio = \"Retorno\";\n    else if (todosMensajes.includes(\"dominio\")) tipoServicio = \"Dominio\";\n    else if (todosMensajes.includes(\"alejamiento\") || todosMensajes.includes(\"alejar\")) tipoServicio = \"Alejamiento\";\n    else if (todosMensajes.includes(\"endulzamiento\") || todosMensajes.includes(\"endulzar\")) tipoServicio = \"Endulzamiento\";\n    else if (todosMensajes.includes(\"limpieza\")) tipoServicio = \"Limpieza espiritual\";\n    else if (todosMensajes.includes(\"amuleto\") || todosMensajes.includes(\"suerte\") || todosMensajes.includes(\"prosperidad\")) tipoServicio = \"Suerte/Prosperidad\";\n    else if (todosMensajes.includes(\"ex\") || todosMensajes.includes(\"pareja\") || todosMensajes.includes(\"esposa\") || todosMensajes.includes(\"esposo\")) tipoServicio = \"Tema de pareja\";\n    \n    // Buscar el primer mensaje significativo\n    let resumen = \"Sin detalles\";\n    const mensajeSignificativo = mensajesCliente.find(m => m.content && m.content.length > 20);\n    if (mensajeSignificativo) {\n      resumen = mensajeSignificativo.content.substring(0, 120);\n      if (mensajeSignificativo.content.length > 120) resumen += \"...\";\n    }\n    \n    mensaje += `━━━━━━━━━━━━━━━━━━━━\\n`;\n    mensaje += `*${index + 1}. ${nombre}*\\n`;\n    mensaje += `📞 ${telefono}\\n`;\n    mensaje += `🔮 ${tipoServicio}\\n`;\n    mensaje += `💬 _${resumen}_\\n\\n`;\n  });\n  \n  mensaje += `━━━━━━━━━━━━━━━━━━━━\\n`;\n  mensaje += `🙏 Que la energía te acompañe`;\n}\n\nreturn [{\n  json: {\n    mensaje: mensaje,\n    total: total\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2448,
+        -1200
+      ],
+      "id": "8ed900d6-b49d-4844-90e6-9c7849793be2",
+      "name": "Formatear Todo"
+    },
+    {
+      "parameters": {
+        "jsCode": "// =====================================================\n// DETERMINAR MODALIDAD SEGÚN EL ÚLTIMO MENSAJE DEL CLIENTE\n// =====================================================\nconst dataAnterior = $input.first().json;\n\nlet clienteEnvioAudio = false;\n\ntry {\n  // 1. Consultar el historial completo de mensajes en Chatwoot\n  const historial = $('Historial').first().json.payload || [];\n  \n  // Ordenar mensajes por fecha ascendente\n  const ordenados = [...historial].sort((a, b) => (a.created_at || 0) - (b.created_at || 0));\n  \n  // Filtrar ÚNICAMENTE mensajes entrantes del cliente (message_type === 0)\n  const mensajesCliente = ordenados.filter(m => m.message_type === 0 || m.message_type === \"incoming\");\n  \n  if (mensajesCliente.length > 0) {\n    // Obtener el ÚLTIMO mensaje enviado por el cliente\n    const ultimoMensajeCliente = mensajesCliente[mensajesCliente.length - 1];\n    \n    // A) Verificar si el último mensaje contiene un archivo adjunto de audio\n    if (ultimoMensajeCliente.attachments && ultimoMensajeCliente.attachments.length > 0) {\n      const tieneAudio = ultimoMensajeCliente.attachments.some(att => \n        att.file_type === 'audio' || \n        (att.data_url && (att.data_url.includes('.mp3') || att.data_url.includes('.ogg') || att.data_url.includes('.webm') || att.data_url.includes('.m4a')))\n      );\n      if (tieneAudio) clienteEnvioAudio = true;\n    }\n    \n    // B) O si el contenido del texto indica que fue un audio transcrito\n    if (!clienteEnvioAudio && ultimoMensajeCliente.content) {\n      const txt = String(ultimoMensajeCliente.content).toLowerCase();\n      if (txt.startsWith('[audio') || txt.includes('audio transcrito:')) {\n        clienteEnvioAudio = true;\n      }\n    }\n  }\n} catch (e) {}\n\n// Fallback de respaldo: Verificar si el webhook actual traía un audio\nif (!clienteEnvioAudio) {\n  try {\n    const webhookData = $('Webhook').first().json.body || $('Webhook').first().json;\n    const attachments = webhookData.attachments || webhookData.conversation?.messages?.[0]?.attachments || [];\n    if (attachments.some(a => a.file_type === 'audio')) {\n      clienteEnvioAudio = true;\n    }\n  } catch(e) {}\n}\n\n// Extraer el texto de respuesta limpio de Luna\nlet textoRespuesta = \"\";\ntry {\n  if (dataAnterior.choices && dataAnterior.choices[0]) {\n    textoRespuesta = dataAnterior.choices[0].message.content;\n  } else if (dataAnterior.textoRespuesta) {\n    textoRespuesta = dataAnterior.textoRespuesta;\n  }\n} catch (e) {}\n\nreturn [{\n  json: {\n    ...dataAnterior,\n    enviarAudio: clienteEnvioAudio,\n    clienteEnvioAudio: clienteEnvioAudio,\n    textoRespuesta: textoRespuesta\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        9392,
+        -1536
+      ],
+      "id": "ef982188-c78c-4d0f-bae3-e5cbdd0eed39",
+      "name": "Verificar si Enviar Audio"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "0f380656-3afd-4ca9-9b5d-47d5ebbf9d35",
+              "leftValue": "={{ $json.clienteEnvioAudio.toString() }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        9616,
+        -1536
+      ],
+      "id": "0c7df8c5-ea56-4707-8bba-17c0a1f744cc",
+      "name": "Enviar Audio?"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.fish.audio/v1/tts",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer sk-fish-l-O20-fXkkh15dOpXhxh5prGYH6hf15uAPVgyrBMZZM"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": \"={{ $json.textoLimpio || $json.textoRespuesta }}\",\n  \"reference_id\": \"be2d2e9342cd4201b690500c4e35d008\",\n  \"format\": \"opus\",\n  \"sample_rate\": 48000,\n  \"normalize\": true,\n  \"latency\": \"normal\"\n}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        10064,
+        -1632
+      ],
+      "id": "e8506b61-27ee-4a62-b16d-04d1aff8163e",
+      "name": "Generar Audio Luna"
+    },
+    {
+      "parameters": {
+        "jsCode": "const textoOriginal = $('Verificar si Enviar Audio').first().json.textoRespuesta || \"\";\n\n// Limpieza EXHAUSTIVA del texto para voz natural\nlet textoLimpio = textoOriginal\n  // Saltos de línea y tabulaciones\n  .replace(/\\n/g, ' ')       \n  .replace(/\\r/g, ' ')       \n  .replace(/\\t/g, ' ')       \n  \n  // Quitar acotaciones o risas explícitas escritas (jajaja, jeje, *sonríe*)\n  .replace(/\\b(ja|je|ji|jo|ju|ha|he){2,}\\b/gi, '')\n  .replace(/\\*.*?\\*/g, '')\n  .replace(/\\[.*?\\]/g, '')\n  .replace(/\\(.*?\\)/g, '')\n\n  // TODOS los tipos de comillas\n  .replace(/[\"'\"'`´]/g, '')\n  .replace(/[\"\"]/g, '')\n  .replace(/['']/g, '')\n  \n  // Barras y símbolos\n  .replace(/\\\\/g, '')\n  .replace(/\\//g, ' ')\n  .replace(/\\|/g, ' ')\n  .replace(/\\_/g, ' ')\n  \n  // Corchetes y llaves\n  .replace(/\\[/g, '')\n  .replace(/\\]/g, '')\n  .replace(/\\{/g, '')\n  .replace(/\\}/g, '')\n  .replace(/\\(/g, ', ')\n  .replace(/\\)/g, ',')\n  \n  // Símbolos especiales\n  .replace(/\\*/g, '')\n  .replace(/\\#/g, '')\n  .replace(/\\&/g, ' y ')\n  .replace(/\\@/g, ' arroba ')\n  .replace(/\\%/g, ' porciento')\n  .replace(/\\$/g, ' pesos ')\n  .replace(/\\+/g, ' mas ')\n  .replace(/\\=/g, ' igual ')\n  .replace(/\\</g, '')\n  .replace(/\\>/g, '')\n  .replace(/\\~/g, '')\n  .replace(/\\^/g, '')\n  .replace(/\\`/g, '')\n  \n  // Quitar emojis\n  .replace(/[\\u{1F300}-\\u{1F9FF}]/gu, '')\n  .replace(/[\\u{2600}-\\u{27BF}]/gu, '')\n  .replace(/[\\u{1F000}-\\u{1F02F}]/gu, '')\n  .replace(/[\\u{1FA00}-\\u{1FA6F}]/gu, '')\n  .replace(/[\\u{2700}-\\u{27BF}]/gu, '')\n  .replace(/[\\u{1F600}-\\u{1F64F}]/gu, '')\n  .replace(/[\\u{1F680}-\\u{1F6FF}]/gu, '')\n  \n  // Suavizar puntuación excesiva\n  .replace(/\\.\\.\\./g, '.')\n  .replace(/\\.{2,}/g, '.')\n  .replace(/,\\s*,/g, ',')\n  .replace(/\\s+([,.!?])/g, '$1')\n  \n  // Múltiples espacios\n  .replace(/\\s+/g, ' ')\n  .trim();\n\n// CORTAR TEXTO RARO AL FINAL\nconst oraciones = textoLimpio.match(/[^.!?]+[.!?]+/g);\nif (oraciones && oraciones.length > 0) {\n  textoLimpio = oraciones.join(' ').trim();\n}\n\n// Limpiar puntos extra o espacios al final para evitar suspiros o ruidos raros\ntextoLimpio = textoLimpio.replace(/[.\\s]+$/, '').trim();\n\n// Asegurar puntuación única y limpia al final\nif (!/[.!?]$/.test(textoLimpio)) {\n  textoLimpio += '.';\n}\n\n// Body optimizado para Fish Audio (Temperatura 0.35 previene alucinaciones de audio al final)\nconst body = {\n  text: textoLimpio,\n  reference_id: \"be2d2e9342cd4201b690500c4e35d008\",\n  format: \"opus\",\n  chunk_length: 300,\n  normalize: true,\n  latency: \"normal\",\n  mp3_bitrate: 128,\n  top_p: 0.8,\n  temperature: 0.7 // Ajuste clave: Mantiene la voz exacta de Luna pero elimina risas y ruidos finales\n};\n\nreturn [{\n  json: {\n    body: body,\n    textoLimpio: textoLimpio,\n    textoOriginal: textoOriginal\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        9840,
+        -1632
+      ],
+      "id": "f72b63e8-65a2-4cda-bb3f-98be400c4392",
+      "name": "Preparar Body Audio"
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\nconst body = input.body || {};\n\n// OpenAI usa \"messages\"; Gemini usaba \"contents\"\nconst mensajes = body.messages || body.contents || [];\n\nconsole.log(\"=== DEBUG CONTEXTO ===\");\nconsole.log(\"Formato detectado:\", body.messages ? \"OpenAI\" : (body.contents ? \"Gemini\" : \"Desconocido\"));\nconsole.log(\"Modelo:\", body.model || \"N/A\");\nconsole.log(\"Total mensajes:\", mensajes.length);\nconsole.log(\"\");\n\nif (!Array.isArray(mensajes) || mensajes.length === 0) {\n  console.log(\"⚠️ No hay mensajes en body.messages ni body.contents\");\n  console.log(\"Keys del input:\", Object.keys(input));\n  console.log(\"Keys del body:\", Object.keys(body));\n} else {\n  mensajes.forEach((msg, i) => {\n    const role = msg.role || \"sin_role\";\n\n    // OpenAI: msg.content (string)\n    // Gemini: msg.parts[0].text\n    let texto = \"\";\n    if (typeof msg.content === \"string\") {\n      texto = msg.content;\n    } else if (Array.isArray(msg.parts) && msg.parts[0]) {\n      texto = msg.parts[0].text || \"\";\n    } else if (Array.isArray(msg.content)) {\n      // por si content viene como array de parts\n      texto = msg.content.map(p => p.text || p || \"\").join(\" \");\n    }\n\n    console.log(`Mensaje ${i + 1} (${role}):`);\n    console.log(texto);\n    console.log(\"---\");\n  });\n}\n\nreturn [$input.first()];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6032,
+        -1536
+      ],
+      "id": "7d100713-ccfe-4686-b852-81e25811d6c9",
+      "name": "Debug Contexto"
+    },
+    {
+      "parameters": {
+        "jsCode": "const inputData = $input.first().json;\nconst webhookData = inputData.body || inputData;\nconst timestamp = Date.now();\nconst conversationId = webhookData.conversation?.id || 0;\n\n// Obtener el ID del mensaje actual\nlet mensajeId = 0;\nif (webhookData.id) {\n  mensajeId = webhookData.id;\n} else if (webhookData.messages && webhookData.messages[0]) {\n  mensajeId = webhookData.messages[0].id;\n}\n\n// Guardar el ID en el body también\nwebhookData._miMensajeId = mensajeId;\n\nreturn [{\n  json: {\n    body: webhookData,\n    _timestamp: timestamp,\n    _conversationId: conversationId,\n    _miMensajeId: mensajeId\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3344,
+        -1536
+      ],
+      "id": "f0136a9c-09d7-4ab1-a326-3861b8dfe789",
+      "name": "Guardar Timestamp"
+    },
+    {
+      "parameters": {
+        "amount": 15
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        3568,
+        -1536
+      ],
+      "id": "03db8ef9-5dab-4460-927c-4b85124445b0",
+      "name": "Wait1",
+      "webhookId": "9637e7fe-7046-470f-859e-f34c7b7bae7d"
+    },
+    {
+      "parameters": {
+        "url": "=https://crmesteban.duckdns.org/api/v1/accounts/1/conversations/{{ $json.conversationId || $json.body?.conversation?.id || $('Webhook').first().json.body?.conversation?.id }}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api_access_token",
+              "value": "KKaF2gF4bJZvnSkqKnR42zD8"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        3792,
+        -1536
+      ],
+      "id": "44ea18de-5953-42c9-9f90-641433699592",
+      "name": "Verificar Ultimo Mensaje"
+    },
+    {
+      "parameters": {
+        "jsCode": "const mensajes = $input.first().json.payload || [];\nconst guardarData = $('Guardar Timestamp').first().json;\nconst miTimestamp = guardarData._timestamp;\nconst miMensajeId = guardarData._miMensajeId;\n\n// Filtrar solo mensajes del cliente (message_type 0)\nconst mensajesCliente = mensajes.filter(m => m.message_type === 0);\n\n// Ordenar por fecha (más reciente primero)\nconst mensajesOrdenados = mensajesCliente.sort((a, b) => b.created_at - a.created_at);\nconst ultimoMensaje = mensajesOrdenados[0];\n\nif (!ultimoMensaje) {\n  return [{\n    json: {\n      ...guardarData,\n      soyElUltimo: false,\n      razon: \"no hay mensajes\"\n    }\n  }];\n}\n\n// Soy el último si mi ID es el más reciente\nconst soyElUltimo = ultimoMensaje.id === miMensajeId;\n\n// También verificar: si hay mensajes en los últimos 5 segundos (cliente sigue escribiendo)\nconst ahoraSeg = Math.floor(Date.now() / 1000);\nconst hace5Seg = ahoraSeg - 5;\nconst mensajesRecientes = mensajesCliente.filter(m => m.created_at > hace5Seg);\nconst clienteSigueEscribiendo = mensajesRecientes.length > 0 && ultimoMensaje.id !== miMensajeId;\n\nreturn [{\n  json: {\n    ...guardarData,\n    soyElUltimo: soyElUltimo && !clienteSigueEscribiendo,\n    miMensajeId: miMensajeId,\n    ultimoMensajeId: ultimoMensaje.id,\n    mensajesRecientes: mensajesRecientes.length,\n    todosMensajes: mensajes\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4016,
+        -1536
+      ],
+      "id": "9a7ac74a-5286-4ea3-be68-f6d6f4d600bb",
+      "name": "Soy el Ultimo?"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "28eb2ee0-6648-45c8-a7c4-d85122080619",
+              "leftValue": "={{ $json.soyElUltimo.toString() }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        4240,
+        -1536
+      ],
+      "id": "0d3679f7-8403-4696-aa4c-ef7f2d149a7f",
+      "name": "Continuar Procesamiento?"
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst todosMensajes = data.todosMensajes || [];\nconst miTimestamp = data._timestamp || Date.now();\nconst miTimestampSeg = Math.floor(miTimestamp / 1000);\nconst hace60Seg = miTimestampSeg - 60;\n\n// PASO 1: Obtener el mensaje actual (audio, imagen o texto)\nlet mensajeActual = \"\";\nlet tipoMensajeActual = \"texto\";\n\n// Intentar obtener desde Inyectar Texto (audio)\ntry {\n  const audioData = $('Inyectar Texto').first().json;\n  if (audioData && audioData.body && audioData.body.content) {\n    // El content viene como \"[AUDIO fecha]: transcripción\"\n    // Extraer solo la transcripción\n    const contenido = audioData.body.content;\n    if (contenido.includes('[AUDIO')) {\n      const match = contenido.match(/\\[AUDIO[^\\]]*\\]:\\s*(.+)/i);\n      if (match) {\n        mensajeActual = match[1].trim();\n        tipoMensajeActual = \"audio\";\n      } else {\n        mensajeActual = contenido;\n        tipoMensajeActual = \"audio\";\n      }\n    } else {\n      mensajeActual = contenido;\n      tipoMensajeActual = \"audio\";\n    }\n  }\n} catch (e) {}\n\n// Intentar obtener desde Inyectar Analisis (imagen)\nif (!mensajeActual) {\n  try {\n    const imagenData = $('Inyectar Analisis').first().json;\n    if (imagenData && imagenData.body && imagenData.body.content) {\n      mensajeActual = imagenData.body.content;\n      tipoMensajeActual = \"imagen\";\n    }\n  } catch (e) {}\n}\n\n// Si no hay audio ni imagen, es texto normal del webhook\nif (!mensajeActual) {\n  try {\n    const webhookData = $('Webhook').first().json.body;\n    if (webhookData && webhookData.content) {\n      mensajeActual = webhookData.content;\n      tipoMensajeActual = \"texto\";\n    }\n  } catch (e) {}\n}\n\n// PASO 2: Buscar mensajes recientes del cliente en el historial\nconst mensajesRecientes = todosMensajes\n  .filter(m => m.message_type === 0)\n  .filter(m => m.created_at >= hace60Seg)\n  .sort((a, b) => a.created_at - b.created_at);\n\n// PASO 3: Obtener el ID del mensaje actual\nlet miMensajeId = null;\ntry {\n  const guardarData = $('Guardar Timestamp').first().json;\n  miMensajeId = guardarData._miMensajeId;\n} catch (e) {}\n\n// PASO 4: Construir la lista\nlet listaConsolidada = \"\";\nlet contadorMensajes = 0;\nconst lineas = [];\n\n// Agregar mensajes del historial reciente\nfor (const msg of mensajesRecientes) {\n  let contenidoMsg = \"\";\n  \n  // Detectar tipo de mensaje por sus attachments\n  const tieneAudio = msg.attachments && msg.attachments.some(a => a.file_type === 'audio');\n  const tieneImagen = msg.attachments && msg.attachments.some(a => a.file_type === 'image');\n  \n  // Si es EL mensaje actual, usar la transcripción/análisis\n  const esActual = miMensajeId && msg.id === miMensajeId;\n  \n  if (esActual && mensajeActual) {\n    // Usar el mensaje actual procesado\n    if (tipoMensajeActual === \"audio\") {\n      contenidoMsg = `Audio transcrito: \"${mensajeActual}\"`;\n    } else if (tipoMensajeActual === \"imagen\") {\n      contenidoMsg = mensajeActual;\n    } else {\n      contenidoMsg = `Texto: \"${mensajeActual}\"`;\n    }\n    contadorMensajes++;\n    lineas.push(`${contadorMensajes}. ${contenidoMsg}`);\n  } else if (msg.content && msg.content.trim() !== '' && msg.content !== null) {\n    // Mensaje anterior con contenido\n    const contenido = msg.content.trim();\n    \n    // Si tiene formato [AUDIO...]\n    if (contenido.includes('[AUDIO')) {\n      const match = contenido.match(/\\[AUDIO[^\\]]*\\]:\\s*(.+)/i);\n      if (match) {\n        contenidoMsg = `Audio transcrito: \"${match[1].trim()}\"`;\n      } else {\n        contenidoMsg = contenido;\n      }\n    } else if (contenido.includes('[IMAGEN')) {\n      contenidoMsg = contenido;\n    } else {\n      contenidoMsg = `Texto: \"${contenido}\"`;\n    }\n    contadorMensajes++;\n    lineas.push(`${contadorMensajes}. ${contenidoMsg}`);\n  } else if (tieneAudio) {\n    // Audio sin contenido (mensaje anterior sin transcripción)\n    contadorMensajes++;\n    lineas.push(`${contadorMensajes}. [Audio anterior del cliente]`);\n  } else if (tieneImagen) {\n    // Imagen sin análisis\n    contadorMensajes++;\n    lineas.push(`${contadorMensajes}. [Imagen anterior del cliente]`);\n  }\n}\n\n// Si el mensaje actual no está en las líneas, agregarlo\nif (mensajeActual && !lineas.some(l => l.includes(mensajeActual))) {\n  contadorMensajes++;\n  if (tipoMensajeActual === \"audio\") {\n    lineas.push(`${contadorMensajes}. Audio transcrito: \"${mensajeActual}\"`);\n  } else if (tipoMensajeActual === \"imagen\") {\n    lineas.push(`${contadorMensajes}. ${mensajeActual}`);\n  } else {\n    lineas.push(`${contadorMensajes}. Texto: \"${mensajeActual}\"`);\n  }\n}\n\n// PASO 5: Construir el resultado final\nif (contadorMensajes === 0) {\n  listaConsolidada = mensajeActual || \"El cliente envio un mensaje sin contenido detectable\";\n} else if (contadorMensajes === 1) {\n  // Un solo mensaje: usarlo directamente sin formato de lista\n  listaConsolidada = mensajeActual || lineas[0].replace(/^\\d+\\.\\s*/, '');\n  // Limpiar prefijos\n  listaConsolidada = listaConsolidada\n    .replace(/^Audio transcrito:\\s*\"/, '')\n    .replace(/^Texto:\\s*\"/, '')\n    .replace(/\"$/, '');\n} else {\n  // Múltiples mensajes: crear lista\n  listaConsolidada = `El cliente envio ${contadorMensajes} mensajes en los ultimos segundos:\\n\\n`;\n  listaConsolidada += lineas.join('\\n');\n  listaConsolidada += \"\\n\\nResponde de manera coherente a TODO lo que envio, en UN solo mensaje. Consolida tu respuesta y avanza el flujo.\";\n}\n\n// PASO 6: Preparar el body con la lista consolidada\nconst webhookData = data.body;\nwebhookData.content = listaConsolidada;\n\nreturn [{\n  json: {\n    body: webhookData,\n    listaConsolidada: listaConsolidada,\n    totalMensajes: contadorMensajes,\n    mensajeActual: mensajeActual,\n    tipoMensajeActual: tipoMensajeActual,\n    _debug: {\n      tipoDetectado: tipoMensajeActual,\n      textoActual: mensajeActual,\n      totalRecientes: mensajesRecientes.length,\n      contadorLineas: contadorMensajes,\n      lineas: lineas\n    }\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4464,
+        -1536
+      ],
+      "id": "4275dcd6-cd2e-4ad6-bba7-6f8500c9105e",
+      "name": "Consolidar Lista"
+    },
+    {
+      "parameters": {
+        "jsCode": "// =====================================================\n// FUSIONAR MEMORIA  (el cerebro persistente de Luna)\n// Junta tres fuentes y decide que sabe Luna y que le falta:\n//   A) Chatwoot custom_attributes  -> lo que YA esta guardado (manda siempre)\n//   B) Extraccion IA del caso      -> motivo, tipo de trabajo y nombres nuevos\n//   C) Vision (foto de este turno) -> se asigna sola al hueco correcto\n// Regla de oro: lo guardado NUNCA se sobreescribe ni se vuelve a pedir.\n// =====================================================\nconst SUPABASE_URL = \"https://qrrkokfmbdtodrqbfehs.supabase.co\";\nconst SUPABASE_KEY = \"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFycmtva2ZtYmR0b2RycWJmZWhzIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NzE5NTU0NSwiZXhwIjoyMTAyNzcxNTQ1fQ.bFwt6pAidvSEEuv3UNuKeZYwkfB-d2OPgMHM8MmwcD8\";\nconst CHATWOOT_URL = \"https://crmesteban.duckdns.org\";\nconst CHATWOOT_TOKEN = \"KKaF2gF4bJZvnSkqKnR42zD8\";\nconst ACCOUNT_ID = \"1\";\n\nconst sbHeaders = {\n  apikey: SUPABASE_KEY,\n  Authorization: \"Bearer \" + SUPABASE_KEY,\n  \"Content-Type\": \"application/json\",\n  Prefer: \"return=minimal\"\n};\n\nconst estado = $(\"Leer Estado del Lead\").first().json;\nconst attrs = estado.attrs || {};\nconst conversationId = estado.conversationId;\nconst etapa = estado.etapa || \"lead_nuevo\";\n\nconst bool = (v) => v === true || v === \"true\" || v === 1 || v === \"1\";\nconst txt = (v) => (v === null || v === undefined) ? \"\" : String(v).trim();\nconst novedades = [];\n\n// -----------------------------------------------------\n// A) CHECKLIST GUARDADO (fuente de verdad)\n// -----------------------------------------------------\nlet fotosPendientes = [];\ntry {\n  const rawPend = attrs.fotos_pendientes;\n  if (rawPend) fotosPendientes = typeof rawPend === \"string\" ? JSON.parse(rawPend) : rawPend;\n  if (!Array.isArray(fotosPendientes)) fotosPendientes = [];\n} catch (e) { fotosPendientes = []; }\n\nconst checklist = {\n  tipo_trabajo: txt(attrs.tipo_trabajo).toLowerCase(),\n  motivo_categoria: txt(attrs.motivo_categoria),\n  motivo_resumen: txt(attrs.motivo_resumen),\n  motivo_conocido: bool(attrs.motivo_conocido),\n  nombre_cliente: txt(attrs.nombre_cliente),\n  nombre_otra_persona: txt(attrs.nombre_otra_persona),\n  foto_cliente: bool(attrs.foto_cliente),\n  foto_otra_persona: bool(attrs.foto_otra_persona),\n  foto_mano: bool(attrs.foto_mano),\n  foto_cliente_url: txt(attrs.foto_cliente_url),\n  foto_otra_persona_url: txt(attrs.foto_otra_persona_url),\n  foto_mano_url: txt(attrs.foto_mano_url),\n  consulta_lista_enviada: bool(attrs.consulta_lista_enviada)\n};\nif ([\"pareja\", \"personal\"].indexOf(checklist.tipo_trabajo) === -1) checklist.tipo_trabajo = \"\";\n\n// -----------------------------------------------------\n// B) EXTRACCION IA (solo llena huecos, jamas pisa)\n// -----------------------------------------------------\nlet ia = null;\nconst rawIA = $input.first().json || {};\nlet textoIA = \"\";\ntry {\n  textoIA = (rawIA.choices && rawIA.choices[0] && rawIA.choices[0].message && rawIA.choices[0].message.content) ||\n            (rawIA.body && rawIA.body.choices && rawIA.body.choices[0] && rawIA.body.choices[0].message.content) || \"\";\n} catch (e) { textoIA = \"\"; }\n\nif (textoIA) {\n  try { ia = JSON.parse(textoIA); }\n  catch (e) {\n    const m = textoIA.match(/\\{[\\s\\S]*\\}/);\n    if (m) { try { ia = JSON.parse(m[0]); } catch (e2) { ia = null; } }\n  }\n}\n\nif (ia && typeof ia === \"object\") {\n  const tipoIA = txt(ia.tipo_trabajo).toLowerCase();\n  if (!checklist.tipo_trabajo && (tipoIA === \"pareja\" || tipoIA === \"personal\")) {\n    checklist.tipo_trabajo = tipoIA;\n    novedades.push(\"tipo_trabajo:\" + tipoIA);\n  }\n  const cat = txt(ia.motivo_categoria).toLowerCase();\n  if (!checklist.motivo_categoria && cat && cat !== \"desconocido\") {\n    checklist.motivo_categoria = cat;\n    novedades.push(\"motivo_categoria:\" + cat);\n  }\n  const resumen = txt(ia.motivo_resumen);\n  if (!checklist.motivo_resumen && resumen && resumen.toLowerCase() !== \"null\") {\n    checklist.motivo_resumen = resumen.substring(0, 200);\n    novedades.push(\"motivo_resumen\");\n  }\n  if (!checklist.motivo_conocido && ia.motivo_conocido === true) {\n    checklist.motivo_conocido = true;\n    novedades.push(\"motivo_conocido\");\n  }\n  const nombreCli = txt(ia.nombre_cliente);\n  if (!checklist.nombre_cliente && nombreCli && nombreCli.toLowerCase() !== \"null\" && nombreCli.length >= 2) {\n    checklist.nombre_cliente = nombreCli.substring(0, 80);\n    novedades.push(\"nombre_cliente:\" + checklist.nombre_cliente);\n  }\n  // El nombre de otra persona solo existe en trabajos de pareja\n  const nombreOtro = txt(ia.nombre_otra_persona);\n  if (checklist.tipo_trabajo === \"pareja\" && !checklist.nombre_otra_persona &&\n      nombreOtro && nombreOtro.toLowerCase() !== \"null\" && nombreOtro.length >= 2 &&\n      nombreOtro.toLowerCase() !== checklist.nombre_cliente.toLowerCase()) {\n    checklist.nombre_otra_persona = nombreOtro.substring(0, 80);\n    novedades.push(\"nombre_otra_persona:\" + checklist.nombre_otra_persona);\n  }\n}\n\n// -----------------------------------------------------\n// C) FOTO DE ESTE TURNO (asignacion determinista)\n// -----------------------------------------------------\nlet fotoEvento = null;\ntry { fotoEvento = $(\"Inyectar Analisis\").first().json.fotoEvento || null; } catch (e) { fotoEvento = null; }\n\nif (fotoEvento && [\"rostro\", \"pareja\", \"palma\"].indexOf(fotoEvento.tipo) !== -1) {\n  fotosPendientes.push({ tipo: fotoEvento.tipo, url: fotoEvento.url || \"\", cuando: fotoEvento.cuando || new Date().toISOString() });\n  if (fotosPendientes.length > 6) fotosPendientes = fotosPendientes.slice(-6);\n}\n\nfunction asignarFoto(f) {\n  const t = checklist.tipo_trabajo;\n  if (t === \"personal\") {\n    if (f.tipo === \"palma\") {\n      if (checklist.foto_mano) return false;\n      checklist.foto_mano = true;\n      if (f.url) checklist.foto_mano_url = f.url;\n      novedades.push(\"foto_mano\");\n      return true;\n    }\n    if (f.tipo === \"rostro\" || f.tipo === \"pareja\") {\n      if (checklist.foto_cliente) return false;\n      checklist.foto_cliente = true;\n      if (f.url) checklist.foto_cliente_url = f.url;\n      novedades.push(\"foto_cliente\");\n      return true;\n    }\n    return false;\n  }\n  if (t === \"pareja\") {\n    if (f.tipo === \"pareja\") {\n      let ok = false;\n      if (!checklist.foto_cliente) { checklist.foto_cliente = true; if (f.url) checklist.foto_cliente_url = f.url; ok = true; }\n      if (!checklist.foto_otra_persona) { checklist.foto_otra_persona = true; if (f.url) checklist.foto_otra_persona_url = f.url; ok = true; }\n      if (ok) novedades.push(\"foto_pareja_completa\");\n      return ok;\n    }\n    if (f.tipo === \"rostro\") {\n      if (!checklist.foto_cliente) {\n        checklist.foto_cliente = true;\n        if (f.url) checklist.foto_cliente_url = f.url;\n        novedades.push(\"foto_cliente\");\n        return true;\n      }\n      if (!checklist.foto_otra_persona) {\n        checklist.foto_otra_persona = true;\n        if (f.url) checklist.foto_otra_persona_url = f.url;\n        novedades.push(\"foto_otra_persona\");\n        return true;\n      }\n      return false;\n    }\n    return false; // la palma no aplica en trabajos de pareja\n  }\n  return false; // sin tipo de trabajo la foto queda en la cola\n}\n\nif (checklist.tipo_trabajo) {\n  const sinAsignar = [];\n  for (const f of fotosPendientes) {\n    if (!asignarFoto(f)) sinAsignar.push(f);\n  }\n  fotosPendientes = sinAsignar;\n}\n\n// -----------------------------------------------------\n// QUE FALTA (segun el tipo de trabajo)\n// -----------------------------------------------------\nconst faltantes = [];\nif (!checklist.tipo_trabajo) {\n  faltantes.push({ clave: \"tipo_trabajo\", etiqueta: \"saber si el trabajo es personal o de pareja\" });\n} else if (checklist.tipo_trabajo === \"pareja\") {\n  if (!checklist.nombre_cliente) faltantes.push({ clave: \"nombre_cliente\", etiqueta: \"tu nombre completo\" });\n  if (!checklist.nombre_otra_persona) faltantes.push({ clave: \"nombre_otra_persona\", etiqueta: \"el nombre completo de la persona a consultar\" });\n  if (!checklist.foto_cliente) faltantes.push({ clave: \"foto_cliente\", etiqueta: \"una foto tuya (rostro visible)\" });\n  if (!checklist.foto_otra_persona) faltantes.push({ clave: \"foto_otra_persona\", etiqueta: \"una foto de esa persona (o una foto donde salgan los dos)\" });\n} else {\n  if (!checklist.nombre_cliente) faltantes.push({ clave: \"nombre_cliente\", etiqueta: \"tu nombre completo\" });\n  if (!checklist.foto_cliente) faltantes.push({ clave: \"foto_cliente\", etiqueta: \"una foto tuya (rostro visible)\" });\n  if (!checklist.foto_mano) faltantes.push({ clave: \"foto_mano\", etiqueta: \"una foto de la palma de tu mano derecha\" });\n}\n\nconst consultaCompleta = Boolean(checklist.tipo_trabajo) && faltantes.length === 0;\n\n// -----------------------------------------------------\n// GUARDAR EN CHATWOOT (custom_attributes)\n// -----------------------------------------------------\nconst attrsGuardar = {\n  tipo_trabajo: checklist.tipo_trabajo,\n  motivo_categoria: checklist.motivo_categoria,\n  motivo_resumen: checklist.motivo_resumen,\n  motivo_conocido: checklist.motivo_conocido,\n  nombre_cliente: checklist.nombre_cliente,\n  nombre_otra_persona: checklist.nombre_otra_persona,\n  foto_cliente: checklist.foto_cliente,\n  foto_otra_persona: checklist.foto_otra_persona,\n  foto_mano: checklist.foto_mano,\n  foto_cliente_url: checklist.foto_cliente_url,\n  foto_otra_persona_url: checklist.foto_otra_persona_url,\n  foto_mano_url: checklist.foto_mano_url,\n  fotos_pendientes: JSON.stringify(fotosPendientes),\n  luna_etapa: etapa\n};\n\nlet errorAttrs = null;\ntry {\n  await this.helpers.httpRequest({\n    method: \"POST\",\n    url: CHATWOOT_URL + \"/api/v1/accounts/\" + ACCOUNT_ID + \"/conversations/\" + conversationId + \"/custom_attributes\",\n    headers: { \"Content-Type\": \"application/json\", api_access_token: CHATWOOT_TOKEN },\n    body: { custom_attributes: attrsGuardar },\n    json: true\n  });\n} catch (e) { errorAttrs = e.message || \"error attrs\"; }\n\n// -----------------------------------------------------\n// GUARDAR EN SUPABASE (clientes) con respaldo por columnas\n// -----------------------------------------------------\nlet errorSupabase = null;\nif (estado.clienteId) {\n  const completo = {\n    tipo_trabajo: checklist.tipo_trabajo || null,\n    nombre_otra_persona: checklist.nombre_otra_persona || null,\n    foto_otra_persona: checklist.foto_otra_persona,\n    foto_mano: checklist.foto_mano,\n    motivo_consulta: checklist.motivo_resumen || null,\n    motivo_categoria: checklist.motivo_categoria || null,\n    luna_etapa: etapa,\n    actualizado_en: new Date().toISOString()\n  };\n  try {\n    await this.helpers.httpRequest({\n      method: \"PATCH\",\n      url: SUPABASE_URL + \"/rest/v1/clientes?id=eq.\" + estado.clienteId,\n      headers: sbHeaders,\n      body: completo,\n      json: true\n    });\n  } catch (e) {\n    // Si faltan columnas nuevas, se guarda solo lo que la tabla ya conoce.\n    try {\n      await this.helpers.httpRequest({\n        method: \"PATCH\",\n        url: SUPABASE_URL + \"/rest/v1/clientes?id=eq.\" + estado.clienteId,\n        headers: sbHeaders,\n        body: {\n          tipo_trabajo: checklist.tipo_trabajo || null,\n          nombre_otra_persona: checklist.nombre_otra_persona || null,\n          foto_otra_persona: checklist.foto_otra_persona,\n          foto_mano: checklist.foto_mano\n        },\n        json: true\n      });\n    } catch (e2) { errorSupabase = e2.message || \"error supabase\"; }\n  }\n}\n\n// -----------------------------------------------------\n// NOTA PRIVADA PARA EL MAESTRO (solo si hubo novedades)\n// -----------------------------------------------------\nlet errorNota = null;\nif (novedades.length > 0) {\n  const partes = [];\n  if (checklist.tipo_trabajo) partes.push(\"Tipo: \" + checklist.tipo_trabajo.toUpperCase());\n  if (checklist.motivo_categoria) partes.push(\"Motivo: \" + checklist.motivo_categoria);\n  if (checklist.motivo_resumen) partes.push(\"Caso: \" + checklist.motivo_resumen);\n  if (checklist.nombre_cliente) partes.push(\"Cliente: \" + checklist.nombre_cliente);\n  if (checklist.nombre_otra_persona) partes.push(\"Persona a consultar: \" + checklist.nombre_otra_persona);\n  const fotosTxt = [];\n  if (checklist.foto_cliente) fotosTxt.push(\"foto del cliente\");\n  if (checklist.foto_otra_persona) fotosTxt.push(\"foto de la persona a consultar\");\n  if (checklist.foto_mano) fotosTxt.push(\"foto de la palma\");\n  if (fotosTxt.length) partes.push(\"Fotos: \" + fotosTxt.join(\", \"));\n  if (faltantes.length) partes.push(\"Falta: \" + faltantes.map(f => f.etiqueta).join(\", \"));\n  try {\n    await this.helpers.httpRequest({\n      method: \"POST\",\n      url: CHATWOOT_URL + \"/api/v1/accounts/\" + ACCOUNT_ID + \"/conversations/\" + conversationId + \"/messages\",\n      headers: { \"Content-Type\": \"application/json\", api_access_token: CHATWOOT_TOKEN },\n      body: {\n        content: \"🔎 *Ficha de Luna* (etapa: \" + (estado.etapaNombre || etapa) + \")\\n\" + partes.join(\"\\n\"),\n        message_type: \"outgoing\",\n        private: true\n      },\n      json: true\n    });\n  } catch (e) { errorNota = e.message || \"error nota\"; }\n}\n\n// -----------------------------------------------------\n// MEMORIA QUE SE LE INYECTA A LUNA EN CADA TURNO\n// -----------------------------------------------------\nconst recibido = [];\nconst pendiente = [];\nconst marca = (ok, etiqueta, valor) => {\n  if (ok) recibido.push(\"✅ \" + etiqueta + (valor ? \" → \" + valor : \"\") + \"  (GUARDADO, PROHIBIDO PEDIRLO OTRA VEZ)\");\n  else pendiente.push(\"❌ \" + etiqueta + \"  (SOLO ESTO SE PUEDE PEDIR)\");\n};\n\nif (!checklist.tipo_trabajo) {\n  pendiente.push(\"❌ Tipo de trabajo (personal o de pareja): aun no se sabe\");\n} else {\n  recibido.push(\"✅ Tipo de trabajo: \" + checklist.tipo_trabajo.toUpperCase() + \"  (ya definido, no lo vuelvas a preguntar)\");\n}\nif (checklist.motivo_categoria || checklist.motivo_resumen) {\n  recibido.push(\"✅ Motivo de la consulta: \" +\n    (checklist.motivo_categoria ? checklist.motivo_categoria : \"\") +\n    (checklist.motivo_resumen ? \" — \" + checklist.motivo_resumen : \"\") +\n    \"  (YA LO SABES, PROHIBIDO VOLVER A PREGUNTAR POR QUE VIENE)\");\n} else {\n  pendiente.push(\"❌ Motivo de la consulta: aun no se sabe por que viene\");\n}\n\nif (checklist.tipo_trabajo === \"pareja\") {\n  marca(checklist.nombre_cliente, \"Nombre del cliente\", checklist.nombre_cliente);\n  marca(checklist.nombre_otra_persona, \"Nombre de la persona a consultar\", checklist.nombre_otra_persona);\n  marca(checklist.foto_cliente, \"Foto del cliente\");\n  marca(checklist.foto_otra_persona, \"Foto de la persona a consultar\");\n} else if (checklist.tipo_trabajo === \"personal\") {\n  marca(checklist.nombre_cliente, \"Nombre del cliente\", checklist.nombre_cliente);\n  marca(checklist.foto_cliente, \"Foto del cliente\");\n  marca(checklist.foto_mano, \"Foto de la palma de la mano derecha\");\n}\n\nlet contextoMemoria = \"ETAPA ACTUAL DEL LEAD: \" + (estado.etapaNombre || etapa).toUpperCase() + \"\\n\";\ncontextoMemoria += \"DATOS YA GUARDADOS EN TU ARCHIVO:\\n\" + (recibido.length ? recibido.join(\"\\n\") : \"(ninguno todavia)\") + \"\\n\";\ncontextoMemoria += \"DATOS PENDIENTES:\\n\" + (pendiente.length ? pendiente.join(\"\\n\") : \"(ninguno, ya tienes todo)\") + \"\\n\";\nif (checklist.tipo_trabajo === \"pareja\") contextoMemoria += \"⛔ En trabajo de PAREJA esta prohibido pedir la palma de la mano.\\n\";\nif (checklist.tipo_trabajo === \"personal\") contextoMemoria += \"⛔ En trabajo PERSONAL esta prohibido pedir nombres o fotos de otra persona.\\n\";\nif (fotosPendientes.length) contextoMemoria += \"ℹ️ Hay \" + fotosPendientes.length + \" foto(s) recibidas antes de definir el tipo de trabajo; se asignaran solas cuando sepas el tipo.\\n\";\n\nreturn [{\n  json: {\n    body: estado.body,\n    conversationId: conversationId,\n    clienteId: estado.clienteId,\n    grupo: estado.grupo,\n    etapa: etapa,\n    etapaClave: estado.etapaClave,\n    etapaNombre: estado.etapaNombre,\n    etapasPipeline: estado.etapasPipeline || [],\n    lunaActua: estado.lunaActua === true,\n    labels: estado.labels || [],\n    chatwootUrl: estado.chatwootUrl,\n    contactName: estado.nombreContacto || \"Cliente\",\n    contactPhone: estado.telefono || \"\",\n    telefono: estado.telefono || \"\",\n    tipoTrabajo: checklist.tipo_trabajo,\n    nombreCliente: checklist.nombre_cliente || estado.nombreContacto || \"Cliente\",\n    nombreOtraPersona: checklist.nombre_otra_persona,\n    checklist: checklist,\n    fotosPendientes: fotosPendientes,\n    faltantes: faltantes,\n    faltantesTexto: faltantes.map(f => f.etiqueta).join(\", \"),\n    consultaCompleta: consultaCompleta,\n    contextoMemoria: contextoMemoria,\n    novedades: novedades,\n    fotoEvento: fotoEvento,\n    listaConsolidada: (function () { try { return $(\"Consolidar Lista\").first().json.listaConsolidada || \"\"; } catch (e) { return \"\"; } })(),\n    _debug: {\n      iaExtraida: ia ? \"si\" : \"no\",\n      textoIA: textoIA ? textoIA.substring(0, 300) : \"\",\n      novedades: novedades,\n      errorAttrs: errorAttrs,\n      errorSupabase: errorSupabase,\n      errorNota: errorNota\n    }\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4912,
+        -1536
+      ],
+      "id": "ea1268f6-7c14-4452-97db-5b42ca15b6b3",
+      "name": "Fusionar Memoria",
+      "notes": "Fusiona lo guardado en Chatwoot + la extraccion IA + la vision, y decide que falta."
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst conversationId = data.body?.conversation?.id || \n                       $('Webhook').first().json.body.conversation.id;\n\n// Verificar 1: Etiquetas de la conversación\nlet botPausadoManual = false;\ntry {\n  const respConv = await this.helpers.httpRequest({\n    method: 'GET',\n    url: `https://crmesteban.duckdns.org/api/v1/accounts/1/conversations/${conversationId}`,\n    headers: {\n      'api_access_token': 'KKaF2gF4bJZvnSkqKnR42zD8'\n    },\n    json: true\n  });\n  \n  const labels = respConv.labels || [];\n  botPausadoManual = labels.includes('bot-pausado');\n} catch (e) {\n  console.log('Error obteniendo conversacion:', e.message);\n}\n\n// Si está pausado manualmente, no responder\nif (botPausadoManual) {\n  return [{\n    json: {\n      ...data,\n      intervencionHumana: true,\n      debeResponder: false,\n      motivo: \"bot pausado manualmente\"\n    }\n  }];\n}\n\n// Verificar 2: Intervención humana en últimas 24h\nlet mensajes = [];\ntry {\n  const respuesta = await this.helpers.httpRequest({\n    method: 'GET',\n    url: `https://crmesteban.duckdns.org/api/v1/accounts/1/conversations/${conversationId}/messages?per_page=50`,\n    headers: {\n      'api_access_token': 'KKaF2gF4bJZvnSkqKnR42zD8'\n    },\n    json: true\n  });\n  mensajes = respuesta.payload || [];\n} catch (e) {\n  console.log('Error obteniendo mensajes:', e.message);\n}\n\nconst ahoraSeg = Math.floor(Date.now() / 1000);\nconst hace24Horas = ahoraSeg - (24 * 60 * 60);\n\nlet intervencionHumana = false;\nlet ultimaIntervencionHumana = null;\nlet quienIntervino = null;\n\nfor (const msg of mensajes) {\n  if (msg.message_type === 1 && msg.created_at >= hace24Horas) {\n    const senderType = msg.sender?.type || \"\";\n    const senderAvailableName = msg.sender?.available_name || \"\";\n    \n    const esHumano = (senderType.toLowerCase() === \"user\") && \n                     senderAvailableName !== \"Templo Mistico\";\n    \n    if (esHumano) {\n      intervencionHumana = true;\n      if (!ultimaIntervencionHumana || msg.created_at > ultimaIntervencionHumana) {\n        ultimaIntervencionHumana = msg.created_at;\n        quienIntervino = senderAvailableName || \"Agente humano\";\n      }\n    }\n  }\n}\n\nif (intervencionHumana) {\n  try {\n    await this.helpers.httpRequest({\n      method: 'POST',\n      url: `https://crmesteban.duckdns.org/api/v1/accounts/1/conversations/${conversationId}/labels`,\n      headers: {\n        'Content-Type': 'application/json',\n        'api_access_token': 'KKaF2gF4bJZvnSkqKnR42zD8'\n      },\n      body: {\n        labels: ['intervencion-humana']\n      },\n      json: true\n    });\n  } catch (e) {}\n}\n\nlet tiempoDesdeIntervencion = null;\nif (ultimaIntervencionHumana) {\n  tiempoDesdeIntervencion = Math.floor((ahoraSeg - ultimaIntervencionHumana) / 60);\n}\n\n// IMPORTANTE: Preservar TODOS los datos del checklist\nreturn [{\n  json: {\n    ...data,  // Preservar body, listaConsolidada, checklist, contextoChecklist\n    intervencionHumana: intervencionHumana,\n    debeResponder: !intervencionHumana,\n    ultimaIntervencionHumana: ultimaIntervencionHumana,\n    tiempoDesdeIntervencion: tiempoDesdeIntervencion,\n    quienIntervino: quienIntervino,\n    motivo: intervencionHumana ? \"intervencion humana detectada\" : \"sin intervencion\",\n    _debug: {\n      totalMensajes: mensajes.length,\n      minutosDesde: tiempoDesdeIntervencion,\n      botPausadoManual: botPausadoManual\n    }\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5136,
+        -1536
+      ],
+      "id": "ff35219d-9823-4773-a1a6-91d59a2e609f",
+      "name": "Verificar Intervencion Humana"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "36ce5a35-b3df-4433-8ca9-f3cf485273e9",
+              "leftValue": "={{ $json.debeResponder.toString() }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        5360,
+        -1536
+      ],
+      "id": "8013e948-5975-4cab-bfd3-7f566ccd8673",
+      "name": "Bot Puede Responder?"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.OPENAI_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.bodyString }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        7824,
+        -1456
+      ],
+      "id": "4268d6e1-7752-4337-80b6-c76929ab4ebc",
+      "name": "Clasificar Lead"
+    },
+    {
+      "parameters": {
+        "jsCode": "// =====================================================\n// EXTRAER CLASIFICACIÓN DE OPENAI\n// =====================================================\nconst raw = $input.first().json;\nlet respuesta = \"\";\n\ntry {\n  if (raw.choices && raw.choices[0]) {\n    respuesta = raw.choices[0].message.content || \"\";\n  }\n} catch(e) {\n  respuesta = \"TIBIO\";\n}\n\n// Limpiar la respuesta dejando solo letras mayúsculas\nrespuesta = respuesta.trim().toUpperCase().replace(/[^A-Z]/g, '');\n\nlet clasificacion = \"TIBIO\";\nif (respuesta.includes(\"CALIENTE\")) clasificacion = \"CALIENTE\";\nelse if (respuesta.includes(\"FRIO\")) clasificacion = \"FRIO\";\nelse if (respuesta.includes(\"TIBIO\")) clasificacion = \"TIBIO\";\n\n// Extraer contexto del caso\nlet conversationId = \"\";\nlet nombreCliente = \"Cliente\";\nlet telefono = \"\";\nlet tipoTrabajo = \"\";\n\ntry {\n  const cierre = $('Pulir y Auditar Respuesta').first().json;\n  conversationId = cierre.conversationId || \"\";\n  nombreCliente = cierre.nombreCliente || cierre.contactName || \"Cliente\";\n  telefono = cierre.telefono || cierre.contactPhone || \"\";\n  tipoTrabajo = cierre.tipoTrabajo || \"\";\n} catch(e){}\n\nreturn [{\n  json: {\n    clasificacion,\n    conversationId,\n    nombreCliente,\n    telefono,\n    tipoTrabajo,\n    esCaliente: clasificacion === \"CALIENTE\",\n    esFrio: clasificacion === \"FRIO\",\n    esTibio: clasificacion === \"TIBIO\"\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        8048,
+        -1456
+      ],
+      "id": "f5b7a0f9-3fcc-43a1-bf2a-dc3f53ab22a0",
+      "name": "Extraer Clasificacion"
+    },
+    {
+      "parameters": {
+        "url": "=https://crmesteban.duckdns.org/api/v1/accounts/1/conversations/{{ $('Extraer Clasificacion').item.json.conversationId }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api_access_token",
+              "value": "KKaF2gF4bJZvnSkqKnR42zD8"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        8272,
+        -1456
+      ],
+      "id": "0a5703cb-5cc2-43db-af1d-55cefbdac014",
+      "name": "Quitar Etiquetas Anteriores"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Obtener etiquetas actuales de la conversación\nconst etiquetasActuales = $input.item.json.labels || [];\n\n// Etiquetas de clasificación a manejar\nconst etiquetasClasificacion = ['lead-caliente', 'lead-tibio', 'lead-frio'];\n\n// Filtrar etiquetas que NO son de clasificación (conservarlas)\nconst etiquetasConservar = etiquetasActuales.filter(\n  e => !etiquetasClasificacion.includes(e)\n);\n\n// Nueva etiqueta según clasificación\nconst clasificacion = $('Extraer Clasificacion').item.json.clasificacion;\nlet nuevaEtiqueta = '';\n\nif (clasificacion === 'CALIENTE') nuevaEtiqueta = 'lead-caliente';\nelse if (clasificacion === 'TIBIO') nuevaEtiqueta = 'lead-tibio';\nelse if (clasificacion === 'FRIO') nuevaEtiqueta = 'lead-frio';\n\n// Combinar: etiquetas conservadas + nueva clasificación\nconst etiquetasFinales = [...etiquetasConservar, nuevaEtiqueta];\n\n// Verificar si subió de categoría (para log)\nconst eraCaliente = etiquetasActuales.includes('lead-caliente');\nconst ahoraCaliente = clasificacion === 'CALIENTE';\nconst subioACaliente = !eraCaliente && ahoraCaliente;\n\nreturn {\n  etiquetasFinales,\n  nuevaEtiqueta,\n  clasificacion: $('Extraer Clasificacion').item.json.clasificacion,\n  conversationId: $('Extraer Clasificacion').item.json.conversationId,\n  nombreCliente: $('Extraer Clasificacion').item.json.nombreCliente,\n  telefono: $('Extraer Clasificacion').item.json.telefono,\n  tipoTrabajo: $('Extraer Clasificacion').item.json.tipoTrabajo,\n  esCaliente: $('Extraer Clasificacion').item.json.esCaliente,\n  subioACaliente\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        8496,
+        -1456
+      ],
+      "id": "3e0e81ce-f3d7-4fb2-a7b3-814381196809",
+      "name": "Preparar Etiquetas"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://crmesteban.duckdns.org/api/v1/accounts/1/conversations/{{ $('Preparar Etiquetas').item.json.conversationId }}/labels",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api_access_token",
+              "value": "KKaF2gF4bJZvnSkqKnR42zD8"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"labels\": {{ JSON.stringify($('Preparar Etiquetas').item.json.etiquetasFinales) }}\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        8720,
+        -1456
+      ],
+      "id": "2c08a484-407c-4a59-ae02-d124a899cb7f",
+      "name": "Actualizar Etiqueta Chatwoot"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "8fb444d3-f56d-408e-8d30-da2be59f04b8",
+              "leftValue": "={{ $('Extraer Clasificacion').item.json.clasificacion }}",
+              "rightValue": "CALIENTE",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        8944,
+        -1456
+      ],
+      "id": "dea9a4c6-da9d-4ac6-898a-70f5939bd32f",
+      "name": "Es Caliente?"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://evo.crmesteban.duckdns.org/message/sendText/personal",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "25bbc50b8bfeb365633899951d2b9a6c4110f94e08535133d0953da151b4a1d3"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"number\": \"573054021111\",\n  \"text\": \"={{ '🔥 *LEAD CALIENTE* 🔥\\n\\n' + '👤 *Cliente:* ' + $('Preparar Etiquetas').item.json.nombreCliente + '\\n' + '📱 *Teléfono:* ' + $('Preparar Etiquetas').item.json.telefono + '\\n' + '🔮 *Interés:* ' + ($('Preparar Etiquetas').item.json.tipoTrabajo || 'Por definir') + '\\n\\n' + '💬 Este cliente está listo para cerrar. ¡Atención prioritaria!\\n\\n' + '🔗 https://crmesteban.duckdns.org' }}\"\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        9168,
+        -1456
+      ],
+      "id": "40c8ffa5-f6eb-4ad8-8bb0-b7b27fe9c90b",
+      "name": "Notificar Maestro Lead Caliente"
+    },
+    {
+      "parameters": {
+        "jsCode": "// =====================================================\n// PREPARAR BODY CLASIFICACIÓN PARA OPENAI (gpt-4o-mini)\n// =====================================================\nconst historial = $('Historial').first().json.payload || [];\n\nconst mensajesFormateados = historial\n  .slice(-20)\n  .map(m => {\n    const rol = (m.message_type === 0 || m.message_type === \"incoming\") ? \"CLIENTE\" : \"LUNA\";\n    const contenido = m.content || \"\";\n    return `${rol}: ${contenido}`;\n  })\n  .filter(m => !m.endsWith(\": \"))\n  .join(\"\\n\");\n\nlet ultimoMensaje = \"\";\ntry {\n  ultimoMensaje = $('Consolidar Lista').first().json.listaConsolidada || \"\";\n} catch(e) {\n  ultimoMensaje = \"\";\n}\n\nconst systemPrompt = `Eres un clasificador de leads para un servicio esotérico. Analiza la conversación y clasifica al cliente. Responde ÚNICAMENTE con una de estas palabras: CALIENTE, TIBIO o FRIO. Sin explicaciones, sin puntos, solo la palabra.\n\nREGLAS:\nCALIENTE: pregunta precio, quiere agendar, envió fotos, dice urgente/necesito/quiero/cuánto/cómo pago, muestra intención clara de contratar\nTIBIO: conversa con interés pero sin compromiso, hace preguntas generales, curiosidad moderada\nFRIO: respuestas cortas (ok/sí/no), dice después/lo pienso/ahorita no, sin interés claro`;\n\nconst userPrompt = `Historial de conversación:\\n${mensajesFormateados}\\n\\nÚltimo mensaje del cliente:\\n${ultimoMensaje}`;\n\nconst body = {\n  model: \"gpt-4o-mini\",\n  messages: [\n    { role: \"system\", content: systemPrompt },\n    { role: \"user\", content: userPrompt }\n  ],\n  temperature: 0.1,\n  max_tokens: 10\n};\n\nreturn [{\n  json: {\n    body: body,\n    bodyString: JSON.stringify(body)\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7600,
+        -1456
+      ],
+      "id": "95ff2e5f-778d-47bf-8c90-c8b9c6d0dbf6",
+      "name": "Preparar Body Clasificacion"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Obtener mensajes del historial que ya vienen formateados\nconst mensajesOpenAI = $input.first().json.body?.messages || [];\n\n// Convertir formato OpenAI → formato Gemini\nconst contents = [];\nlet systemPrompt = '';\n\nfor (const msg of mensajesOpenAI) {\n  if (msg.role === 'system') {\n    systemPrompt = msg.content;\n  } else if (msg.role === 'user') {\n    contents.push({\n      role: 'user',\n      parts: [{ text: msg.content }]\n    });\n  } else if (msg.role === 'assistant') {\n    contents.push({\n      role: 'model',\n      parts: [{ text: msg.content }]\n    });\n  }\n}\n\n// Si no hay contents, usar el input directo\nif (contents.length === 0) {\n  contents.push({\n    role: 'user',\n    parts: [{ text: 'Hola' }]\n  });\n}\n\nconst body = {\n  systemInstruction: {\n    parts: [{ text: systemPrompt }]\n  },\n  contents: contents,\n  generationConfig: {\n    temperature: 0.55,\n    maxOutputTokens: 300,\n    topP: 0.85\n  }\n};\n\nreturn [{\n  json: {\n    bodyString: JSON.stringify(body)\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6928,
+        -1600
+      ],
+      "id": "f8f17c8d-f57c-42d7-b833-2a54988a9326",
+      "name": "Preparar Body Backup"
+    },
+    {
+      "parameters": {
+        "jsCode": "// =====================================================\n// CONFIGURACIÓN DE SUPABASE (Templo Místico)\n// =====================================================\nconst SUPABASE_URL = \"https://qrrkokfmbdtodrqbfehs.supabase.co\";\nconst SUPABASE_KEY = \"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFycmtva2ZtYmR0b2RycWJmZWhzIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NzE5NTU0NSwiZXhwIjoyMTAyNzcxNTQ1fQ.bFwt6pAidvSEEuv3UNuKeZYwkfB-d2OPgMHM8MmwcD8\";\n\nconst headers = {\n  \"apikey\": SUPABASE_KEY,\n  \"Authorization\": `Bearer ${SUPABASE_KEY}`,\n  \"Content-Type\": \"application/json\",\n  \"Prefer\": \"return=representation\"\n};\n\n// =====================================================\n// EXTRAER DATOS DEL EVENTO DE CHATWOOT\n// =====================================================\nconst rawInput = $input.first().json;\nconst body = rawInput.body || rawInput;\n\nif (!body || !body.conversation) {\n  return [{ json: { sincronizado: false, motivo: \"No es evento de conversacion valido\" } }];\n}\n\nconst conv = body.conversation;\nconst sender = body.sender || conv.meta?.sender || {};\nconst contact = body.contact || conv.meta?.sender || conv.contact || {};\n\n// Funciones auxiliares para teléfono\nfunction soloDigitos(v) { return String(v || \"\").replace(/\\D/g, \"\"); }\nfunction pareceTelefonoReal(v) {\n  const d = soloDigitos(v);\n  if (d.length < 8 || d.length > 15) return false;\n  if (/^0{2,}/.test(d)) return false;\n  return true;\n}\nfunction normalizarTelefono(v) {\n  let d = soloDigitos(v);\n  if (!d) return \"\";\n  if (d.length === 10 && d.startsWith(\"3\")) d = \"57\" + d;\n  return \"+\" + d;\n}\n\nconst candidatos = [\n  sender.phone_number,\n  contact.phone_number,\n  conv?.meta?.sender?.phone_number,\n  body?.conversation?.meta?.sender?.phone_number,\n  sender.identifier,\n  contact.identifier\n];\n\nlet telefono = \"\";\nfor (const c of candidatos) {\n  if (pareceTelefonoReal(c)) {\n    telefono = normalizarTelefono(c);\n    break;\n  }\n}\n\nif (!telefono) {\n  telefono = `revisar_${conv.id}`;\n}\n\nconst telefonoDisplay = telefono.startsWith(\"revisar_\") ? \"Sin teléfono\" : telefono;\nconst nombreCliente = sender.name || \"Cliente WhatsApp\";\nconst fotoUrl = sender.avatar_url || null;\n\nconst attrs = conv.custom_attributes || {};\nconst tipoTrabajo = attrs.tipo_trabajo || null;\nconst nombreOtraPersona = attrs.nombre_otra_persona || null;\nconst fotoOtraPersona = attrs.foto_otra_persona || null;\nconst fotoMano = attrs.foto_mano || null;\n\nconst contenidoMensaje = body.content || \"\";\nconst msgTypeRaw = String(body.message_type ?? \"\").toLowerCase();\nconst messageType = (msgTypeRaw === \"0\" || msgTypeRaw === \"incoming\") ? \"recibido\" : \"enviado\";\n\nlet tipoContenido = \"texto\";\nlet urlArchivo = null;\n\nif (body.attachments && body.attachments.length > 0) {\n  const att = body.attachments[0];\n  urlArchivo = att.data_url || att.file_url || null;\n  if (att.file_type === \"audio\") tipoContenido = \"audio\";\n  else if (att.file_type === \"image\") tipoContenido = \"imagen\";\n  else tipoContenido = \"archivo\";\n}\n\n// =====================================================\n// PROCESO DE GUARDADO EN SUPABASE\n// =====================================================\nlet clienteId = null;\nlet conversacionId = null;\nlet logPasos = [];\nlet errorPaso = null;\n\ntry {\n  // ---------------------------------------------------\n  // PASO 1: CLIENTE\n  // ---------------------------------------------------\n  const buscarCliente = await this.helpers.httpRequest({\n    method: \"GET\",\n    url: `${SUPABASE_URL}/rest/v1/clientes?telefono=eq.${encodeURIComponent(telefono)}&select=id`,\n    headers: headers,\n    json: true\n  });\n\n  if (Array.isArray(buscarCliente) && buscarCliente.length > 0) {\n    clienteId = buscarCliente[0].id;\n    await this.helpers.httpRequest({\n      method: \"PATCH\",\n      url: `${SUPABASE_URL}/rest/v1/clientes?id=eq.${clienteId}`,\n      headers: headers,\n      body: {\n        nombre: nombreCliente,\n        foto_url: fotoUrl,\n        tipo_trabajo: tipoTrabajo,\n        nombre_otra_persona: nombreOtraPersona,\n        foto_otra_persona: fotoOtraPersona,\n        foto_mano: fotoMano,\n        telefono_display: telefonoDisplay,\n        actualizado_en: new Date().toISOString()\n      },\n      json: true\n    });\n    logPasos.push(`Cliente actualizado (ID: ${clienteId})`);\n  } else {\n    const nuevoCliente = await this.helpers.httpRequest({\n      method: \"POST\",\n      url: `${SUPABASE_URL}/rest/v1/clientes`,\n      headers: headers,\n      body: [{\n        telefono: telefono,\n        telefono_display: telefonoDisplay,\n        nombre: nombreCliente,\n        foto_url: fotoUrl,\n        tipo_trabajo: tipoTrabajo,\n        nombre_otra_persona: nombreOtraPersona,\n        foto_otra_persona: fotoOtraPersona,\n        foto_mano: fotoMano\n      }],\n      json: true\n    });\n    clienteId = nuevoCliente[0]?.id;\n    logPasos.push(`Cliente creado (ID: ${clienteId})`);\n  }\n\n  // ---------------------------------------------------\n  // PASO 2: CONVERSACIÓN\n  // ---------------------------------------------------\n  if (clienteId) {\n    const buscarConv = await this.helpers.httpRequest({\n      method: \"GET\",\n      url: `${SUPABASE_URL}/rest/v1/conversaciones?chatwoot_conversation_id=eq.${conv.id}&select=id`,\n      headers: headers,\n      json: true\n    });\n\n    const datosConv = {\n      cliente_id: clienteId,\n      chatwoot_conversation_id: conv.id,\n      numero_whatsapp: telefono,\n      fuente: conv.inbox_id === 5 ?\"meta_business\" : \"evolution\",\n      ultimo_mensaje: contenidoMensaje || (tipoContenido !== \"texto\" ? `[${tipoContenido}]` : \"\"),\n      ultimo_mensaje_en: new Date().toISOString(),\n      actualizado_en: new Date().toISOString()\n    };\n\n    if (Array.isArray(buscarConv) && buscarConv.length > 0) {\n      conversacionId = buscarConv[0].id;\n      await this.helpers.httpRequest({\n        method: \"PATCH\",\n        url: `${SUPABASE_URL}/rest/v1/conversaciones?id=eq.${conversacionId}`,\n        headers: headers,\n        body: datosConv,\n        json: true\n      });\n      logPasos.push(`Conversacion actualizada (ID: ${conversacionId})`);\n    } else {\n      const nuevaConv = await this.helpers.httpRequest({\n        method: \"POST\",\n        url: `${SUPABASE_URL}/rest/v1/conversaciones`,\n        headers: headers,\n        body: [datosConv],\n        json: true\n      });\n      conversacionId = nuevaConv[0]?.id;\n      logPasos.push(`Conversacion creada (ID: ${conversacionId})`);\n    }\n  }\n\n  // ---------------------------------------------------\n  // PASO 3: MENSAJE (Con Anti-Duplicado)\n  // ---------------------------------------------------\n  if (conversacionId && (contenidoMensaje || urlArchivo)) {\n    let yaExiste = false;\n\n    try {\n      const desde = new Date(Date.now() - 20000).toISOString();\n      const existentes = await this.helpers.httpRequest({\n        method: \"GET\",\n        url: `${SUPABASE_URL}/rest/v1/mensajes?conversacion_id=eq.${conversacionId}&tipo=eq.${messageType}&creado_en=gte.${desde}&select=id,contenido,tipo_contenido`,\n        headers: headers,\n        json: true\n      });\n\n      if (Array.isArray(existentes)) {\n        yaExiste = existentes.some((m) => {\n          const c1 = (m.contenido || \"\").trim();\n          const c2 = (contenidoMensaje || \"\").trim();\n          const sameContent = c1 === c2 || c1 === `[${tipoContenido}]` || c2 === `[${m.tipo_contenido}]`;\n          const sameType = (m.tipo_contenido || \"texto\") === tipoContenido;\n          return sameContent && sameType;\n        });\n      }\n    } catch (eDedupe) {\n      yaExiste = false;\n    }\n\n    if (!yaExiste) {\n      await this.helpers.httpRequest({\n        method: \"POST\",\n        url: `${SUPABASE_URL}/rest/v1/mensajes`,\n        headers: headers,\n        body: [{\n          conversacion_id: conversacionId,\n          tipo: messageType,\n          contenido: contenidoMensaje || (tipoContenido !== \"texto\" ? `[${tipoContenido}]` : \"\"),\n          tipo_contenido: tipoContenido,\n          url_archivo: urlArchivo,\n          creado_en: new Date().toISOString()\n        }],\n        json: true\n      });\n      logPasos.push(\"Mensaje guardado con éxito\");\n    } else {\n      logPasos.push(\"Mensaje duplicado omitido\");\n    }\n  }\n\n} catch (err) {\n  errorPaso = err.message || JSON.stringify(err);\n  logPasos.push(`Error en proceso: ${errorPaso}`);\n}\n\nreturn [{\n  json: {\n    sincronizado: errorPaso === null,\n    clienteId,\n    conversacionId,\n    logPasos,\n    error: errorPaso\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1328,
+        -1168
+      ],
+      "id": "dcc0aefa-31b6-45c1-a30f-efb53b90e366",
+      "name": "Sincronizar Supabase"
+    },
+    {
+      "parameters": {
+        "jsCode": "// =====================================================\n// CANDADO DEFINITIVO DE LUNA POR NÚMERO Y CANAL\n// + KILL SWITCH GLOBAL (botón 🌙 \"Apagar Luna\" del CRM)\n// =====================================================\nconst SUPABASE_URL = \"https://qrrkokfmbdtodrqbfehs.supabase.co\";\nconst SUPABASE_KEY = \"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFycmtva2ZtYmR0b2RycWJmZWhzIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NzE5NTU0NSwiZXhwIjoyMTAyNzcxNTQ1fQ.bFwt6pAidvSEEuv3UNuKeZYwkfB-d2OPgMHM8MmwcD8\";\n\nconst headers = {\n  apikey: SUPABASE_KEY,\n  Authorization: `Bearer ${SUPABASE_KEY}`,\n  \"Content-Type\": \"application/json\",\n};\n\nconst rawInput = $input.first().json;\nconst body = rawInput.body || rawInput;\n\nif (!body || (!body.conversation && !body.id)) {\n  return [{\n    json: {\n      ...rawInput,\n      botPuedeContestar: false,\n      motivo: \"evento_invalido_sin_conversacion\"\n    }\n  }];\n}\n\nconst conv = body.conversation || {};\nconst inbox = body.inbox || conv.inbox || {};\nconst inboxId = String(body.inbox_id || conv.inbox_id || inbox.id || \"\").trim();\nconst inboxName = String(inbox.name || body.channel?.name || conv.channel || \"\").toLowerCase();\n\nconst sender = body.sender || conv.meta?.sender || {};\nconst contact = body.contact || conv.meta?.sender || {};\n\n// Normalizar teléfonos\nfunction soloDigitos(v) { return String(v || \"\").replace(/\\D/g, \"\"); }\nfunction pareceTelefonoReal(v) {\n  const d = soloDigitos(v);\n  if (d.length < 8 || d.length > 15) return false;\n  if (/^0{2,}/.test(d)) return false;\n  return true;\n}\nfunction normalizarTelefono(v) {\n  let d = soloDigitos(v);\n  if (!d) return \"\";\n  if (d.length === 10 && d.startsWith(\"3\")) d = \"57\" + d;\n  return \"+\" + d;\n}\n\nconst candidatos = [\n  sender.phone_number,\n  contact.phone_number,\n  conv?.meta?.sender?.phone_number,\n  body?.conversation?.meta?.sender?.phone_number,\n  sender.identifier,\n  contact.identifier,\n];\n\nlet telefono = \"\";\nfor (const c of candidatos) {\n  if (pareceTelefonoReal(c)) {\n    telefono = normalizarTelefono(c);\n    break;\n  }\n}\n\nconst senderDigits = soloDigitos(telefono);\n\n// NÚMEROS DEL MAESTRO Y PERSONAL (JAMÁS SERÁN ATENDIDOS POR LUNA)\nconst NUMEROS_EXCLUIDOS = [\"573102309818\", \"573054021111\", \"3102309818\", \"3054021111\"];\nconst esMaestroOPersonal = NUMEROS_EXCLUIDOS.some(num => senderDigits.includes(num));\n\n// DETECTAR SI ES CANAL PERSONAL (Evolution API / Personal Inbox)\nconst esCanalPersonal = inboxName.includes(\"personal\") || inboxName.includes(\"evolution\") || inboxName.includes(\"maestro\");\n\n// REGLAS CANDADO DE LUNA:\nlet botPuedeContestar = true;\nlet motivo = \"ok\";\n\nif (esMaestroOPersonal) {\n  botPuedeContestar = false;\n  motivo = \"numero_maestro_o_personal_excluido\";\n} else if (esCanalPersonal) {\n  botPuedeContestar = false;\n  motivo = `canal_personal_detectado_inbox_${inboxId}_name_${inboxName}`;\n}\n\n// =====================================================\n// 🌙 NUEVO: KILL SWITCH GLOBAL (botón \"Apagar Luna\" del CRM)\n// Consulta config_general.luna_global_activa en Supabase.\n// Cubre TAMBIÉN a los leads nuevos (conversaciones que aún\n// no existen o que quedaron con agente_activo=true).\n// =====================================================\nlet lunaGlobalActiva = true;\nif (botPuedeContestar) {\n  try {\n    const cfgRes = await this.helpers.httpRequest({\n      method: \"GET\",\n      url: `${SUPABASE_URL}/rest/v1/config_general?clave=eq.luna_global_activa&select=valor`,\n      headers,\n      json: true\n    });\n    if (Array.isArray(cfgRes) && cfgRes.length > 0 &&\n        String(cfgRes[0].valor || \"\").trim().toLowerCase() === \"false\") {\n      lunaGlobalActiva = false;\n      botPuedeContestar = false;\n      motivo = \"luna_apagada_globalmente\";\n    }\n  } catch (e) {\n    // Si Supabase no responde, se asume ENCENDIDA (no romper el negocio)\n    lunaGlobalActiva = true;\n  }\n}\n\n// Consultar Supabase (Spam y Agente Activo)\nlet esSpam = false;\nlet agenteActivo = true;\nlet clienteId = null;\nlet conversacionId = null;\nconst chatwootConversationId = conv.id;\n\nif (botPuedeContestar && chatwootConversationId) {\n  try {\n    const convRes = await this.helpers.httpRequest({\n      method: \"GET\",\n      url: `${SUPABASE_URL}/rest/v1/conversaciones?chatwoot_conversation_id=eq.${chatwootConversationId}&select=id,agente_activo,cliente_id`,\n      headers,\n      json: true,\n    });\n\n    if (Array.isArray(convRes) && convRes.length > 0) {\n      conversacionId = convRes[0].id;\n      if (convRes[0].agente_activo === false) {\n        agenteActivo = false;\n      }\n      clienteId = convRes[0].cliente_id;\n    }\n\n    let cliente = null;\n    if (clienteId) {\n      const cliRes = await this.helpers.httpRequest({\n        method: \"GET\",\n        url: `${SUPABASE_URL}/rest/v1/clientes?id=eq.${clienteId}&select=id,es_spam`,\n        headers,\n        json: true,\n      });\n      if (Array.isArray(cliRes) && cliRes.length > 0) cliente = cliRes[0];\n    }\n\n    if (cliente && cliente.es_spam === true) {\n      esSpam = true;\n    }\n  } catch (e) {}\n\n  if (esSpam) {\n    botPuedeContestar = false;\n    motivo = \"spam\";\n  } else if (!agenteActivo) {\n    botPuedeContestar = false;\n    motivo = \"agente_pausado\";\n  }\n}\n\nreturn [{\n  json: {\n    ...rawInput,\n    botPuedeContestar,\n    motivo,\n    lunaGlobalActiva,\n    crmEsSpam: esSpam,\n    crmAgenteActivo: agenteActivo,\n    crmTelefono: telefono,\n    inboxId,\n    inboxName,\n    debugInfo: {\n      inboxId,\n      inboxName,\n      senderPhone: telefono,\n      botPuedeContestar,\n      lunaGlobalActiva,\n      motivo\n    }\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1776,
+        -1536
+      ],
+      "id": "b8d7179c-7b2e-467a-a8fe-216c3691ba45",
+      "name": "Verificar CRM"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "5cba788b-755a-439f-bd95-a12dd0d938ef",
+              "leftValue": "={{ $json.botPuedeContestar }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2000,
+        -1536
+      ],
+      "id": "9f7124dc-1f4c-4c34-8930-915a4b571709",
+      "name": "Bot Puede Contestar?"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.OPENAI_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.bodyString }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        6704,
+        -1536
+      ],
+      "id": "e85958d6-1ef7-4586-a96e-775ae96f120a",
+      "name": "OpenAI Respuesta",
+      "retryOnFail": true,
+      "waitBetweenTries": 3000,
+      "maxTries": 5,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.OPENAI_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $('Preparar Body Backup').item.json.bodyString }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        7152,
+        -1600
+      ],
+      "id": "c57b990e-5f2e-4ca6-88ad-3f8a4f89e506",
+      "name": "OpenAI Backup"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://crmesteban.duckdns.org/api/v1/accounts/1/conversations/{{ $json.conversationId }}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api_access_token",
+              "value": "KKaF2gF4bJZvnSkqKnR42zD8"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "message_type",
+              "value": "outgoing"
+            },
+            {
+              "parameterType": "formBinaryData",
+              "name": "attachments[]",
+              "inputDataFieldName": "data"
+            },
+            {
+              "name": "private",
+              "value": "false"
+            },
+            {
+              "name": "content",
+              "value": "🎤 Nota de voz"
+            },
+            {
+              "name": "is_voice_message",
+              "value": "true"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        10512,
+        -1632
+      ],
+      "id": "7b4db3cc-8e85-4285-90b1-e2d1f743b0c7",
+      "name": "Enviar Audio Chatwoot"
+    },
+    {
+      "parameters": {
+        "jsCode": "// =====================================================\n// PREPARAR BINARIO OGG/OPUS Y PROPAGAR CONVERSATION ID\n// =====================================================\nconst items = $input.all();\n\nfor (const item of items) {\n  // Buscar la clave binaria (habitualmente 'data')\n  const binaryKey = Object.keys(item.binary ?? {})[0];\n\n  if (!binaryKey) {\n    throw new Error(\n      \"No se encontró el archivo de audio. Revisa que el nodo de Fish Audio tenga activado Response Format: File.\"\n    );\n  }\n\n  // Rescatar el archivo de audio\n  const audio = item.binary[binaryKey];\n\n  // Configurar las propiedades exactas que exige Meta y Chatwoot\n  audio.fileName = `respuesta-${Date.now()}.ogg`;\n  audio.fileExtension = \"ogg\";\n  audio.mimeType = \"audio/ogg; codecs=opus\";\n\n  // Asegurar que el conversationId no se pierda\n  let conversationId = item.json?.conversationId;\n  if (!conversationId) {\n    try { conversationId = $('Pulir y Auditar Respuesta').first().json.conversationId; } catch(e){}\n  }\n  if (!conversationId) {\n    try { conversationId = $('Webhook').first().json.body.conversation.id; } catch(e){}\n  }\n\n  // Dejar el binario en $binary.data y mantener el conversationId en el JSON\n  item.json = {\n    ...item.json,\n    conversationId: String(conversationId)\n  };\n\n  item.binary = {\n    data: audio\n  };\n}\n\nreturn items;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        10288,
+        -1632
+      ],
+      "id": "ea603c2d-dd85-44d8-9af8-f449d1dcb13a",
+      "name": "Preparar OGG para WhatsApp"
+    },
+    {
+      "parameters": {
+        "url": "https://templo-mistico-crm.vercel.app/api/cerebro/memoria",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "limit",
+              "value": "40"
+            },
+            {
+              "name": "track",
+              "value": "1"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-cerebro-secret",
+              "value": "Teamo30111616@"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          },
+          "timeout": 8000
+        }
+      },
+      "id": "6ac5d234-12a7-429c-8252-829af8f3d0bc",
+      "name": "Cerebro · Leer memoria",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        6256,
+        -1536
+      ],
+      "onError": "continueRegularOutput",
+      "notes": "Devuelve { prompt, total, reglas } con las reglas aprobadas del Cerebro IA."
+    },
+    {
+      "parameters": {
+        "jsCode": "// =====================================================\n// PULIR Y AUDITAR RESPUESTA\n// Red de seguridad determinista: Luna no puede pedir lo que ya tiene.\n//  1) Extrae el texto del modelo y los marcadores ocultos.\n//  2) Audita frase por frase: si pide algo ya guardado, algo prohibido en\n//     la etapa, o la palma en trabajo de pareja, se descarta ese mensaje\n//     y se reemplaza por uno construido desde el archivo.\n//  3) Decide las banderas de transicion (motivoOk / consultaLista).\n// =====================================================\nconst fusion = $(\"Fusionar Memoria\").first().json;\nconst checklist = fusion.checklist || {};\nconst etapa = fusion.etapa || \"lead_nuevo\";\nconst faltantes = fusion.faltantes || [];\nconst tipo = checklist.tipo_trabajo || \"\";\n\n// -----------------------------------------------------\n// 1) TEXTO DEL MODELO\n// -----------------------------------------------------\nconst raw = $input.first().json || {};\nlet texto = \"\";\ntry {\n  if (raw.choices && raw.choices[0] && raw.choices[0].message) texto = raw.choices[0].message.content || \"\";\n  else if (raw.candidates && raw.candidates[0]) texto = (raw.candidates[0].content?.parts || []).map(p => p?.text || \"\").join(\"\");\n  else if (typeof raw.textoRespuesta === \"string\") texto = raw.textoRespuesta;\n} catch (e) { texto = \"\"; }\n\ntexto = String(texto || \"\").trim();\n\n// -----------------------------------------------------\n// 2) MARCADORES\n// -----------------------------------------------------\nconst marcadorMotivo = /\\[?\\s*MOTIVO_OK\\s*\\]?/i.test(texto);\nconst marcadorLista = /\\[?\\s*CONSULTA_LISTA\\s*\\]?/i.test(texto);\n\ntexto = texto\n  .replace(/\\[?\\s*MOTIVO_OK\\s*\\]?/gi, \"\")\n  .replace(/\\[?\\s*CONSULTA_LISTA\\s*\\]?/gi, \"\")\n  .replace(/\\n{3,}/g, \"\\n\\n\")\n  .trim();\n\n// Limpieza de formato no apto para WhatsApp/voz\ntexto = texto\n  .replace(/[*_`~]/g, \"\")\n  .replace(/^#+\\s*/gm, \"\")\n  .replace(/[\\u{1F300}-\\u{1FAFF}\\u{2600}-\\u{27BF}]/gu, \"\")\n  .replace(/\\s+/g, \" \")\n  .trim();\n\n// -----------------------------------------------------\n// 3) AUDITORIA DE REPETICION\n// Detecta cualquier frase que pida algo que Luna ya tiene guardado o algo\n// prohibido en la etapa. Si encuentra una, el mensaje se reconstruye.\n// -----------------------------------------------------\nconst ES_PEDIDO = /necesito|env[ií]a(me|nos)?|m[aá]nda(me|nos)?|p[aá]sa(me|nos)?|comparte|reg[aá]la(me|nos)?|escribe|cu[aá]l es|c[oó]mo te llamas|c[oó]mo se llama|por favor|me puedes|podr[ií]as|falta(n)?|adjunta|sube|manda|\\?/i;\n\nconst PIDE_MOTIVO = [\n  /por qu[eé]\\s+(?:vienes|me buscas|me escribes|quieres|deseas|necesitas|llegaste)/i,\n  /cu[aá]l es (?:el motivo|tu caso|tu situaci[oó]n|tu problema|la raz[oó]n)/i,\n  /en qu[eé]\\s+(?:te\\s+)?puedo ayudar/i,\n  /qu[eé]\\s+te\\s+(?:trae|pasa|preocupa|gustar[ií]a)/i,\n  /cu[eé]ntame\\s+(?:tu caso|qu[eé]|tu situaci[oó]n|por qu[eé])/i,\n  /qu[eé]\\s+(?:tipo de\\s+)?trabajo\\s+(?:quieres|necesitas|buscas)/i,\n  /para\\s+qu[eé]\\s+(?:es|quieres)\\s+la\\s+consulta/i\n];\nconst PIDE_NOMBRE_TUYO = /\\btu nombre\\b|c[oó]mo te llamas|cu[aá]l es tu nombre|tus nombres y apellidos|con qui[eé]n tengo el gusto/i;\nconst PIDE_NOMBRE_OTRO = /c[oó]mo se llama|nombre de (?:la|esa|tu)?\\s*(?:persona|pareja|chic[oa]|se[ñn]or[ao])|nombre completo de|el nombre de (?:[eé]l|ella|tu (?:novi[oa]|espos[oa]|pareja|ex))/i;\nconst PIDE_NOMBRE = /\\bnombre|apellidos|c[oó]mo (?:te llamas|se llama)/i;\nconst PIDE_FOTO = /\\bfoto|fotograf|selfie|\\bcara\\b|\\brostro\\b/i;\nconst PIDE_PALMA = /palma|mano derecha|foto de tu mano|lectura de mano/i;\n\nconst fotosRequeridas = tipo === \"pareja\"\n  ? [\"foto_cliente\", \"foto_otra_persona\"]\n  : (tipo === \"personal\" ? [\"foto_cliente\", \"foto_mano\"] : []);\nconst fotosCompletas = fotosRequeridas.length > 0 && fotosRequeridas.every(k => checklist[k] === true);\n\nconst frases = (texto.match(/[^.!?]+[.!?]*/g) || [texto]).map(s => s.trim()).filter(Boolean);\nconst violaciones = [];\n\nfor (const frase of frases) {\n  const pedido = ES_PEDIDO.test(frase);\n  const pideMotivo = PIDE_MOTIVO.some(re => re.test(frase));\n  const pideNombre = PIDE_NOMBRE.test(frase);\n  const pideFoto = PIDE_FOTO.test(frase);\n  const pidePalma = PIDE_PALMA.test(frase);\n\n  // --- Motivo: se pregunta una sola vez, y nunca despues de Sin respuesta ---\n  if (pideMotivo) {\n    if (etapa === \"datos\" || etapa === \"por_consulta\") violaciones.push(\"pregunto_motivo_en_\" + etapa);\n    else if (etapa === \"sin_respuesta\" && checklist.motivo_conocido === true) violaciones.push(\"repitio_motivo\");\n  }\n\n  // --- Reglas duras por etapa ---\n  if (etapa === \"lead_nuevo\" && pedido && (pideNombre || pideFoto)) violaciones.push(\"pidio_datos_en_lead_nuevo\");\n  if (etapa === \"por_consulta\" && pedido && (pideNombre || pideFoto)) violaciones.push(\"pidio_datos_en_por_consulta\");\n\n  // --- Reglas duras por tipo de trabajo ---\n  if (tipo === \"pareja\" && pidePalma) violaciones.push(\"pidio_palma_en_pareja\");\n  if (tipo === \"personal\" && pedido && PIDE_NOMBRE_OTRO.test(frase)) violaciones.push(\"pidio_datos_de_otra_persona_en_personal\");\n\n  if (!pedido) continue;\n\n  // --- Nombres ya guardados ---\n  if (pideNombre) {\n    if (checklist.nombre_cliente && checklist.nombre_otra_persona) {\n      violaciones.push(\"pidio_nombre_ya_guardado\");\n    } else if (checklist.nombre_cliente && tipo === \"personal\") {\n      violaciones.push(\"pidio_nombre_cliente_ya_guardado\");\n    } else if (checklist.nombre_cliente && tipo === \"pareja\" && !checklist.nombre_otra_persona && PIDE_NOMBRE_TUYO.test(frase)) {\n      violaciones.push(\"pidio_nombre_cliente_ya_guardado\");\n    } else if (checklist.nombre_otra_persona && PIDE_NOMBRE_OTRO.test(frase)) {\n      violaciones.push(\"pidio_nombre_pareja_ya_guardado\");\n    }\n  }\n\n  // --- Fotos ya guardadas ---\n  if (pideFoto && fotosCompletas) violaciones.push(\"pidio_foto_ya_guardada\");\n  if (pidePalma && checklist.foto_mano) violaciones.push(\"pidio_palma_ya_guardada\");\n}\n\n// -----------------------------------------------------\n// 4) MENSAJE DETERMINISTA DE RESPALDO\n// -----------------------------------------------------\nfunction primerNombre(v) {\n  return String(v || \"\").trim().split(/\\s+/)[0] || \"\";\n}\n\nfunction pedirDatosTexto() {\n  const pendientes = faltantes.slice(0, 2).map(f => f.etiqueta);\n  if (!pendientes.length) return \"\";\n  const union = pendientes.length === 1 ? pendientes[0] : pendientes.slice(0, -1).join(\", \") + \" y \" + pendientes[pendientes.length - 1];\n  return \"Para dejar lista tu consulta con el Maestro necesito \" + union + \".\";\n}\n\nfunction mensajeDeterminista(apertura) {\n  const nombre = primerNombre(checklist.nombre_cliente);\n  const llama = nombre ? \", \" + nombre : \"\";\n  const abre = apertura ? apertura + \" \" : \"\";\n\n  if (etapa === \"lead_nuevo\") {\n    return \"Hola, bienvenido al Templo Mistico. Soy Luna, asistente del Maestro Raul. Cuentame, en que te puedo ayudar hoy?\";\n  }\n  if (etapa === \"sin_respuesta\") {\n    if (tipo) {\n      const primero = pedirDatosTexto();\n      return (abre + \"Yo me encargo de preparar tu consulta con el Maestro. \" + primero).trim();\n    }\n    return (abre + \"Cuentame con tus palabras que esta pasando y que te gustaria lograr, asi el Maestro prepara bien tu consulta.\").trim();\n  }\n  if (etapa === \"datos\") {\n    if (!faltantes.length) {\n      return (\"Perfecto\" + llama + \", ya tengo toda tu informacion. Se la estoy enviando al Maestro Raul y el te llama pronto. La consulta es gratuita y sin compromiso.\").trim();\n    }\n    return (abre + pedirDatosTexto()).trim();\n  }\n  if (etapa === \"por_consulta\") {\n    return (\"Tranquilo\" + llama + \", ya le entregue toda tu informacion al Maestro Raul. El la revisa personalmente y te llama pronto. La consulta es gratuita y sin compromiso, solo pendiente del telefono.\").trim();\n  }\n  return \"Gracias por escribir al Templo Mistico. El Maestro Raul te atiende personalmente muy pronto.\";\n}\n\n// Apertura: primera frase del modelo si no es la que incumple\nlet apertura = \"\";\nif (frases.length > 1 && !/[?]$/.test(frases[0]) && frases[0].length <= 190) {\n  const frase0 = frases[0];\n  const limpia = !PIDE_NOMBRE.test(frase0) && !PIDE_FOTO.test(frase0) && !PIDE_PALMA.test(frase0) &&\n    !PIDE_MOTIVO.some(re => re.test(frase0));\n  if (limpia) apertura = frase0.replace(/[.!?]+$/, \"\").trim();\n}\n\nlet textoFinal = texto;\nlet corregido = false;\nif (violaciones.length > 0 || !textoFinal) {\n  textoFinal = mensajeDeterminista(apertura);\n  corregido = true;\n}\n\n// Si el modelo olvido el saludo/presentacion en Lead Nuevo, se garantiza\nif (etapa === \"lead_nuevo\" && !/soy luna|mi nombre es luna|asistente del maestro/i.test(textoFinal)) {\n  textoFinal = \"Hola, bienvenido al Templo Mistico. Soy Luna, asistente del Maestro Raul. \" + textoFinal;\n  corregido = true;\n}\n\n// Tope de longitud sin cortar frases a la mitad\nif (textoFinal.length > 620) {\n  const corte = textoFinal.substring(0, 620);\n  const ultimoCierre = Math.max(corte.lastIndexOf(\".\"), corte.lastIndexOf(\"!\"), corte.lastIndexOf(\"?\"));\n  textoFinal = (ultimoCierre > 220 ? corte.substring(0, ultimoCierre + 1) : corte).trim();\n}\n\nif (!textoFinal) textoFinal = mensajeDeterminista(\"\");\n\n// -----------------------------------------------------\n// 5) BANDERAS DE TRANSICION (deterministas)\n// -----------------------------------------------------\nconst datosCompletos = Boolean(tipo) && faltantes.length === 0;\nconst consultaLista = datosCompletos && (etapa === \"datos\" || etapa === \"por_consulta\");\nconst motivoOk = etapa === \"sin_respuesta\" && Boolean(tipo) && (marcadorMotivo || checklist.motivo_conocido === true);\n\n// Los marcadores [MOTIVO_OK] / [CONSULTA_LISTA] NUNCA salen al cliente:\n// la transicion de etapa se dispara con las banderas motivoOk / consultaLista.\ntextoFinal = textoFinal\n  .replace(/\\[?\\s*CONSULTA_LISTA\\s*\\]?/gi, \"\")\n  .replace(/\\[?\\s*MOTIVO_OK\\s*\\]?/gi, \"\")\n  .replace(/\\s{2,}/g, \" \")\n  .trim();\n\nreturn [{\n  json: {\n    // Compatibilidad con los nodos existentes\n    choices: [{ message: { content: textoFinal } }],\n    textoRespuesta: textoFinal,\n\n    // Banderas\n    motivoOk: motivoOk,\n    consultaLista: consultaLista,\n    datosCompletos: datosCompletos,\n    corregido: corregido,\n    violaciones: violaciones,\n\n    // Contexto\n    conversationId: fusion.conversationId,\n    clienteId: fusion.clienteId,\n    chatwootUrl: fusion.chatwootUrl,\n    contactName: fusion.contactName || \"Cliente\",\n    contactPhone: fusion.contactPhone || \"\",\n    telefono: fusion.telefono || \"\",\n    tipoTrabajo: tipo,\n    nombreCliente: checklist.nombre_cliente || fusion.contactName || \"Cliente\",\n    nombreOtraPersona: checklist.nombre_otra_persona || \"\",\n    etapa: etapa,\n    etapaNombre: fusion.etapaNombre || etapa,\n    checklist: checklist,\n    faltantes: faltantes,\n    novedades: fusion.novedades || [],\n    _debug: {\n      textoOriginal: texto,\n      corregido: corregido,\n      violaciones: violaciones,\n      marcadorMotivo: marcadorMotivo,\n      marcadorLista: marcadorLista,\n      aperturaUsada: apertura\n    }\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7376,
+        -1536
+      ],
+      "id": "510de7c2-5587-4f71-8a7e-22a8a5574b9e",
+      "name": "Pulir y Auditar Respuesta",
+      "notes": "Red de seguridad: si Luna pide algo que ya tiene, el mensaje se reconstruye solo."
+    },
+    {
+      "name": "Leer Estado del Lead",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4688,
+        -1536
+      ],
+      "notes": "Lee la etapa del CRM (Supabase), el pipeline y el checklist de Chatwoot.",
+      "parameters": {
+        "jsCode": "// =====================================================\n// LEER ESTADO DEL LEAD\n// Punto unico de lectura antes de que Luna hable:\n//   1) Supabase: conversacion + cliente (etapa del pipeline, grupo, telefono)\n//   2) Supabase: pipeline_etapas (para poder MOVER la etapa con la clave real)\n//   3) Chatwoot: custom_attributes (checklist persistente) + labels\n// Siempre devuelve UN item, aunque Supabase o Chatwoot fallen.\n// =====================================================\nconst SUPABASE_URL = \"https://qrrkokfmbdtodrqbfehs.supabase.co\";\nconst SUPABASE_KEY = \"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFycmtva2ZtYmR0b2RycWJmZWhzIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NzE5NTU0NSwiZXhwIjoyMTAyNzcxNTQ1fQ.bFwt6pAidvSEEuv3UNuKeZYwkfB-d2OPgMHM8MmwcD8\";\nconst CHATWOOT_URL = \"https://crmesteban.duckdns.org\";\nconst CHATWOOT_TOKEN = \"KKaF2gF4bJZvnSkqKnR42zD8\";\nconst ACCOUNT_ID = \"1\";\n\nconst sbHeaders = {\n  apikey: SUPABASE_KEY,\n  Authorization: \"Bearer \" + SUPABASE_KEY,\n  \"Content-Type\": \"application/json\"\n};\n\nconst upstream = $input.first().json || {};\nconst body = upstream.body || {};\nconst conv = body.conversation || {};\nconst conversationId = conv.id || body.conversation_id || 0;\n\n// -----------------------------------------------------\n// NORMALIZADOR DE ETAPAS (tolerante a las claves del CRM)\n// -----------------------------------------------------\nfunction normalizar(v) {\n  return String(v || \"\")\n    .normalize(\"NFD\").replace(/[\\u0300-\\u036f]/g, \"\")\n    .toLowerCase().trim()\n    .replace(/[\\s\\-]+/g, \"_\");\n}\n\nconst MAPA_ETAPAS = {\n  lead_nuevo: [\"nuevo_lead\", \"nuevo_lead_templo\", \"lead_nuevo\", \"leadnuevo\", \"nuevo\", \"nuevo_cliente\", \"nuevo_templo\"],\n  sin_respuesta: [\"sin_respuesta\", \"sin_respuesta_templo\", \"sinrespuesta\", \"no_contesta\", \"no_contesta_templo\", \"nocontesta\", \"no_responde\", \"sin_contacto\"],\n  datos: [\"datos\", \"datos_templo\", \"solicitar_datos\", \"solicitud_datos\", \"en_datos\", \"pedir_datos\", \"recoger_datos\"],\n  por_consulta: [\"por_consulta\", \"por_consulta_templo\", \"porconsulta\", \"en_consulta\", \"en_consulta_templo\", \"espera_consulta\", \"consulta_pendiente\", \"esperando_maestro\"]\n};\n\nconst ETAPAS_LUNA = [\"lead_nuevo\", \"sin_respuesta\", \"datos\", \"por_consulta\"];\n\nfunction canonEtapa(clave) {\n  const k = normalizar(clave);\n  if (!k) return \"lead_nuevo\";\n  for (const canon of Object.keys(MAPA_ETAPAS)) {\n    if (MAPA_ETAPAS[canon].indexOf(k) !== -1) return canon;\n  }\n  // Coincidencia parcial (ej: \"datos_2\", \"lead_datos\")\n  for (const canon of Object.keys(MAPA_ETAPAS)) {\n    if (k.indexOf(canon) !== -1) return canon;\n  }\n  return \"otra\";\n}\n\nconst NOMBRE_ETAPA = {\n  lead_nuevo: \"Lead Nuevo\",\n  sin_respuesta: \"Sin respuesta\",\n  datos: \"Datos\",\n  por_consulta: \"Por consulta\"\n};\n\n// -----------------------------------------------------\n// 1) SUPABASE: conversacion + cliente\n// -----------------------------------------------------\nlet clienteId = null;\nlet conversacionDbId = null;\nlet estadoCliente = \"\";\nlet grupo = \"templo\";\nlet esSpam = false;\nlet telefono = \"\";\nlet nombreContacto = \"\";\nlet fuente = \"\";\nlet errorSupabase = null;\n\ntry {\n  const q = SUPABASE_URL + \"/rest/v1/conversaciones?chatwoot_conversation_id=eq.\" +\n    encodeURIComponent(conversationId) +\n    \"&select=id,cliente_id,numero_whatsapp,fuente,clientes(id,estado,grupo,nombre,es_spam,tipo_trabajo,nombre_otra_persona)\";\n  const res = await this.helpers.httpRequest({ method: \"GET\", url: q, headers: sbHeaders, json: true });\n  const fila = Array.isArray(res) ? res[0] : null;\n  if (fila) {\n    conversacionDbId = fila.id || null;\n    clienteId = fila.cliente_id || null;\n    telefono = fila.numero_whatsapp || \"\";\n    fuente = fila.fuente || \"\";\n    const cli = fila.clientes || fila.cliente || null;\n    if (cli) {\n      estadoCliente = cli.estado || \"\";\n      grupo = cli.grupo || grupo;\n      esSpam = cli.es_spam === true;\n      nombreContacto = cli.nombre || \"\";\n    }\n  }\n} catch (e) {\n  errorSupabase = e.message || \"error supabase\";\n}\n\n// -----------------------------------------------------\n// 2) SUPABASE: pipeline_etapas (claves reales para mover la etapa)\n// -----------------------------------------------------\nlet etapasPipeline = [];\ntry {\n  const res = await this.helpers.httpRequest({\n    method: \"GET\",\n    url: SUPABASE_URL + \"/rest/v1/pipeline_etapas?select=clave,nombre,orden,grupo&order=orden.asc\",\n    headers: sbHeaders,\n    json: true\n  });\n  if (Array.isArray(res)) etapasPipeline = res;\n} catch (e) {\n  etapasPipeline = [];\n}\n\n// -----------------------------------------------------\n// 3) CHATWOOT: conversacion (custom_attributes + labels)\n// -----------------------------------------------------\nlet attrs = conv.custom_attributes || {};\nlet labels = Array.isArray(conv.labels) ? conv.labels.slice() : [];\nlet errorChatwoot = null;\n\ntry {\n  const resConv = await this.helpers.httpRequest({\n    method: \"GET\",\n    url: CHATWOOT_URL + \"/api/v1/accounts/\" + ACCOUNT_ID + \"/conversations/\" + conversationId,\n    headers: { api_access_token: CHATWOOT_TOKEN },\n    json: true\n  });\n  attrs = resConv.custom_attributes || attrs || {};\n  if (Array.isArray(resConv.labels)) labels = resConv.labels;\n} catch (e) {\n  errorChatwoot = e.message || \"error chatwoot\";\n}\n\n// Telefono / nombre de respaldo desde el webhook\nconst sender = body.sender || conv.meta?.sender || {};\nif (!telefono) telefono = sender.phone_number || conv.meta?.sender?.phone_number || \"\";\nif (!nombreContacto) nombreContacto = sender.name || conv.meta?.sender?.name || \"Cliente\";\n\n// La etapa mandatoria es la del CRM (clientes.estado); el atributo luna_etapa\n// solo sirve de respaldo si el cliente aun no tiene estado.\nconst etapaClave = estadoCliente || attrs.luna_etapa || \"\";\nconst etapa = canonEtapa(etapaClave);\nconst etapaNombre = NOMBRE_ETAPA[etapa] || (etapaClave ? String(etapaClave) : \"Lead Nuevo\");\nconst lunaActua = ETAPAS_LUNA.indexOf(etapa) !== -1;\n\nreturn [{\n  json: {\n    body: body,\n    conversationId: conversationId,\n    conversacionDbId: conversacionDbId,\n    clienteId: clienteId,\n    grupo: grupo,\n    fuente: fuente,\n    esSpam: esSpam,\n    telefono: telefono,\n    nombreContacto: nombreContacto,\n    etapa: etapa,\n    etapaClave: etapaClave,\n    etapaNombre: etapaNombre,\n    lunaActua: lunaActua,\n    etapasPipeline: etapasPipeline,\n    attrs: attrs,\n    labels: labels,\n    chatwootUrl: CHATWOOT_URL + \"/app/accounts/\" + ACCOUNT_ID + \"/conversations/\" + conversationId,\n    _debug: { errorSupabase, errorChatwoot, totalEtapas: etapasPipeline.length }\n  }\n}];\n"
+      },
+      "id": "d56b0f08-0877-4845-a336-bafb00a905e1"
+    },
+    {
+      "name": "Luna Actua en esta Etapa?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        4912,
+        -1536
+      ],
+      "notes": "Luna solo habla en Lead Nuevo, Sin respuesta, Datos y Por consulta.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "319e7b01-9d25-4e02-bd86-5e7c66be1a14",
+              "leftValue": "={{ $json.lunaActua }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "035ac239-8a68-4ef1-b168-58ec16768b10"
+    },
+    {
+      "name": "Preparar Analisis de Caso",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6704,
+        -1776
+      ],
+      "parameters": {
+        "jsCode": "// =====================================================\n// PREPARAR ANALISIS DE CASO (extraccion estructurada con IA)\n// Un solo llamado barato a gpt-4o-mini que convierte la conversacion en\n// datos duros: tipo de trabajo, motivo y nombres. Esto reemplaza las\n// expresiones regulares que antes se equivocaban o perdian los nombres.\n// =====================================================\nlet historial = [];\ntry { historial = $input.first().json.payload || []; } catch (e) { historial = []; }\n\nconst estado = $(\"Leer Estado del Lead\").first().json;\nconst attrs = estado.attrs || {};\n\n// Transcripcion compacta (solo mensajes publicos, mas recientes al final)\nconst ordenados = [...historial].sort((a, b) => (a.created_at || 0) - (b.created_at || 0));\nconst lineas = [];\nfor (const m of ordenados.slice(-30)) {\n  if (m.private === true) continue;\n  const tipo = (m.message_type === 0 || m.message_type === \"incoming\") ? \"CLIENTE\" : \"LUNA\";\n  let texto = String(m.content || \"\").trim();\n  if (!texto) {\n    const atts = m.attachments || [];\n    if (atts.length) texto = \"[\" + (atts[0].file_type || \"archivo\") + \"]\";\n  }\n  if (!texto) continue;\n  if (texto.length > 500) texto = texto.substring(0, 500) + \"...\";\n  lineas.push(tipo + \": \" + texto);\n}\nconst transcript = lineas.join(\"\\n\");\n\n// Ultimo turno ya procesado (audio transcrito / analisis de imagen / texto)\nlet ultimoTurno = \"\";\nlet tipoUltimo = \"texto\";\ntry {\n  const cons = $(\"Consolidar Lista\").first().json;\n  ultimoTurno = cons.listaConsolidada || cons.mensajeActual || \"\";\n  tipoUltimo = cons.tipoMensajeActual || \"texto\";\n} catch (e) {}\n\nlet fotoTexto = \"\";\ntry {\n  const fe = $(\"Inyectar Analisis\").first().json.fotoEvento;\n  if (fe && fe.tipo) {\n    fotoTexto = \"FOTO RECIBIDA EN ESTE TURNO: tipo=\" + fe.tipo +\n      \", personas=\" + fe.personas + \", calidad=\" + fe.calidad + \", detalle=\" + (fe.descripcion || \"\");\n  }\n} catch (e) {}\n\nconst guardados = {\n  tipo_trabajo: attrs.tipo_trabajo || null,\n  motivo_categoria: attrs.motivo_categoria || null,\n  motivo_resumen: attrs.motivo_resumen || null,\n  nombre_cliente: attrs.nombre_cliente || null,\n  nombre_otra_persona: attrs.nombre_otra_persona || null\n};\n\nconst systemPrompt = [\n  \"Eres el extractor de datos de Luna, asistente del Templo Mistico del Maestro Raul.\",\n  \"Lees la conversacion entre Luna y un cliente y devuelves SOLO un JSON valido (sin markdown, sin comentarios) con este formato exacto:\",\n  '{\"tipo_trabajo\":\"pareja|personal|desconocido\",\"motivo_categoria\":\"amarre|retorno|dominio|alejamiento|endulzamiento|sexual|conquista|entierro|desamarre|limpieza|mal_de_ojo|proteccion|prosperidad|empleo|atraccion|juegos|salud|otro|desconocido\",\"motivo_resumen\":\"frase de maximo 140 caracteres\",\"motivo_conocido\":true,\"nombre_cliente\":null,\"nombre_otra_persona\":null,\"confianza\":0.0}',\n  \"\",\n  \"REGLAS:\",\n  '1) tipo_trabajo = \"pareja\" cuando el caso involucra a OTRA persona: amarre, retorno, reconciliacion, dominio, alejamiento de terceros, endulzamiento, infidelidad, sexo o conquista con alguien concreto, o dano dirigido a una persona concreta.',\n  '2) tipo_trabajo = \"personal\" cuando el caso es del propio cliente: dinero, prosperidad, empleo, suerte, juegos de azar, proteccion, limpiezas, mal de ojo, brujeria encima, salud, caminos abiertos.',\n  '3) tipo_trabajo = \"desconocido\" si el cliente aun no conto nada aprovechable.',\n  \"4) motivo_categoria: elige UNA sola categoria, la mas especifica posible.\",\n  \"5) motivo_resumen: UNA frase en tercera persona con lo esencial (quien, que le pasa, que quiere). Nunca inventes detalles que el cliente no dijo.\",\n  \"6) motivo_conocido: true solo si el cliente ya explico por que vino, aunque sea en una linea.\",\n  \"7) nombre_cliente y nombre_otra_persona: SOLO si el cliente los escribio explicitamente en la conversacion. Copialos tal cual, con apellidos si los dio. Si no aparecen, null. No uses el nombre del perfil de WhatsApp salvo que el cliente se presente con el.\",\n  \"8) PROHIBIDO borrar datos: si un dato ya esta en DATOS YA GUARDADOS, devuelvelo identico aunque no se repita en la conversacion.\",\n  \"9) Si el cliente se corrige (\\\"no, es Karla, no Carla\\\"), usa la ultima version que dio.\"\n].join(\"\\n\");\n\nconst userPrompt = [\n  \"DATOS YA GUARDADOS (no los pierdas):\",\n  JSON.stringify(guardados),\n  \"\",\n  \"ETAPA ACTUAL DEL LEAD: \" + (estado.etapaNombre || estado.etapa),\n  \"\",\n  \"CONVERSACION:\",\n  transcript || \"(sin historial)\",\n  \"\",\n  \"ULTIMO TURNO DEL CLIENTE (\" + tipoUltimo + \"):\",\n  ultimoTurno || \"(vacio)\",\n  fotoTexto ? \"\\n\" + fotoTexto : \"\",\n  \"\",\n  \"Devuelve unicamente el JSON.\"\n].join(\"\\n\").trim();\n\nconst body = {\n  model: \"gpt-4o-mini\",\n  messages: [\n    { role: \"system\", content: systemPrompt },\n    { role: \"user\", content: userPrompt }\n  ],\n  temperature: 0,\n  max_tokens: 400,\n  response_format: { type: \"json_object\" }\n};\n\nreturn [{\n  json: {\n    body: body,\n    bodyString: JSON.stringify(body),\n    transcriptPreview: transcript.slice(-400)\n  }\n}];\n"
+      },
+      "id": "f7d3a021-18e2-44a7-8068-9c168772c747"
+    },
+    {
+      "name": "Analizar Caso con IA",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        6928,
+        -1776
+      ],
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "notes": "Extrae motivo, tipo de trabajo y nombres en JSON estricto.",
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.OPENAI_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.bodyString }}",
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "id": "c5d67bbc-6769-4774-b5b7-09079e546d4e"
+    },
+    {
+      "name": "Construir Prompt por Etapa",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6480,
+        -1536
+      ],
+      "notes": "Persona de Luna + catalogo de interpretacion + reglas de la etapa actual.",
+      "parameters": {
+        "jsCode": "// =====================================================\n// CONSTRUIR PROMPT POR ETAPA\n// Persona de Luna + catalogo de interpretacion + motor de etapas.\n// La etapa la decide el CRM (clientes.estado); el prompt solo obedece.\n// =====================================================\nconst fusion = $(\"Fusionar Memoria\").first().json;\nconst checklist = fusion.checklist || {};\nconst etapa = fusion.etapa || \"lead_nuevo\";\nconst faltantes = fusion.faltantes || [];\nconst etapaNombre = fusion.etapaNombre || etapa;\n\n// ---- Memoria del Cerebro IA (reglas aprobadas) ----\nlet memoriaCerebro = \"\";\ntry {\n  const cer = $(\"Cerebro · Leer memoria\").first().json;\n  if (cer && typeof cer.prompt === \"string\" && cer.prompt.trim()) {\n    memoriaCerebro = cer.prompt.trim();\n  }\n} catch (e) { memoriaCerebro = \"\"; }\n\nconst PERSONA = [\n  \"Eres Luna, asistente virtual del Maestro Raul del Templo Mistico. El Maestro Raul tiene mas de 20 anos de experiencia en dominios, amarres, ligaduras, endulzamientos, limpiezas, desamarres, retornos, entierros, pactos con la Santa Muerte y trabajos de prosperidad. Templos en Pasto (Narino, Colombia), Lima (Peru) y proximamente Paraguay.\",\n  \"\",\n  \"TU IDENTIDAD:\",\n  \"Eres Luna, asistente calida y empatica. NO eres el Maestro y nunca lo imites. Tu unica mision es entender el caso, recoger los datos exactos y dejar la consulta lista para que el Maestro llame. La consulta es por LLAMADA, GRATUITA y sin compromiso, dura de 5 a 10 minutos.\",\n  \"\",\n  \"COMO HABLAS:\",\n  \"• Calida y cercana, como una amiga que de verdad entiende.\",\n  \"• Validas la emocion antes de pedir cualquier cosa.\",\n  \"• Segura de que el Maestro puede ayudar, sin exagerar ni prometer milagros.\",\n  \"• Segunda persona (tu, contigo). Espanol neutro colombiano.\",\n  \"• Maximo 4 o 5 lineas por mensaje. UNA sola pregunta por mensaje.\",\n  \"• Texto plano: sin asteriscos, sin comillas, sin corchetes, sin emojis, sin listas con guiones.\",\n  \"• Nunca inventes precios, tiempos de resultado ni garantias. Eso lo explica el Maestro en la llamada.\",\n  \"• Nunca juzgues ni moralices lo que el cliente pide: en este templo todo se trata con respeto y normalidad.\"\n].join(\"\\n\");\n\nconst ETAPAS = [\n  \"MOTOR DE ETAPAS (obligatorio, la etapa actual te la dice el sistema al final):\",\n  \"\",\n  \"ETAPA 1 — LEAD NUEVO. Objetivo: saludar, presentarte y abrir la conversacion.\",\n  \"• Saludas, dices que eres Luna, asistente del Maestro Raul, e invitas a contar el caso con UNA pregunta.\",\n  \"• Si el cliente ya conto su caso en el primer mensaje: saludas, validas con empatia y haces UNA pregunta para entenderlo mejor.\",\n  \"• PROHIBIDO pedir nombres, fotos o la palma en esta etapa.\",\n  \"• PROHIBIDO hablar de datos o de agendar todavia.\",\n  \"• Al terminar esta etapa el sistema mueve el lead a Sin respuesta; tu no lo anuncias.\",\n  \"\",\n  \"ETAPA 2 — SIN RESPUESTA. Objetivo: saber POR QUE viene y clasificar el trabajo en PERSONAL o de PAREJA.\",\n  \"• Ya te presentaste: no vuelvas a saludar ni a presentarte.\",\n  \"• Escuchas el caso, lo validas con empatia real y haces UNA pregunta que te deje entender mejor la situacion (usa el catalogo de interpretacion).\",\n  \"• Con una o dos respuestas del cliente ya debes saber el motivo y el tipo de trabajo. No alargues esta etapa.\",\n  \"• Cuando ya sabes el motivo y el tipo: resumes en una frase lo que entendiste, le dices que vas a preparar su consulta con el Maestro, pides UNICAMENTE el primer dato que falte y cierras el mensaje con [MOTIVO_OK].\",\n  \"• PROHIBIDO pedir la palma o las fotos antes de haber definido el tipo de trabajo.\",\n  \"\",\n  \"ETAPA 3 — DATOS. Objetivo: completar los datos para agendar la consulta.\",\n  \"• El motivo YA lo tienes guardado: PROHIBIDO volver a preguntar por que viene, que le pasa o que tipo de trabajo quiere.\",\n  \"• Pide SOLO lo que aparece como pendiente en tu archivo, de forma natural y en el orden en que aparece.\",\n  \"• Puedes pedir las dos fotos juntas en un mismo mensaje, pero nunca mas de dos cosas a la vez.\",\n  \"• Usa siempre el nombre del cliente y el de la persona a consultar tal como los guardaste.\",\n  \"• Cuando todo este completo: confirma que ya tienes todo, que le enviaste la informacion al Maestro y que el te va a llamar. Cierra con [CONSULTA_LISTA].\",\n  \"\",\n  \"ETAPA 4 — POR CONSULTA. Objetivo: retener al cliente hasta que el Maestro llame.\",\n  \"• El caso ya lo conoces y los datos ya estan enviados: PROHIBIDO pedir cualquier dato, nombre, foto o motivo otra vez.\",\n  \"• Confirmas con calma que su informacion ya esta en manos del Maestro Raul y que el lo va a llamar pronto.\",\n  \"• Puedes preguntarle, como mucho, en que horario le queda mejor recibir la llamada.\",\n  \"• Si el cliente envia algo nuevo (otra foto, un dato, una duda), lo agradeces, le confirmas que se lo haces llegar al Maestro y lo tranquilizas.\",\n  \"• Si pregunta precio, urgencia o resultados: le explicas que el Maestro le da eso en la llamada, que es gratuita y sin compromiso.\",\n  \"• Jamas digas que ya lo llamaron ni inventes horas exactas de llamada.\"\n].join(\"\\n\");\n\nconst CATALOGO = [\n  \"CATALOGO DE INTERPRETACION (responde con conocimiento, nunca con genericos):\",\n  \"\",\n  \"TRABAJOS DE PAREJA:\",\n  \"• Sexo o intimidad (sexo, acostarse, cama, deseo): reconoces que busca una conexion intima, hablas del amarre sexual de atraccion y preguntas si se conocen personalmente.\",\n  \"• Enamorar o conquistar (que se fije en mi, que me quiera): hablas de los amarres de amor para conquistar y preguntas si ya se conocen.\",\n  \"• Recuperar o retorno (me dejo, se fue, quiero que vuelva): lamentas el dolor con sinceridad, hablas de la experiencia del Maestro en retornos y preguntas hace cuanto se separaron.\",\n  \"• Infidelidad o alejar a alguien (hay otra, amante, metida): validas lo dificil que es, hablas de los trabajos de alejamiento y preguntas hace cuanto pasa eso.\",\n  \"• Dominio o control (que me obedezca, someter): reconoces que busca tener el control, hablas de los trabajos de dominio y pides que te cuente un poco mas.\",\n  \"• Endulzamiento (que sea carinoso, que me trate bien): hablas de los endulzamientos y preguntas si son pareja actualmente.\",\n  \"• Separar o terminar una relacion ajena: lo tratas con la misma seriedad y preguntas quienes estan involucrados.\",\n  \"\",\n  \"TRABAJOS PESADOS (tratar con respeto y sin escandalizarse):\",\n  \"• Dano o venganza (que sufra, acabar con el, que pague): reconoces la rabia y el dolor, mencionas entierros y salamientos y pides que cuente brevemente que le hizo esa persona.\",\n  \"• Brujeria encima (muneco, me hicieron mal, energia pesada, mala vibra): dices que eso suena a un trabajo puesto, hablas de desamarres y limpiezas profundas y preguntas hace cuanto lo siente.\",\n  \"• Mal de ojo o envidia: hablas de limpiezas para soltar cargas y preguntas que ha sentido ultimamente.\",\n  \"• Ataques o pesadillas, insomnio, todo se le cierra: lo asocias a cargas o trabajos y ofreces limpieza y proteccion.\",\n  \"\",\n  \"TRABAJOS PERSONALES:\",\n  \"• El dinero se le va o no le alcanza: hablas de bloqueos energeticos, limpiezas y amuletos de prosperidad, y preguntas hace cuanto le pasa.\",\n  \"• Prosperidad o abundancia: hablas de amuletos de prosperidad y preguntas en que area siente mas bloqueo.\",\n  \"• Trabajo o empleo: reconoces el estres de estar sin empleo, hablas de apertura de caminos laborales y preguntas su situacion actual.\",\n  \"• Suerte con mujeres u hombres, atraer: hablas de amuletos de atraccion y preguntas si es para alguien en concreto.\",\n  \"• Juegos de azar (chance, loteria, casino, apuestas): hablas de amuletos para el azar y pregunta que juega.\",\n  \"• Proteccion o escudo: hablas de trabajos de proteccion fuertes y pregunta de que quiere protegerse.\",\n  \"• Salud o animo caido: con respeto, hablas de limpiezas y de soltar cargas, y preguntas hace cuanto se siente asi.\",\n  \"\",\n  \"Si el caso no encaja en ninguno: validas, dices que el Maestro lo revisa en la consulta y preguntas que es lo que mas le preocupa hoy.\"\n].join(\"\\n\");\n\nconst REGLAS = [\n  \"REGLAS DE MEMORIA (lo mas importante de todo):\",\n  \"• Tu archivo ya guarda lo que el cliente te dio. Todo lo que aparece con ✅ RECIBIDO esta cerrado: PROHIBIDO pedirlo, confirmarlo como si faltara o mencionarlo como pendiente.\",\n  \"• Solo se puede pedir lo que aparece con ❌ PENDIENTE.\",\n  \"• Si el cliente te repite un dato que ya tenias, agradeces y sigues con lo que falta; no lo vuelvas a pedir.\",\n  \"• Lee todo el historial antes de responder: si algo ya se dijo, ya lo sabes.\",\n  \"\",\n  \"REGLAS DE FOTOS:\",\n  \"• Trabajo de PAREJA: foto del cliente, foto de la persona a consultar (o UNA sola foto donde salgan los dos, que tambien sirve). Nunca la palma.\",\n  \"• Trabajo PERSONAL: foto del cliente y foto de la palma de la mano derecha. Nunca nombres ni fotos de otra persona.\",\n  \"• Cuando recibas una foto ya analizada, confirma en una linea lo que viste usando el nombre guardado, por ejemplo: perfecto, ya tengo la foto de Karla. No describas la foto ni des opiniones sobre las personas.\",\n  \"• Si la foto salio borrosa o no se identifica, pide una nueva con buena luz, con calma y sin reganar.\",\n  \"\",\n  \"MARCADORES (el sistema los lee, el cliente nunca los ve):\",\n  \"• [MOTIVO_OK] al final del mensaje cuando ya sabes el motivo y el tipo de trabajo (solo en etapa Sin respuesta).\",\n  \"• [CONSULTA_LISTA] al final del mensaje cuando el archivo marca que no falta ningun dato (solo en etapa Datos).\",\n  \"• Nunca escribas otros marcadores ni los uses fuera de su etapa.\"\n].join(\"\\n\");\n\nconst consultaCompleta = Boolean(checklist.tipo_trabajo) && faltantes.length === 0;\n\n// Bloque dinamico segun la etapa\nlet bloqueEtapa = \"\";\nif (etapa === \"lead_nuevo\") {\n  bloqueEtapa = \"ESTAS EN ETAPA 1 (LEAD NUEVO): saluda, presentate como Luna, asistente del Maestro Raul, y haz UNA sola pregunta para abrir el caso. No pidas datos.\";\n} else if (etapa === \"sin_respuesta\") {\n  bloqueEtapa = \"ESTAS EN ETAPA 2 (SIN RESPUESTA): no saludes otra vez. Entiende por que viene y si es un trabajo PERSONAL o de PAREJA. Cuando ya lo sepas, confirma lo entendido, pide el primer dato que falte y cierra con [MOTIVO_OK].\";\n} else if (etapa === \"datos\") {\n  bloqueEtapa = \"ESTAS EN ETAPA 3 (DATOS): el motivo ya lo sabes, no lo preguntes. Pide solo lo pendiente. Si ya no falta nada, confirma que todo esta listo, que el Maestro lo va a llamar y cierra con [CONSULTA_LISTA].\";\n} else if (etapa === \"por_consulta\") {\n  bloqueEtapa = \"ESTAS EN ETAPA 4 (POR CONSULTA): los datos ya fueron enviados al Maestro. Solo confirma, tranquiliza y reten al cliente hasta que el Maestro llame. No pidas absolutamente nada.\";\n}\n\nif (consultaCompleta) {\n  bloqueEtapa += \" Tu archivo indica que YA TIENES TODOS LOS DATOS.\";\n}\n\nlet systemPrompt = [\n  PERSONA,\n  \"\",\n  ETAPAS,\n  \"\",\n  CATALOGO,\n  \"\",\n  REGLAS\n].join(\"\\n\");\n\nif (memoriaCerebro) {\n  systemPrompt += \"\\n\\nREGLAS APRENDIDAS DEL CEREBRO DEL TEMPLO (aplicalas si suman, sin contradecir lo anterior):\\n\" + memoriaCerebro;\n}\n\nsystemPrompt += \"\\n\\n\" + bloqueEtapa;\n\n// -----------------------------------------------------\n// HISTORIAL -> mensajes OpenAI\n// -----------------------------------------------------\nlet historial = [];\ntry { historial = $(\"Historial\").first().json.payload || []; } catch (e) { historial = []; }\n\nconst ordenados = [...historial].sort((a, b) => (a.created_at || 0) - (b.created_at || 0)).slice(-40);\nconst contents = [];\nfor (const msg of ordenados) {\n  if (msg.private === true) continue;\n  if (msg.message_type !== 0 && msg.message_type !== 1) continue;\n  const texto = String(msg.content || \"\").trim();\n  if (!texto) continue;\n  contents.push({ role: msg.message_type === 0 ? \"user\" : \"assistant\", content: texto });\n}\n\n// Inyeccion del estado del archivo en el ultimo turno del cliente\nlet bloqueEstado = \"\\n\\n[ARCHIVO DE LUNA - LEER ANTES DE RESPONDER]\\n\" + (fusion.contextoMemoria || \"\");\nconst turno = fusion.listaConsolidada ? \"\\nMensaje de este turno: \" + fusion.listaConsolidada : \"\";\nbloqueEstado += turno;\nbloqueEstado += \"\\n[FIN DEL ARCHIVO]\";\n\nif (contents.length > 0 && contents[contents.length - 1].role === \"user\") {\n  contents[contents.length - 1].content += bloqueEstado;\n} else {\n  contents.push({ role: \"user\", content: \"Hola\" + bloqueEstado });\n}\n\n// Alternar roles (OpenAI rechaza roles consecutivos repetidos en algunos casos)\nconst alternados = [];\nfor (const c of contents) {\n  const ultimo = alternados[alternados.length - 1];\n  if (ultimo && ultimo.role === c.role) ultimo.content += \"\\n\\n\" + c.content;\n  else alternados.push({ role: c.role, content: c.content });\n}\nif (!alternados.length || alternados[alternados.length - 1].role !== \"user\") {\n  alternados.push({ role: \"user\", content: \"Continua la conversacion\" + bloqueEstado });\n}\n\nconst body = {\n  model: \"gpt-4o-mini\",\n  messages: [{ role: \"system\", content: systemPrompt }].concat(alternados),\n  temperature: 0.4,\n  max_tokens: 350,\n  top_p: 0.9\n};\n\nreturn [{\n  json: {\n    body: body,\n    bodyString: JSON.stringify(body),\n    etapa: etapa,\n    etapaNombre: etapaNombre,\n    systemPromptLength: systemPrompt.length,\n    totalMensajes: alternados.length\n  }\n}];\n"
+      },
+      "id": "3765812a-c778-44eb-9197-7a8d148bf100"
+    },
+    {
+      "name": "Aplicar Transicion de Etapa",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7824,
+        -1728
+      ],
+      "onError": "continueRegularOutput",
+      "notes": "Mueve el lead en el CRM, etiqueta y envia el expediente al Maestro.",
+      "parameters": {
+        "jsCode": "// =====================================================\n// APLICAR TRANSICION DE ETAPA\n// Unico lugar donde Luna mueve el lead en el CRM:\n//   Lead Nuevo   -> Sin respuesta   (siempre, despues de saludar)\n//   Sin respuesta-> Datos           (cuando ya sabe motivo + tipo de trabajo)\n//   Datos        -> Por consulta    (cuando el archivo dice que no falta nada)\n//   Por consulta -> se queda        (Luna solo retiene hasta que llame el Maestro)\n// Ademas: etiquetas, atributos y expediente al Maestro por WhatsApp.\n// =====================================================\nconst SUPABASE_URL = \"https://qrrkokfmbdtodrqbfehs.supabase.co\";\nconst SUPABASE_KEY = \"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFycmtva2ZtYmR0b2RycWJmZWhzIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NzE5NTU0NSwiZXhwIjoyMTAyNzcxNTQ1fQ.bFwt6pAidvSEEuv3UNuKeZYwkfB-d2OPgMHM8MmwcD8\";\nconst CHATWOOT_URL = \"https://crmesteban.duckdns.org\";\nconst CHATWOOT_TOKEN = \"KKaF2gF4bJZvnSkqKnR42zD8\";\nconst ACCOUNT_ID = \"1\";\nconst EVOLUTION_URL = \"https://evo.crmesteban.duckdns.org\";\nconst EVOLUTION_KEY = \"25bbc50b8bfeb365633899951d2b9a6c4110f94e08535133d0953da151b4a1d3\";\nconst NUMERO_MAESTRO = \"573054021111\";\nconst INSTANCIA_MAESTRO = \"personal\";\n\nconst sbHeaders = {\n  apikey: SUPABASE_KEY,\n  Authorization: \"Bearer \" + SUPABASE_KEY,\n  \"Content-Type\": \"application/json\",\n  Prefer: \"return=minimal\"\n};\n\nconst pulir = $input.first().json || {};\nconst fusion = $(\"Fusionar Memoria\").first().json;\nconst checklist = fusion.checklist || pulir.checklist || {};\nconst etapa = pulir.etapa || fusion.etapa || \"lead_nuevo\";\nconst conversationId = pulir.conversationId || fusion.conversationId;\nconst clienteId = pulir.clienteId || fusion.clienteId || null;\nconst grupo = fusion.grupo || \"templo\";\nconst etapasPipeline = fusion.etapasPipeline || [];\nconst novedades = pulir.novedades || fusion.novedades || [];\n\nfunction normalizar(v) {\n  return String(v || \"\").normalize(\"NFD\").replace(/[\\u0300-\\u036f]/g, \"\").toLowerCase().trim().replace(/[\\s\\-]+/g, \"_\");\n}\n\nconst MAPA_ETAPAS = {\n  lead_nuevo: [\"nuevo_lead\", \"nuevo_lead_templo\", \"lead_nuevo\", \"leadnuevo\", \"nuevo\", \"nuevo_cliente\"],\n  sin_respuesta: [\"sin_respuesta\", \"sin_respuesta_templo\", \"sinrespuesta\", \"no_contesta\", \"no_contesta_templo\", \"nocontesta\", \"no_responde\"],\n  datos: [\"datos\", \"datos_templo\", \"solicitar_datos\", \"solicitud_datos\", \"en_datos\", \"pedir_datos\"],\n  por_consulta: [\"por_consulta\", \"por_consulta_templo\", \"porconsulta\", \"en_consulta\", \"en_consulta_templo\", \"espera_consulta\", \"consulta_pendiente\"]\n};\nconst NOMBRES_ETAPA = {\n  lead_nuevo: [\"nuevo_lead\", \"lead_nuevo\"],\n  sin_respuesta: [\"sin_respuesta\", \"no_contesta\"],\n  datos: [\"datos\"],\n  por_consulta: [\"por_consulta\", \"en_consulta\"]\n};\n\nfunction resolverClave(canon) {\n  const candidatasClave = MAPA_ETAPAS[canon] || [];\n  const candidatasNombre = NOMBRES_ETAPA[canon] || [];\n  const delGrupo = etapasPipeline.filter(e => String(e.grupo || \"\") === String(grupo));\n  const universo = delGrupo.length ? delGrupo : etapasPipeline;\n  for (const c of candidatasClave) {\n    const e = universo.find(x => normalizar(x.clave) === c);\n    if (e) return e.clave;\n  }\n  for (const n of candidatasNombre) {\n    const e = universo.find(x => normalizar(x.nombre) === n);\n    if (e) return e.clave;\n  }\n  const parcial = universo.find(x => candidatasNombre.some(n => normalizar(x.nombre).indexOf(n) !== -1 || normalizar(x.clave).indexOf(n) !== -1));\n  if (parcial) return parcial.clave;\n  return candidatasClave[0] || null;\n}\n\n// -----------------------------------------------------\n// 1) DECIDIR DESTINO\n// -----------------------------------------------------\nlet destino = null;\nlet razon = \"sin_cambio\";\nlet forzado = false;\n\n// Resguardo anti-atasco: si despues de varios mensajes aun no hay tipo de\n// trabajo, se asume personal para que el lead no quede congelado.\nlet mensajesCliente = 0;\ntry {\n  const hist = $(\"Historial\").first().json.payload || [];\n  mensajesCliente = hist.filter(m => m.message_type === 0 || m.message_type === \"incoming\").length;\n} catch (e) { mensajesCliente = 0; }\n\nif (etapa === \"lead_nuevo\") {\n  destino = \"sin_respuesta\";\n  razon = \"saludo_realizado\";\n} else if (etapa === \"sin_respuesta\") {\n  if (pulir.motivoOk) {\n    destino = \"datos\";\n    razon = \"motivo_y_tipo_definidos\";\n  } else if (!checklist.tipo_trabajo && mensajesCliente >= 5) {\n    checklist.tipo_trabajo = \"personal\";\n    if (!checklist.motivo_resumen) checklist.motivo_resumen = \"Motivo pendiente de detalle, se asume trabajo personal.\";\n    forzado = true;\n    destino = \"datos\";\n    razon = \"anti_atasco_tipo_personal\";\n  }\n} else if (etapa === \"datos\") {\n  if (pulir.consultaLista) {\n    destino = \"por_consulta\";\n    razon = \"datos_completos\";\n  }\n}\n\n// -----------------------------------------------------\n// 2) MOVER LA ETAPA EN EL CRM (Supabase clientes.estado)\n// -----------------------------------------------------\nlet nuevaClave = null;\nlet etapaMovida = false;\nlet errorEstado = null;\n\n// El cliente puede no existir cuando se leyo el estado (lead recien creado):\n// \"Sincronizar Supabase\" lo crea en paralelo, asi que se vuelve a buscar.\nlet clienteIdReal = clienteId;\nif (destino && !clienteIdReal && conversationId) {\n  try {\n    const res = await this.helpers.httpRequest({\n      method: \"GET\",\n      url: SUPABASE_URL + \"/rest/v1/conversaciones?chatwoot_conversation_id=eq.\" + encodeURIComponent(conversationId) + \"&select=cliente_id\",\n      headers: sbHeaders,\n      json: true\n    });\n    if (Array.isArray(res) && res[0]) clienteIdReal = res[0].cliente_id || null;\n  } catch (e) {}\n}\n\nif (destino) {\n  nuevaClave = resolverClave(destino);\n  if (clienteIdReal && nuevaClave) {\n    try {\n      await this.helpers.httpRequest({\n        method: \"PATCH\",\n        url: SUPABASE_URL + \"/rest/v1/clientes?id=eq.\" + clienteIdReal,\n        headers: sbHeaders,\n        body: { estado: nuevaClave, actualizado_en: new Date().toISOString() },\n        json: true\n      });\n      etapaMovida = true;\n    } catch (e) { errorEstado = e.message || \"error estado\"; }\n  } else {\n    errorEstado = clienteIdReal ? \"sin clave de etapa\" : \"sin cliente en supabase\";\n  }\n}\n\n// -----------------------------------------------------\n// 3) ATRIBUTOS EN CHATWOOT\n// -----------------------------------------------------\nconst attrs = { luna_etapa: destino || etapa };\nlet errorAttrs = null;\nif (destino === \"por_consulta\") {\n  attrs.consulta_lista_enviada = true;\n  attrs.tiempo_consulta_lista = Math.floor(Date.now() / 1000);\n}\nif (forzado) attrs.tipo_trabajo = checklist.tipo_trabajo;\n\ntry {\n  await this.helpers.httpRequest({\n    method: \"POST\",\n    url: CHATWOOT_URL + \"/api/v1/accounts/\" + ACCOUNT_ID + \"/conversations/\" + conversationId + \"/custom_attributes\",\n    headers: { \"Content-Type\": \"application/json\", api_access_token: CHATWOOT_TOKEN },\n    body: { custom_attributes: attrs },\n    json: true\n  });\n} catch (e) { errorAttrs = e.message || \"error attrs\"; }\n\n// -----------------------------------------------------\n// 4) ETIQUETAS (conserva las que no son de etapa)\n// -----------------------------------------------------\nlet etiquetasFinales = [];\nlet errorLabels = null;\ntry {\n  const actuales = Array.isArray(pulir.labels) ? pulir.labels : (Array.isArray(fusion.labels) ? fusion.labels : []);\n  const conservadas = actuales.filter(l => !/^etapa-/.test(String(l)));\n  const etapaActiva = destino || etapa;\n  etiquetasFinales = [...new Set(conservadas.concat([\"etapa-\" + etapaActiva]))];\n  if (destino === \"por_consulta\") etiquetasFinales = [...new Set(etiquetasFinales.concat([\"consulta-pendiente\"]))];\n  await this.helpers.httpRequest({\n    method: \"POST\",\n    url: CHATWOOT_URL + \"/api/v1/accounts/\" + ACCOUNT_ID + \"/conversations/\" + conversationId + \"/labels\",\n    headers: { \"Content-Type\": \"application/json\", api_access_token: CHATWOOT_TOKEN },\n    body: { labels: etiquetasFinales },\n    json: true\n  });\n} catch (e) { errorLabels = e.message || \"error labels\"; }\n\n// -----------------------------------------------------\n// 5) EXPEDIENTE AL MAESTRO\n// -----------------------------------------------------\nfunction dossier(titulo) {\n  const lineas = [];\n  lineas.push(titulo);\n  lineas.push(\"\");\n  lineas.push(\"👤 *Cliente:* \" + (checklist.nombre_cliente || pulir.contactName || \"Cliente\"));\n  lineas.push(\"📞 *Telefono:* \" + (pulir.telefono || pulir.contactPhone || \"sin telefono\"));\n  lineas.push(\"🔮 *Trabajo:* \" + (checklist.tipo_trabajo ? checklist.tipo_trabajo.toUpperCase() : \"por definir\"));\n  if (checklist.motivo_categoria) lineas.push(\"🎯 *Motivo:* \" + checklist.motivo_categoria);\n  if (checklist.motivo_resumen) lineas.push(\"📝 *Caso:* \" + checklist.motivo_resumen);\n  if (checklist.nombre_otra_persona) lineas.push(\"👥 *Persona a consultar:* \" + checklist.nombre_otra_persona);\n  const fotos = [];\n  if (checklist.foto_cliente) fotos.push(\"cliente\" + (checklist.foto_cliente_url ? \": \" + checklist.foto_cliente_url : \"\"));\n  if (checklist.foto_otra_persona) fotos.push(\"persona a consultar\" + (checklist.foto_otra_persona_url ? \": \" + checklist.foto_otra_persona_url : \"\"));\n  if (checklist.foto_mano) fotos.push(\"palma\" + (checklist.foto_mano_url ? \": \" + checklist.foto_mano_url : \"\"));\n  lineas.push(\"📷 *Fotos:* \" + (fotos.length ? fotos.join(\" | \") : \"sin fotos\"));\n  lineas.push(\"🏷️ *Etapa:* \" + (destino ? NOMBRES_ETAPA[destino][0] : etapa));\n  lineas.push(\"\");\n  lineas.push(\"🔗 \" + (pulir.chatwootUrl || CHATWOOT_URL));\n  return lineas.join(\"\\n\");\n}\n\nlet notificacion = null;\nlet errorNotif = null;\nconst hayNovedadDeDatos = novedades.some(n => /^(foto_|nombre_|tipo_|motivo_)/.test(n));\n\nif (destino === \"por_consulta\") {\n  notificacion = dossier(\"🔔 *CONSULTA LISTA PARA LLAMAR* 🔔\\nEl cliente completo todos los datos y espera tu llamada.\");\n} else if (etapa === \"por_consulta\" && hayNovedadDeDatos) {\n  notificacion = dossier(\"🔄 *EXPEDIENTE ACTUALIZADO*\\nEl cliente envio informacion nueva mientras espera tu llamada.\");\n}\n\nif (notificacion) {\n  try {\n    await this.helpers.httpRequest({\n      method: \"POST\",\n      url: EVOLUTION_URL + \"/message/sendText/\" + INSTANCIA_MAESTRO,\n      headers: { \"Content-Type\": \"application/json\", apikey: EVOLUTION_KEY },\n      body: { number: NUMERO_MAESTRO, text: notificacion },\n      json: true\n    });\n  } catch (e) { errorNotif = e.message || \"error notificacion\"; }\n}\n\nreturn [{\n  json: {\n    ...pulir,\n    etapaAnterior: etapa,\n    etapaNueva: destino || etapa,\n    etapaNuevaClave: nuevaClave,\n    transicion: Boolean(destino),\n    razonTransicion: razon,\n    consultaLista: pulir.consultaLista || destino === \"por_consulta\",\n    etiquetas: etiquetasFinales,\n    _debug: {\n      ...(pulir._debug || {}),\n      destino,\n      razon,\n      forzado,\n      nuevaClave,\n      etapaMovida,\n      mensajesCliente,\n      notificacionEnviada: Boolean(notificacion && !errorNotif),\n      errorEstado,\n      errorAttrs,\n      errorLabels,\n      errorNotif\n    }\n  }\n}];\n"
+      },
+      "id": "4141e328-494f-4d10-b3a9-bb177b6a2f95"
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Sincronizar Supabase",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Es el Maestro?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Es el Maestro?": {
+      "main": [
+        [
+          {
+            "node": "Detectar Comando",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Verificar CRM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Detectar Comando": {
+      "main": [
+        [
+          {
+            "node": "Que Comando?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Que Comando?": {
+      "main": [
+        [
+          {
+            "node": "Obtener Consultas Pendientes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Obtener Consultas Pendientes": {
+      "main": [
+        [
+          {
+            "node": "Formatear Todo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Formatear Todo": {
+      "main": [
+        [
+          {
+            "node": "Enviar Lista al Maestro",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verificar CRM": {
+      "main": [
+        [
+          {
+            "node": "Bot Puede Contestar?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Bot Puede Contestar?": {
+      "main": [
+        [
+          {
+            "node": "Tipo de Mensaje",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tipo de Mensaje": {
+      "main": [
+        [
+          {
+            "node": "Descargar Audio",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Descargar Imagen",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Guardar Timestamp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Descargar Audio": {
+      "main": [
+        [
+          {
+            "node": "Renombrar Audio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Renombrar Audio": {
+      "main": [
+        [
+          {
+            "node": "Transcribir Audio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transcribir Audio": {
+      "main": [
+        [
+          {
+            "node": "Inyectar Texto",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Inyectar Texto": {
+      "main": [
+        [
+          {
+            "node": "Guardar Timestamp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Descargar Imagen": {
+      "main": [
+        [
+          {
+            "node": "Preparar Imagen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar Imagen": {
+      "main": [
+        [
+          {
+            "node": "Analizar Imagen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analizar Imagen": {
+      "main": [
+        [
+          {
+            "node": "Inyectar Analisis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Inyectar Analisis": {
+      "main": [
+        [
+          {
+            "node": "Guardar Timestamp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Guardar Timestamp": {
+      "main": [
+        [
+          {
+            "node": "Wait1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait1": {
+      "main": [
+        [
+          {
+            "node": "Verificar Ultimo Mensaje",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verificar Ultimo Mensaje": {
+      "main": [
+        [
+          {
+            "node": "Soy el Ultimo?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Soy el Ultimo?": {
+      "main": [
+        [
+          {
+            "node": "Continuar Procesamiento?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Continuar Procesamiento?": {
+      "main": [
+        [
+          {
+            "node": "Consolidar Lista",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consolidar Lista": {
+      "main": [
+        [
+          {
+            "node": "Leer Estado del Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer Estado del Lead": {
+      "main": [
+        [
+          {
+            "node": "Luna Actua en esta Etapa?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Luna Actua en esta Etapa?": {
+      "main": [
+        [
+          {
+            "node": "Historial",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Historial": {
+      "main": [
+        [
+          {
+            "node": "Preparar Analisis de Caso",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar Analisis de Caso": {
+      "main": [
+        [
+          {
+            "node": "Analizar Caso con IA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analizar Caso con IA": {
+      "main": [
+        [
+          {
+            "node": "Fusionar Memoria",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fusionar Memoria": {
+      "main": [
+        [
+          {
+            "node": "Verificar Intervencion Humana",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verificar Intervencion Humana": {
+      "main": [
+        [
+          {
+            "node": "Bot Puede Responder?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Bot Puede Responder?": {
+      "main": [
+        [
+          {
+            "node": "Cerebro · Leer memoria",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cerebro · Leer memoria": {
+      "main": [
+        [
+          {
+            "node": "Construir Prompt por Etapa",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Construir Prompt por Etapa": {
+      "main": [
+        [
+          {
+            "node": "Debug Contexto",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Debug Contexto": {
+      "main": [
+        [
+          {
+            "node": "OpenAI Respuesta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Respuesta": {
+      "main": [
+        [
+          {
+            "node": "Pulir y Auditar Respuesta",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Preparar Body Backup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar Body Backup": {
+      "main": [
+        [
+          {
+            "node": "OpenAI Backup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Backup": {
+      "main": [
+        [
+          {
+            "node": "Pulir y Auditar Respuesta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pulir y Auditar Respuesta": {
+      "main": [
+        [
+          {
+            "node": "Aplicar Transicion de Etapa",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Preparar Body Clasificacion",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Verificar si Enviar Audio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aplicar Transicion de Etapa": {
+      "main": [
+        []
+      ]
+    },
+    "Preparar Body Clasificacion": {
+      "main": [
+        [
+          {
+            "node": "Clasificar Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clasificar Lead": {
+      "main": [
+        [
+          {
+            "node": "Extraer Clasificacion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extraer Clasificacion": {
+      "main": [
+        [
+          {
+            "node": "Quitar Etiquetas Anteriores",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Quitar Etiquetas Anteriores": {
+      "main": [
+        [
+          {
+            "node": "Preparar Etiquetas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar Etiquetas": {
+      "main": [
+        [
+          {
+            "node": "Actualizar Etiqueta Chatwoot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Actualizar Etiqueta Chatwoot": {
+      "main": [
+        [
+          {
+            "node": "Es Caliente?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Es Caliente?": {
+      "main": [
+        [
+          {
+            "node": "Notificar Maestro Lead Caliente",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Notificar Maestro Lead Caliente": {
+      "main": [
+        []
+      ]
+    },
+    "Verificar si Enviar Audio": {
+      "main": [
+        [
+          {
+            "node": "Enviar Audio?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enviar Audio?": {
+      "main": [
+        [
+          {
+            "node": "Preparar Body Audio",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Calcular Delay",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar Body Audio": {
+      "main": [
+        [
+          {
+            "node": "Generar Audio Luna",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generar Audio Luna": {
+      "main": [
+        [
+          {
+            "node": "Preparar OGG para WhatsApp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar OGG para WhatsApp": {
+      "main": [
+        [
+          {
+            "node": "Enviar Audio Chatwoot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calcular Delay": {
+      "main": [
+        [
+          {
+            "node": "Enviar Escribiendo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enviar Escribiendo": {
+      "main": [
+        [
+          {
+            "node": "Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait": {
+      "main": [
+        [
+          {
+            "node": "Enviar Mensaje Chatwoot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enviar Mensaje Chatwoot": {
+      "main": [
+        []
+      ]
+    }
+  },
+  "meta": {
+    "instanceId": "e939822674a19b6f6c775df659e246dc314f7389ccf6cae835c3c53a6b0489fe"
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveExecutionProgress": true,
+    "saveManualExecutions": true
+  }
+}

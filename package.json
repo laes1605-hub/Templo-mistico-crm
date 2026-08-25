@@ -14,7 +14,9 @@
     "cap:open:android": "npx cap open android",
     "cap:build:android": "npx cap copy android && npx cap sync android && cd android && ./gradlew assembleDebug",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "build:luna": "node n8n/build-luna-workflow.mjs",
+    "check:luna": "node scripts/validar-workflow-luna.mjs"
   },
   "dependencies": {
     "@capacitor/android": "^8.5.0",

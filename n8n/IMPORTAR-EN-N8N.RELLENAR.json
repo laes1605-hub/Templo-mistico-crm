@@ -217,7 +217,7 @@
           "parameters": [
             {
               "name": "Authorization",
-              "value": "={{ 'Bearer ' + $env.GROQ_API_KEY }}"
+              "value": "Bearer AQUI_GROQ_API_KEY"
             }
           ]
         },
@@ -366,7 +366,7 @@
             },
             {
               "name": "Authorization",
-              "value": "={{ 'Bearer ' + $env.OPENAI_API_KEY }}"
+              "value": "Bearer AQUI_OPENAI_API_KEY"
             }
           ]
         },
@@ -893,7 +893,7 @@
           "parameters": [
             {
               "name": "Authorization",
-              "value": "={{ 'Bearer ' + $env.OPENAI_API_KEY }}"
+              "value": "Bearer AQUI_OPENAI_API_KEY"
             },
             {
               "name": "Content-Type",
@@ -1162,7 +1162,7 @@
             },
             {
               "name": "Authorization",
-              "value": "={{ 'Bearer ' + $env.OPENAI_API_KEY }}"
+              "value": "Bearer AQUI_OPENAI_API_KEY"
             }
           ]
         },
@@ -1196,7 +1196,7 @@
           "parameters": [
             {
               "name": "Authorization",
-              "value": "={{ 'Bearer ' + $env.OPENAI_API_KEY }}"
+              "value": "Bearer AQUI_OPENAI_API_KEY"
             },
             {
               "name": "Content-Type",
@@ -1444,7 +1444,7 @@
             },
             {
               "name": "Authorization",
-              "value": "={{ 'Bearer ' + $env.OPENAI_API_KEY }}"
+              "value": "Bearer AQUI_OPENAI_API_KEY"
             }
           ]
         },

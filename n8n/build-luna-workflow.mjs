@@ -21,8 +21,14 @@ const BASE = path.join(__dirname, "luna", "base-workflow.json");
 const CODE = path.join(__dirname, "luna", "code");
 // IMPORTAR-EN-N8N.json           → EL QUE SE IMPORTA EN n8n (llaves dentro, sin $env).
 //                                  No se versiona (lleva secretos) pero SI es visible.
+// IMPORTAR-EN-N8N.RELLENAR.json  → igual al anterior pero con marcadores
+//                                  AQUI_OPENAI_API_KEY / AQUI_GROQ_API_KEY cuando
+//                                  falta secrets.local.json. Se reemplazan en un
+//                                  editor de texto (Bloc de notas) y a importar:
+//                                  no hace falta editar NADA dentro de n8n.
 // 05-luna-etapas.github.json     → copia para el repo (sin secretos, usa $env).
 const SALIDA = path.join(__dirname, "IMPORTAR-EN-N8N.json");
+const SALIDA_RELLENAR = path.join(__dirname, "IMPORTAR-EN-N8N.RELLENAR.json");
 const SALIDA_GITHUB = path.join(__dirname, "05-luna-etapas.github.json");
 
 const wf = JSON.parse(fs.readFileSync(BASE, "utf8"));
@@ -360,7 +366,22 @@ if (fs.existsSync(RUTA_SECRETS)) {
   }
   fs.writeFileSync(SALIDA, importable, "utf8");
 } else {
-  console.log("! Falta n8n/luna/secrets.local.json: no se genero el archivo importable.");
+  // Sin secrets.local.json: generar la versión RELLENAR con marcadores claros.
+  // El usuario reemplaza los marcadores en un editor de texto y el archivo
+  // queda EXACTAMENTE igual al importable con llaves (misma configuración
+  // interna, nada que tocar dentro de n8n).
+  let plantilla = base;
+  for (const clave of ["OPENAI_API_KEY", "GROQ_API_KEY"]) {
+    plantilla = plantilla
+      .split("={{ 'Bearer ' + $env." + clave + " }}")
+      .join("Bearer AQUI_" + clave);
+  }
+  if (plantilla.includes("$env.")) {
+    throw new Error("La plantilla quedo con $env y fallaria con N8N_BLOCK_ENV_ACCESS_IN_NODE");
+  }
+  fs.writeFileSync(SALIDA_RELLENAR, plantilla, "utf8");
+  console.log("! Falta n8n/luna/secrets.local.json: se genero " + path.relative(raiz, SALIDA_RELLENAR));
+  console.log("  Reemplaza AQUI_OPENAI_API_KEY y AQUI_GROQ_API_KEY en un editor de texto antes de importar en n8n.");
 }
 
 const nombres = wf.nodes.map((n) => n.name);

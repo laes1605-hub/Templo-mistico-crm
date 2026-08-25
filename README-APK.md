@@ -2,6 +2,50 @@
 
 Este proyecto ya está preparado para convertirse en APK usando **Capacitor**.
 
+## ✅ Actualización APK 1.2 — Android Studio
+
+La versión está configurada como:
+
+- `versionName`: **1.2.0**
+- `versionCode`: **3**
+- `appId`: `com.templomistico.crm`
+- `compileSdk` / `targetSdk`: **36**
+- Java requerido: **JDK 21**
+
+Para compilar esta actualización desde cero:
+
+> **Importante:** `capacitor.config.json` hace que la APK cargue `https://templo-mistico-crm.vercel.app`. Primero verifica que Vercel haya desplegado este commit; de lo contrario la APK podría abrir la versión web anterior aunque el proyecto Android esté en 1.2.0.
+
+1. Instala Android Studio y, desde **SDK Manager**, instala Android SDK 36, Android SDK Build-Tools y Android SDK Platform-Tools.
+2. Abre Android Studio y selecciona la carpeta `android/` del proyecto, no la carpeta raíz.
+3. En Android Studio configura **Gradle JDK = Embedded JDK 21** en `Settings > Build, Execution, Deployment > Build Tools > Gradle`.
+4. Desde una terminal ubicada en la raíz del repositorio ejecuta:
+
+   ```bash
+   npm ci
+   npm run build
+   npx cap sync android
+   ```
+
+5. Abre el proyecto Android:
+
+   ```bash
+   npx cap open android
+   ```
+
+6. Espera a que termine **Gradle Sync**. Si aparece el aviso de actualizar Gradle o el Android Gradle Plugin, no lo actualices: el proyecto ya está configurado y probado con sus versiones actuales.
+7. Conecta un teléfono con **Depuración USB** activada o crea un emulador Android API 36. Selecciónalo en la barra superior y pulsa **Run ▶** para probar.
+8. Para generar el APK instalable, usa **Build > Build Bundle(s) / APK(s) > Build APK(s)**. El archivo queda en:
+
+   ```text
+   android/app/build/outputs/apk/debug/app-debug.apk
+   ```
+
+9. Para distribuir una versión firmada, usa **Build > Generate Signed Bundle / APK > APK**, crea o selecciona un keystore y conserva la misma clave para futuras actualizaciones. Selecciona la variante `release`.
+10. Instala la actualización sobre la APK anterior. Como el `versionCode` pasó de 2 a 3, Android la reconocerá como una actualización; no desinstales la versión anterior si quieres conservar sus permisos y datos locales.
+
+Cada vez que cambies el código web, repite `npm run build` y `npx cap sync android` antes de volver a compilar. No ejecutes `npx cap add android` para esta actualización: la carpeta Android ya existe.
+
 ## 🚀 Opción 1: APK que carga tu web (Recomendada - Más fácil)
 
 Esta opción crea una APK que abre directamente tu URL de Vercel/producción. Es la más estable porque no necesitas export estático.
@@ -167,8 +211,8 @@ npx cap add android
 ```
 
 **Error Gradle / Java**
-- Instala JDK 17: https://adoptium.net/
-- Configura `JAVA_HOME`
+- Instala JDK 21 (o usa el Embedded JDK 21 de Android Studio): https://adoptium.net/
+- Configura `JAVA_HOME` apuntando al JDK 21 si compilas desde terminal.
 
 **La APK muestra pantalla blanca**
 - Verifica `server.url` en `capacitor.config.json`
@@ -182,13 +226,13 @@ npx cap add android
 - Los permisos se declaran en `android/app/src/main/AndroidManifest.xml`. Si un permiso no está
   declarado ahí, Android no lo muestra en *Ajustes > Apps > Templo Místico CRM > Permisos* y la
   app no puede pedirlo (las notas de voz con `getUserMedia` no funcionan sin `RECORD_AUDIO`).
-- Este repo ya declara: `RECORD_AUDIO`, `MODIFY_AUDIO_SETTINGS`, `CAMERA`,
+- Este repo ya declara: `READ/WRITE_CONTACTS`, `RECORD_AUDIO`, `MODIFY_AUDIO_SETTINGS`, `CAMERA`,
   `READ_MEDIA_IMAGES/VIDEO/AUDIO` (Android 13+), `READ/WRITE_EXTERNAL_STORAGE` (Android 12-/9-),
   `POST_NOTIFICATIONS`, `SCHEDULE_EXACT_ALARM`, `USE_EXACT_ALARM` y `VIBRATE`.
 - Tras cambiar el manifest **hay que recompilar el APK** y reinstalarlo; los permisos no se
   actualizan en el APK ya instalado.
-- Con el APK nuevo: la app pide cada permiso en el momento de usarlo (notas de voz → micrófono,
-  foto/cámara, notificaciones en Ajustes). También puedes concederlos a mano en
+- Con el APK nuevo: la app pide cada permiso en el momento de usarlo (guardar contacto → contactos,
+  nota de voz → micrófono, foto/cámara, notificaciones en Ajustes). También puedes concederlos a mano en
   *Ajustes > Apps > Templo Místico CRM > Permisos*.
 - Nota: reproducir sonidos no requiere permiso en Android; solo grabar audio (`RECORD_AUDIO`) y
   notificaciones en Android 13+ (`POST_NOTIFICATIONS`).
@@ -196,6 +240,16 @@ npx cap add android
 **Archivados no aparecen**
 - Ejecuta la migración SQL en Supabase: `supabase/migrations/20260824_archivado_eliminado.sql`
 - Ve a Supabase > SQL Editor > Pega el contenido > Run
+
+**Eliminar un cliente completamente**
+- El botón **Eliminar** borra el cliente físico y toda la información que el CRM tenga guardada: conversaciones, mensajes, archivos asociados, notas, tareas, pagos, recordatorios y reglas de Cerebro vinculadas.
+- Ejecuta también `supabase/migrations/20260904_eliminar_cliente_completo.sql` en Supabase > SQL Editor > Run.
+- No se archiva ni se marca como perdido: al volver a escribir desde ese número, el webhook creará un cliente nuevo en **Nuevo Lead**.
+
+**Guardar clientes en el teléfono**
+- En la APK, el botón **Guardar en teléfono** crea directamente el contacto en la agenda usando el nombre y el número que aparecen en la ficha.
+- La primera vez Android solicitará los permisos de contactos. Después de modificar esta función hay que recompilar la APK con `npm run cap:build:android`.
+- En la versión web/PWA se descarga un archivo `.vcf`; ábrelo en el teléfono para importarlo a Contactos.
 
 ---
 

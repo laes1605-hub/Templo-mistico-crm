@@ -25,6 +25,7 @@ try {
 } catch (e) { texto = ""; }
 
 texto = String(texto || "").trim();
+const textoOriginalMarcadores = texto;
 
 // -----------------------------------------------------
 // 2) MARCADORES
@@ -67,11 +68,17 @@ const PIDE_NOMBRE_OTRO = /c[oó]mo se llama|nombre de (?:la|esa|tu)?\s*(?:person
 const PIDE_NOMBRE = /\bnombre|apellidos|c[oó]mo (?:te llamas|se llama)/i;
 const PIDE_FOTO = /\bfoto|fotograf|selfie|\bcara\b|\brostro\b/i;
 const PIDE_PALMA = /palma|mano derecha|foto de tu mano|lectura de mano/i;
+// Preguntar si es personal o de pareja pertenece a la etapa Sin respuesta
+const PIDE_TIPO_TRABAJO = /personal o de pareja|es para ti o para|involucra a otra persona|trabajo (?:es )?(?:personal|de pareja)|para ti o para otra/i;
 
 const fotosRequeridas = tipo === "pareja"
   ? ["foto_cliente", "foto_otra_persona"]
   : (tipo === "personal" ? ["foto_cliente", "foto_mano"] : []);
 const fotosCompletas = fotosRequeridas.length > 0 && fotosRequeridas.every(k => checklist[k] === true);
+
+// Bandera de motivo conocido (se usa dentro de la auditoria y despues como salida)
+const motivoOk = etapa === "sin_respuesta" && Boolean(tipo) &&
+  (/\[?\s*MOTIVO_OK\s*\]?/i.test(textoOriginalMarcadores) || checklist.motivo_conocido === true);
 
 const frases = (texto.match(/[^.!?]+[.!?]*/g) || [texto]).map(s => s.trim()).filter(Boolean);
 const violaciones = [];
@@ -89,8 +96,15 @@ for (const frase of frases) {
     else if (etapa === "sin_respuesta" && checklist.motivo_conocido === true) violaciones.push("repitio_motivo");
   }
 
+  // --- Preguntar de nuevo algo de una etapa anterior ---
+  if (tipo && PIDE_TIPO_TRABAJO.test(frase)) violaciones.push("repitio_pregunta_de_tipo_de_trabajo");
+
   // --- Reglas duras por etapa ---
   if (etapa === "lead_nuevo" && pedido && (pideNombre || pideFoto)) violaciones.push("pidio_datos_en_lead_nuevo");
+  // En Sin respuesta primero se valida el motivo; pedir datos antes es saltarse la etapa
+  if (etapa === "sin_respuesta" && !motivoOk && pedido && (pideNombre || pideFoto)) {
+    violaciones.push("pidio_datos_antes_de_clasificar");
+  }
   if (etapa === "por_consulta" && pedido && (pideNombre || pideFoto)) violaciones.push("pidio_datos_en_por_consulta");
 
   // --- Reglas duras por tipo de trabajo ---
@@ -194,7 +208,6 @@ if (!textoFinal) textoFinal = mensajeDeterminista("");
 // -----------------------------------------------------
 const datosCompletos = Boolean(tipo) && faltantes.length === 0;
 const consultaLista = datosCompletos && (etapa === "datos" || etapa === "por_consulta");
-const motivoOk = etapa === "sin_respuesta" && Boolean(tipo) && (marcadorMotivo || checklist.motivo_conocido === true);
 
 // Los marcadores [MOTIVO_OK] / [CONSULTA_LISTA] NUNCA salen al cliente:
 // la transicion de etapa se dispara con las banderas motivoOk / consultaLista.

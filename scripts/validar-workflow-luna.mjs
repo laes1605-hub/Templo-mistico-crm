@@ -393,6 +393,33 @@ ok(f.salida.faltantes.length === 0, "personal completo: nombre + foto + palma");
 ok(f.salida.contextoMemoria.includes("prohibido pedir nombres o fotos de otra persona"), "en personal se bloquea pedir datos de terceros");
 
 // Persistencia
+
+// Un dato tomado no se cambia ni se borra, aunque la IA diga otra cosa
+const guardados = {
+  tipo_trabajo: "pareja",
+  nombre_cliente: "Ana Perez",
+  nombre_otra_persona: "Karla Gomez",
+  foto_cliente: true,
+  foto_otra_persona: true,
+  foto_cliente_url: "https://cdn/ana.jpg",
+  foto_otra_persona_url: "https://cdn/karla.jpg",
+  motivo_categoria: "retorno",
+  motivo_resumen: "Quiere recuperar a su pareja.",
+  motivo_conocido: true
+};
+f = await fusionar({
+  attrs: guardados,
+  ia: { tipo_trabajo: "personal", nombre_cliente: "Otra Persona", nombre_otra_persona: "Inventada", motivo_categoria: "prosperidad", motivo_resumen: "Otro caso distinto." },
+  etapa: "por_consulta",
+  texto: "gracias"
+});
+ok(f.salida.checklist.nombre_cliente === "Ana Perez", "el nombre del cliente no se cambia", f.salida.checklist.nombre_cliente);
+ok(f.salida.checklist.nombre_otra_persona === "Karla Gomez", "el nombre de la persona a consultar no se cambia", f.salida.checklist.nombre_otra_persona);
+ok(f.salida.checklist.tipo_trabajo === "pareja", "el tipo de trabajo no se cambia cuando ya hay datos", f.salida.checklist.tipo_trabajo);
+ok(f.salida.checklist.foto_cliente === true && f.salida.checklist.foto_otra_persona === true, "las fotos recibidas no se borran");
+ok(f.salida.checklist.foto_cliente_url === "https://cdn/ana.jpg", "  ni sus enlaces");
+ok(f.salida.checklist.motivo_categoria === "retorno" && f.salida.checklist.motivo_resumen === "Quiere recuperar a su pareja.", "el motivo guardado no se sobreescribe");
+
 // Clasificacion por lo que dice el cliente (aunque la IA no responda)
 f = await fusionar({ attrs: {}, ia: null, etapa: "sin_respuesta", texto: "Hola, perdi a mi pareja hace dos anos, terminamos y quiero recuperarla." });
 ok(f.salida.checklist.tipo_trabajo === "pareja", '«quiero recuperar a mi pareja» → PAREJA aunque la IA no responda', f.salida.checklist.tipo_trabajo);
@@ -517,6 +544,31 @@ p = await pulir({
   faltantes: [{ clave: "tipo_trabajo", etiqueta: "tipo de trabajo" }]
 });
 ok(p.corregido === false && p.violaciones.length === 0, "en Sin respuesta si puede preguntar el motivo", p.violaciones.join(","));
+
+// No se pregunta nada de etapas anteriores
+p = await pulir({
+  texto: "Perfecto Ana. Una duda, el trabajo es personal o de pareja?",
+  checklist: { tipo_trabajo: "pareja", nombre_cliente: "Ana Perez", motivo_conocido: true },
+  etapa: "datos",
+  faltantes: [{ clave: "foto_cliente", etiqueta: "una foto tuya" }]
+});
+ok(p.violaciones.includes("repitio_pregunta_de_tipo_de_trabajo"), "en Datos no se vuelve a preguntar si es personal o pareja", p.violaciones.join(","));
+
+p = await pulir({
+  texto: "Hola, para empezar enviame tu nombre completo y una foto tuya.",
+  checklist: {},
+  etapa: "sin_respuesta",
+  faltantes: [{ clave: "tipo_trabajo", etiqueta: "tipo de trabajo" }]
+});
+ok(p.violaciones.includes("pidio_datos_antes_de_clasificar"), "en Sin respuesta no se piden datos antes de clasificar", p.violaciones.join(","));
+
+p = await pulir({
+  texto: "Entiendo Ana, el Maestro puede ayudarte. Para preparar la consulta necesito tu nombre completo. [MOTIVO_OK]",
+  checklist: { tipo_trabajo: "pareja", motivo_conocido: true, motivo_categoria: "retorno" },
+  etapa: "sin_respuesta",
+  faltantes: [{ clave: "nombre_cliente", etiqueta: "tu nombre completo" }]
+});
+ok(p.violaciones.length === 0 && p.motivoOk === true, "pero si ya clasifico, si puede pedir el primer dato", p.violaciones.join(","));
 
 p = await pulir({
   texto: "Tranquila Ana, el Maestro te llama pronto. En que horario te queda mejor recibir la llamada?",
@@ -644,7 +696,9 @@ let pr = await prompt({ etapa: "lead_nuevo", cerebro: "REGLA DEL CEREBRO: ofrece
 let sys = pr.body.messages[0].content;
 ok(sys.includes("ETAPA 1 — LEAD NUEVO"), "incluye el motor de etapas");
 ok(sys.includes("ESTAS EN ETAPA 1"), "marca la etapa activa");
-ok(sys.includes("PROHIBIDO pedir nombres, fotos o la palma en esta etapa"), "prohibe pedir datos en Lead Nuevo");
+ok(sys.includes("PROHIBIDO pedir nombres, fotos o la palma"), "prohibe pedir datos en Lead Nuevo");
+ok(sys.includes("PREGUNTAR EL MOTIVO DE LA CONSULTA"), "  y su objetivo es preguntar el motivo");
+ok(sys.includes("VALIDAR EL MOTIVO DE LA CONSULTA"), "en Sin respuesta el objetivo es validar el motivo e indagar");
 ok(sys.includes("amarre sexual") && sys.includes("entierros y salamientos"), "conserva el catalogo de interpretacion (amarres, trabajos pesados)");
 ok(sys.includes("REGLA DEL CEREBRO"), "inyecta la memoria del Cerebro IA");
 ok(pr.body.messages[pr.body.messages.length - 1].role === "user", "el ultimo mensaje es del cliente");
@@ -653,12 +707,16 @@ ok(pr.body.messages[pr.body.messages.length - 1].content.includes("MEMORIA"), "e
 pr = await prompt({ etapa: "datos", checklist: { tipo_trabajo: "pareja", motivo_conocido: true }, faltantes: [{ clave: "foto_cliente", etiqueta: "una foto tuya" }] });
 sys = pr.body.messages[0].content;
 ok(sys.includes("ESTAS EN ETAPA 3 (DATOS)"), "en Datos activa la etapa 3");
-ok(sys.includes("PROHIBIDO volver a preguntar por que viene"), "en Datos prohibe repetir el motivo");
+ok(sys.includes("PROHIBIDO preguntar el motivo de la consulta"), "en Datos prohibe repetir el motivo");
+ok(sys.includes("Nombre completo de la persona a consultar"), "  en pareja exige el nombre de la persona a consultar");
+ok(/UNA sola foto donde esten los dos/.test(sys), "  en pareja acepta una foto de los dos en lugar de dos fotos");
+ok(sys.includes("palma de su mano derecha"), "  en personal exige la palma de la mano derecha");
 
 pr = await prompt({ etapa: "por_consulta", checklist: { tipo_trabajo: "pareja" }, faltantes: [] });
 sys = pr.body.messages[0].content;
 ok(sys.includes("ESTAS EN ETAPA 4 (POR CONSULTA)"), "en Por consulta activa la etapa 4");
 ok(sys.includes("PROHIBIDO pedir cualquier dato"), "en Por consulta prohibe pedir datos");
+ok(sys.includes("PRUEBA SOCIAL") && sys.includes("RETENERLO"), "  y su objetivo es validar el sentimiento, dar prueba social y retener");
 
 // ---------------------------------------------------------------------------
 grupo("8. Recorrido completo de un lead de pareja, turno a turno");

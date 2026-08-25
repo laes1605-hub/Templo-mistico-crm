@@ -25,10 +25,10 @@ const conversationId = estado.conversationId;
 const etapa = estado.etapa || "lead_nuevo";
 
 const OBJETIVOS_ETAPA = {
-  lead_nuevo: "Saludar, presentarte como Luna y abrir el caso con UNA pregunta. Nada de datos ni de agendar.",
-  sin_respuesta: "Descubrir POR QUE viene y si el trabajo es PERSONAL o de PAREJA. Nada de nombres, fotos ni palma.",
-  datos: "Completar UNICAMENTE los datos marcados como pendientes. Nunca volver a preguntar el motivo.",
-  por_consulta: "Retener al cliente hasta que el Maestro llame. No pedir nada de nada."
+  lead_nuevo: "Saludar, presentarte como Luna y PREGUNTAR EL MOTIVO DE LA CONSULTA. Nada de datos.",
+  sin_respuesta: "VALIDAR el motivo de la consulta e indagar un poco sobre su respuesta, para saber si el trabajo es PERSONAL o de PAREJA. Nada de datos.",
+  datos: "RECOGER la informacion de la consulta segun el caso: PAREJA = nombre del cliente, nombre de la persona a consultar y una foto de cada uno (o una foto de los dos); PERSONAL = nombre del cliente, una foto de el y una foto de la palma de su mano derecha. Nunca preguntar el motivo.",
+  por_consulta: "VALIDAR el sentimiento del cliente, dar PRUEBA SOCIAL y RETENERLO hasta que el Maestro lo contacte. Prohibido pedir datos, fotos o el motivo."
 };
 const NOMBRES_ETAPA_FICHA = { lead_nuevo: "Lead Nuevo", sin_respuesta: "Sin respuesta", datos: "Datos", por_consulta: "Por consulta" };
 
@@ -241,7 +241,6 @@ if (checklist.tipo_trabajo && sinDatosAun && etapaTemprana && tipoPorPalabras &&
     tipoPorIa === tipoPorPalabras && tipoPorPalabras !== checklist.tipo_trabajo) {
   const anterior = checklist.tipo_trabajo;
   checklist.tipo_trabajo = tipoPorPalabras;
-  if (tipoPorPalabras === "personal") checklist.nombre_otra_persona = "";
   novedades.push("tipo_trabajo_corregido:" + anterior + "→" + tipoPorPalabras);
 }
 

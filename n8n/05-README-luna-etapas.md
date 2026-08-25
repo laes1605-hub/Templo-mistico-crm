@@ -5,12 +5,31 @@ Workflow importable: **`n8n/05-luna-etapas.json`** (generado por `n8n/build-luna
 Luna ahora **solo habla en cuatro etapas** y en cada una hace una sola cosa. La etapa la
 define el CRM (`clientes.estado`); Luna la lee, obedece y la mueve cuando corresponde.
 
-| Etapa | Qué hace Luna | Qué tiene prohibido | Cuándo avanza |
+| Etapa | Objetivo único | Qué tiene prohibido | Cuándo avanza |
 |---|---|---|---|
-| **Lead Nuevo** | Saluda, se presenta y abre el caso con una pregunta. | Pedir nombres, fotos o la palma. Hablar de agendar. | Siempre: al responder el saludo pasa a **Sin respuesta**. |
-| **Sin respuesta** | Averigua **por qué viene** y si el trabajo es **personal** o **de pareja**. | Volver a saludar. Pedir datos antes de clasificar. | Cuando sabe motivo + tipo de trabajo → **Datos** (y en ese mismo mensaje ya pide el primer dato). |
-| **Datos** | Pide **solo lo que falta** para agendar (nombres y fotos según el tipo). | **Volver a preguntar el motivo.** Repetir un dato ya guardado. Pedir la palma en pareja o datos de otra persona en personal. | Cuando el archivo dice que no falta nada → **Por consulta** (y avisa al Maestro). |
-| **Por consulta** | Confirma que los datos ya están con el Maestro y **retiene** al cliente hasta la llamada. | Pedir cualquier dato, nombre, foto o motivo. Inventar horas de llamada o precios. | No avanza. Si llega algo nuevo, actualiza el expediente del Maestro. |
+| **Lead Nuevo** | Saludar, presentarse y **preguntar el motivo de la consulta** | Pedir nombres, fotos o la palma. Hablar de agendar. | Siempre: al responder el saludo pasa a **Sin respuesta**. |
+| **Sin respuesta** | **Validar el motivo** e indagar un poco sobre su respuesta, para clasificar el trabajo en **personal o pareja** | Volver a saludar. Pedir datos antes de clasificar. | Cuando sabe motivo + tipo → **Datos** (y en ese mensaje pide el primer dato). |
+| **Datos** | Recoger **toda** la información de la consulta según el caso (ver abajo) | Preguntar el motivo, preguntar si es personal o pareja, repetir un dato guardado. | Cuando el archivo dice que no falta nada → **Por consulta** (y avisa al Maestro). |
+| **Por consulta** | **Validar el sentimiento** del cliente, dar **prueba social** y **retenerlo** hasta que el Maestro lo contacte | Pedir cualquier dato, nombre o foto. Preguntar el motivo. Inventar horas o precios. | No avanza. Si llega algo nuevo, actualiza el expediente del Maestro. |
+
+### Lo que se exige en la etapa Datos
+
+| Trabajo | Requisitos exactos |
+|---|---|
+| **PAREJA** | 1) Nombre completo del cliente · 2) Nombre completo de la persona a consultar · 3) Una foto de cada uno, **o una sola foto donde estén los dos** |
+| **PERSONAL** | 1) Nombre completo del cliente · 2) Una foto de él (rostro visible) · 3) Una foto de la **palma de su mano derecha** |
+
+Con los tres requisitos cumplidos Luna cambia la etapa. Si falta uno, no avanza.
+
+### Reglas de oro
+
+- **Un dato tomado no se cambia ni se borra**, aunque la IA opine otra cosa.
+- **No se pregunta nada de etapas anteriores**: en Datos no se pregunta el motivo ni el tipo de
+  trabajo; en Por consulta no se pide nada.
+- La única excepción a la inmutabilidad: el **tipo de trabajo** se corrige si se clasificó mal y
+  todavía no se recogió ningún dato (sin nombres ni fotos). Después queda fijo.
+- Si Luna intenta pedir algo que ya tiene, el auditor descarta ese mensaje y lo reconstruye desde
+  el archivo: el cliente nunca recibe una pregunta repetida.
 
 En cualquier otra etapa (Consulta Hecha, Pago Recibido, Trabajo en Proceso, Perdido, Spam…)
 **Luna se queda callada**: el nodo `Luna Actua en esta Etapa?` corta el flujo.

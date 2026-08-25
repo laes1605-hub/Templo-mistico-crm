@@ -18,7 +18,7 @@
   nube, lo sube como artefacto y lo commitea en `apk/templo-mistico-crm-debug.apk`
 - App ID: com.templomistico.crm
 - App Name: Templo Místico CRM
-- Version: 1.1.0 (definida en `package.json` y usada por Android)
+- Version: 1.2.0 (definida en `package.json` y usada por Android; `versionCode` 3)
 - WebDir: out · La APK carga https://templo-mistico-crm.vercel.app (server.url)
   → los cambios web van live con el deploy de Vercel, sin rebuild del APK
 
@@ -45,3 +45,5 @@
 - Pestaña "Por leer": chats de todas las categorías con mensajes sin leer
 - Enrutado de leads por número: publicidad → Lead Nuevo del WhatsApp API Templo
 - Mover de etapa sincroniza el grupo (Personal ↔ Templo)
+- Eliminación completa del cliente y sus datos: al volver a escribir entra como lead nuevo
+- Guardar el contacto directamente en la agenda Android (o descargar vCard en web/PWA)

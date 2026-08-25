@@ -2,6 +2,50 @@
 
 Este proyecto ya está preparado para convertirse en APK usando **Capacitor**.
 
+## ✅ Actualización APK 1.2 — Android Studio
+
+La versión está configurada como:
+
+- `versionName`: **1.2.0**
+- `versionCode`: **3**
+- `appId`: `com.templomistico.crm`
+- `compileSdk` / `targetSdk`: **36**
+- Java requerido: **JDK 21**
+
+Para compilar esta actualización desde cero:
+
+> **Importante:** `capacitor.config.json` hace que la APK cargue `https://templo-mistico-crm.vercel.app`. Primero verifica que Vercel haya desplegado este commit; de lo contrario la APK podría abrir la versión web anterior aunque el proyecto Android esté en 1.2.0.
+
+1. Instala Android Studio y, desde **SDK Manager**, instala Android SDK 36, Android SDK Build-Tools y Android SDK Platform-Tools.
+2. Abre Android Studio y selecciona la carpeta `android/` del proyecto, no la carpeta raíz.
+3. En Android Studio configura **Gradle JDK = Embedded JDK 21** en `Settings > Build, Execution, Deployment > Build Tools > Gradle`.
+4. Desde una terminal ubicada en la raíz del repositorio ejecuta:
+
+   ```bash
+   npm ci
+   npm run build
+   npx cap sync android
+   ```
+
+5. Abre el proyecto Android:
+
+   ```bash
+   npx cap open android
+   ```
+
+6. Espera a que termine **Gradle Sync**. Si aparece el aviso de actualizar Gradle o el Android Gradle Plugin, no lo actualices: el proyecto ya está configurado y probado con sus versiones actuales.
+7. Conecta un teléfono con **Depuración USB** activada o crea un emulador Android API 36. Selecciónalo en la barra superior y pulsa **Run ▶** para probar.
+8. Para generar el APK instalable, usa **Build > Build Bundle(s) / APK(s) > Build APK(s)**. El archivo queda en:
+
+   ```text
+   android/app/build/outputs/apk/debug/app-debug.apk
+   ```
+
+9. Para distribuir una versión firmada, usa **Build > Generate Signed Bundle / APK > APK**, crea o selecciona un keystore y conserva la misma clave para futuras actualizaciones. Selecciona la variante `release`.
+10. Instala la actualización sobre la APK anterior. Como el `versionCode` pasó de 2 a 3, Android la reconocerá como una actualización; no desinstales la versión anterior si quieres conservar sus permisos y datos locales.
+
+Cada vez que cambies el código web, repite `npm run build` y `npx cap sync android` antes de volver a compilar. No ejecutes `npx cap add android` para esta actualización: la carpeta Android ya existe.
+
 ## 🚀 Opción 1: APK que carga tu web (Recomendada - Más fácil)
 
 Esta opción crea una APK que abre directamente tu URL de Vercel/producción. Es la más estable porque no necesitas export estático.
@@ -167,8 +211,8 @@ npx cap add android
 ```
 
 **Error Gradle / Java**
-- Instala JDK 17: https://adoptium.net/
-- Configura `JAVA_HOME`
+- Instala JDK 21 (o usa el Embedded JDK 21 de Android Studio): https://adoptium.net/
+- Configura `JAVA_HOME` apuntando al JDK 21 si compilas desde terminal.
 
 **La APK muestra pantalla blanca**
 - Verifica `server.url` en `capacitor.config.json`

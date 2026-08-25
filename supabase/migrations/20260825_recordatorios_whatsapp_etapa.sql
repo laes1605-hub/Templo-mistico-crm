@@ -16,8 +16,11 @@ CREATE TABLE IF NOT EXISTS public.recordatorios_whatsapp (
   proveedor text NOT NULL DEFAULT 'chatwoot'
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS recordatorios_whatsapp_unico_dia
-  ON public.recordatorios_whatsapp (cliente_id, etapa, tipo, fecha);
+-- Se permite un intento distinto en el mismo día (30 min, 3 h, 12 h y 23:30 h),
+-- pero nunca se duplica el mismo intento.
+DROP INDEX IF EXISTS public.recordatorios_whatsapp_unico_dia;
+CREATE UNIQUE INDEX IF NOT EXISTS recordatorios_whatsapp_unico_intento
+  ON public.recordatorios_whatsapp (cliente_id, etapa, tipo, plantilla, fecha);
 CREATE INDEX IF NOT EXISTS recordatorios_whatsapp_enviado_idx
   ON public.recordatorios_whatsapp (enviado_en);
 

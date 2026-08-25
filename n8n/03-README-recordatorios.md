@@ -24,12 +24,10 @@ SUPABASE_SERVICE_ROLE_KEY=tu_service_role_key
 ## Comportamiento
 
 - Consulta únicamente conversaciones abiertas de Chatwoot vinculadas en Supabase a `fuente=meta_business` y `grupo=templo`.
-- Solo actúa sobre estas tres etapas:
-  - **Lead nuevo**: `nuevo_lead`, `nuevo_lead_templo`, `lead_nuevo`.
-  - **Datos**: `datos`, `datos_templo`, `solicitar_datos`, `solicitud_datos`, `en_datos`.
-  - **No contesta**: `no_contesta`, `no_contesta_templo`, `nocontesta`.
-- Solo envía si el último mensaje es entrante. Así no responde encima de un mensaje del asesor.
-- Envía como máximo tres mensajes por etapa, aproximadamente después de 1, 8 y 24 horas del último mensaje entrante.
+- **Lead nuevo queda excluido**: no recibe ningún recordatorio.
+- Solo actúa sobre estas dos etapas: **Datos** (`datos`, `datos_templo`, `solicitar_datos`, `solicitud_datos`, `en_datos`) y **Sin respuesta** (`sin_respuesta`, `sin_respuesta_templo`, `no_contesta`, `no_contesta_templo`, `nocontesta`).
+- Busca la última respuesta entrante del cliente en los mensajes de Chatwoot. El cronómetro se calcula desde esa respuesta, aunque después haya respondido el agente.
+- Envía como máximo cuatro mensajes por cliente y etapa, a los 30 minutos, 3 horas, 12 horas y 23 horas 30 minutos desde la última respuesta del cliente.
 - No envía a spam, perdidos, `bot-pausado` ni `recordatorios-pausados`.
 - Registra cada envío en `recordatorios_whatsapp`; la restricción única evita duplicados del mismo día, etapa e intento.
 - No cierra ni marca como perdido automáticamente a ningún cliente.

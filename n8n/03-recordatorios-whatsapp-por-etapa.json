@@ -16,17 +16,23 @@
       "name": "Cada 15 minutos",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.3,
-      "position": [-420, 0]
+      "position": [
+        -420,
+        0
+      ]
     },
     {
       "parameters": {
-        "jsCode": "// Recordatorios exclusivamente para WhatsApp API (Meta/Chatwoot).\n// No pongas tokens aquí: configura las variables de entorno del workflow.\n// Requeridas: CHATWOOT_URL, CHATWOOT_API_TOKEN, SUPABASE_URL,\n// SUPABASE_SERVICE_ROLE_KEY. Opcional: CHATWOOT_ACCOUNT_ID (por defecto 1).\n\nconst env = (typeof $env !== 'undefined' ? $env : process.env);\nconst CHATWOOT_URL = String(env.CHATWOOT_URL || 'https://crmesteban.duckdns.org').replace(/\\/$/, '');\nconst TOKEN = String(env.CHATWOOT_API_TOKEN || '');\nconst SUPABASE_URL = String(env.SUPABASE_URL || 'https://qrrkokfmbdtodrqbfehs.supabase.co').replace(/\\/$/, '');\nconst SUPABASE_KEY = String(env.SUPABASE_SERVICE_ROLE_KEY || '');\nconst ACCOUNT_ID = String(env.CHATWOOT_ACCOUNT_ID || '1');\n\nif (!TOKEN || !SUPABASE_KEY) throw new Error('Faltan CHATWOOT_API_TOKEN o SUPABASE_SERVICE_ROLE_KEY');\n\nconst chatHeaders = { 'api_access_token': TOKEN, 'Content-Type': 'application/json' };\nconst sbHeaders = { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}`, 'Content-Type': 'application/json', 'Prefer': 'return=representation' };\nconst getJson = (url, headers) => this.helpers.httpRequest({ method: 'GET', url, headers, json: true });\nconst postJson = (url, body, headers) => this.helpers.httpRequest({ method: 'POST', url, headers, body, json: true });\nconst patchJson = (url, body, headers) => this.helpers.httpRequest({ method: 'PATCH', url, headers, body, json: true });\n\n// Se aceptan las claves que ya existen y también nombres escritos desde el CRM.\nconst normalizar = (v) => String(v || '').normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').toLowerCase().trim().replace(/[ -]+/g, '_');\nconst ETAPAS = {\n  nuevo: new Set(['nuevo_lead', 'nuevo_lead_templo', 'lead_nuevo', 'lead_nuevo_templo']),\n  datos: new Set(['datos', 'datos_templo', 'solicitar_datos', 'solicitud_datos', 'en_datos']),\n  noContesta: new Set(['no_contesta', 'no_contesta_templo', 'nocontesta'])\n};\nconst etapaDe = (v) => { const k = normalizar(v); for (const [nombre, claves] of Object.entries(ETAPAS)) if (claves.has(k)) return nombre; return null; };\n\nconst plantillas = {\n  nuevo: [\n    'Hola {{nombre}}. ¿Sigues interesado en tu consulta? Recuerda que la consulta es gratuita y sin compromiso. Cuéntame, ¿cuál es el motivo de tu consulta?',\n    'Hola {{nombre}}, queremos ayudarte. La consulta es totalmente gratuita. Cuando puedas, escríbenos brevemente cuál es el motivo de tu consulta y continuamos.',\n    'Hola {{nombre}}. Te dejamos este último recordatorio: puedes hacer tu consulta gratuita y sin compromiso. Si todavía deseas atención, responde a este mensaje contándonos qué necesitas.'\n  ],\n  datos: [\n    'Hola {{nombre}}. Para avanzar con tu consulta gratuita estamos esperando los datos solicitados. Cuando puedas, envíanos los nombres y las fotos que te pedimos.',\n    'Hola {{nombre}}, recuerda que la consulta es gratuita. Nos faltan los datos, nombres o fotos solicitados para poder continuar. ¿Puedes enviarlos por aquí?',\n    'Hola {{nombre}}. Seguimos atentos a los datos de tu consulta. Envíanos las fotos y los nombres solicitados cuando te quede cómodo; la consulta continúa siendo gratuita y sin compromiso.'\n  ],\n  noContesta: [\n    'Hola {{nombre}}. Queríamos saber en cuánto tiempo puedes atender la llamada. ¿Qué hora te queda mejor?',\n    'Hola {{nombre}}, seguimos pendientes de poder hablar contigo. ¿Puedes indicarnos a qué hora te queda mejor atender la llamada?',\n    'Hola {{nombre}}. Cuando tengas disponibilidad, dinos qué día y a qué hora podemos llamarte. Así coordinamos la atención contigo.'\n  ]\n};\n\nconst ahora = Math.floor(Date.now() / 1000);\nconst conversaciones = [];\nfor (let pagina = 1; pagina <= 5; pagina++) {\n  const respuesta = await getJson(`${CHATWOOT_URL}/api/v1/accounts/${ACCOUNT_ID}/conversations?status=open&per_page=100&page=${pagina}`, chatHeaders);\n  const lote = respuesta?.data?.payload || [];\n  conversaciones.push(...lote);\n  if (lote.length < 100) break;\n}\n\nconst salidas = [];\nfor (const conv of conversaciones) {\n  // Estas etiquetas manuales siempre tienen prioridad y bloquean el automatismo.\n  const labels = Array.isArray(conv.labels) ? conv.labels.map(normalizar) : [];\n  if (labels.includes('bot_pausado') || labels.includes('recordatorios_pausados') || labels.includes('lead_perdido')) continue;\n\n  const cwId = conv.id;\n  const query = `${SUPABASE_URL}/rest/v1/conversaciones?chatwoot_conversation_id=eq.${encodeURIComponent(cwId)}&fuente=eq.meta_business&select=id,cliente_id,numero_whatsapp,fuente,clientes!inner(id,estado,grupo,es_spam)`;\n  const vinculadas = await getJson(query, sbHeaders);\n  const dbConv = Array.isArray(vinculadas) ? vinculadas[0] : null;\n  const cliente = dbConv?.clientes;\n  if (!dbConv || !cliente || cliente.es_spam === true || cliente.grupo !== 'templo') continue;\n\n  const etapa = etapaDe(cliente.estado);\n  if (!etapa) continue;\n\n  // Solo reaccionar al último mensaje entrante. Nunca perseguir a alguien\n  // después de que el negocio ya respondió.\n  const ultimo = conv.last_non_activity_message || conv.last_message || {};\n  if (ultimo.message_type !== 0 && ultimo.message_type !== 'incoming') continue;\n  const ultimaActividad = Number(conv.last_activity_at || ultimo.created_at || conv.created_at || 0);\n  const edadHoras = (ahora - ultimaActividad) / 3600;\n  if (edadHoras < 1) continue;\n\n  const logUrl = `${SUPABASE_URL}/rest/v1/recordatorios_whatsapp?cliente_id=eq.${cliente.id}&etapa=eq.${encodeURIComponent(cliente.estado)}&select=tipo,plantilla,fecha,enviado_en&order=enviado_en.desc&limit=20`;\n  const logs = await getJson(logUrl, sbHeaders);\n  const anteriores = Array.isArray(logs) ? logs : [];\n  const intentos = anteriores.length;\n  if (intentos >= 3) continue;\n  const umbrales = [1, 8, 24];\n  if (edadHoras < umbrales[intentos]) continue;\n\n  const nombre = String(conv.meta?.sender?.name || '').trim();\n  const saludo = nombre && nombre.toLowerCase() !== 'cliente' ? nombre.split(' ')[0] : 'hola';\n  const base = plantillas[etapa][intentos].replace('{{nombre}}', saludo === 'hola' ? '' : saludo).replace('Hola .', 'Hola');\n  const telefono = String(dbConv.numero_whatsapp || conv.meta?.sender?.phone_number || conv.meta?.sender?.identifier || '').replace(/[^0-9]/g, '');\n  if (!telefono || !base) continue;\n\n  salidas.push({ json: { conversationId: cwId, conversacionId: dbConv.id, clienteId: cliente.id, etapa, estado: cliente.estado, telefono, mensaje: base, intento: intentos + 1, nombre: saludo } });\n}\nreturn salidas;"
+        "jsCode": "// Recordatorios exclusivamente para WhatsApp API (Meta/Chatwoot).\n// Configura CHATWOOT_URL, CHATWOOT_API_TOKEN, SUPABASE_URL y\n// SUPABASE_SERVICE_ROLE_KEY como variables de entorno del workflow.\nconst env = (typeof $env !== 'undefined' ? $env : process.env);\nconst CHATWOOT_URL = String(env.CHATWOOT_URL || 'https://crmesteban.duckdns.org').replace(/\\/$/, '');\nconst TOKEN = String(env.CHATWOOT_API_TOKEN || '');\nconst SUPABASE_URL = String(env.SUPABASE_URL || 'https://qrrkokfmbdtodrqbfehs.supabase.co').replace(/\\/$/, '');\nconst SUPABASE_KEY = String(env.SUPABASE_SERVICE_ROLE_KEY || '');\nconst ACCOUNT_ID = String(env.CHATWOOT_ACCOUNT_ID || '1');\nif (!TOKEN || !SUPABASE_KEY) throw new Error('Faltan CHATWOOT_API_TOKEN o SUPABASE_SERVICE_ROLE_KEY');\nconst chatHeaders = { 'api_access_token': TOKEN, 'Content-Type': 'application/json' };\nconst sbHeaders = { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}`, 'Content-Type': 'application/json', 'Prefer': 'return=representation' };\nconst getJson = (url, headers) => this.helpers.httpRequest({ method: 'GET', url, headers, json: true });\n\nconst normalizar = (v) => String(v || '').normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').toLowerCase().trim().replace(/[ -]+/g, '_');\n// Lead nuevo queda deliberadamente fuera. Solo se aceptan Datos y Sin respuesta.\nconst ETAPAS = {\n  datos: new Set(['datos', 'datos_templo', 'solicitar_datos', 'solicitud_datos', 'en_datos']),\n  sinRespuesta: new Set(['sin_respuesta', 'sin_respuesta_templo', 'no_contesta', 'no_contesta_templo', 'sinrespuesta', 'nocontesta'])\n};\nconst etapaDe = (v) => { const k = normalizar(v); for (const [nombre, claves] of Object.entries(ETAPAS)) if (claves.has(k)) return nombre; return null; };\nconst plantillas = {\n  datos: [\n    'Hola {{nombre}}. Para avanzar con tu consulta gratuita estamos esperando los datos solicitados. Cuando puedas, envíanos los nombres y las fotos que te pedimos.',\n    'Hola {{nombre}}, recuerda que la consulta es gratuita. Nos faltan los datos, nombres o fotos solicitados para poder continuar. ¿Puedes enviarlos por aquí?',\n    'Hola {{nombre}}. Seguimos atentos a los datos de tu consulta. Envíanos las fotos y los nombres solicitados cuando te quede cómodo; la consulta continúa siendo gratuita y sin compromiso.',\n    'Hola {{nombre}}. Este es nuestro último recordatorio sobre los datos pendientes. Cuando nos envíes los nombres o fotos podremos continuar con tu consulta gratuita.'\n  ],\n  sinRespuesta: [\n    'Hola {{nombre}}. Queríamos saber en cuánto tiempo puedes atender la llamada. ¿Qué hora te queda mejor?',\n    'Hola {{nombre}}, seguimos pendientes de poder hablar contigo. ¿Puedes indicarnos a qué hora te queda mejor atender la llamada?',\n    'Hola {{nombre}}. Cuando tengas disponibilidad, dinos qué día y a qué hora podemos llamarte. Así coordinamos la atención contigo.',\n    'Hola {{nombre}}. Aprovechamos que todavía estamos dentro del horario de atención para coordinar tu llamada. ¿A qué hora te queda mejor que te atendamos?'\n  ]\n};\nconst ahora = Math.floor(Date.now() / 1000);\nconst conversaciones = [];\nfor (let pagina = 1; pagina <= 5; pagina++) {\n  const respuesta = await getJson(`${CHATWOOT_URL}/api/v1/accounts/${ACCOUNT_ID}/conversations?status=open&per_page=100&page=${pagina}`, chatHeaders);\n  const lote = respuesta?.data?.payload || [];\n  conversaciones.push(...lote);\n  if (lote.length < 100) break;\n}\nconst salidas = [];\nfor (const conv of conversaciones) {\n  const labels = Array.isArray(conv.labels) ? conv.labels.map(normalizar) : [];\n  if (labels.includes('bot_pausado') || labels.includes('recordatorios_pausados') || labels.includes('lead_perdido')) continue;\n  const cwId = conv.id;\n  const query = `${SUPABASE_URL}/rest/v1/conversaciones?chatwoot_conversation_id=eq.${encodeURIComponent(cwId)}&fuente=eq.meta_business&select=id,cliente_id,numero_whatsapp,fuente,clientes!inner(id,estado,grupo,es_spam)`;\n  const vinculadas = await getJson(query, sbHeaders);\n  const dbConv = Array.isArray(vinculadas) ? vinculadas[0] : null;\n  const cliente = dbConv?.clientes;\n  if (!dbConv || !cliente || cliente.es_spam === true || cliente.grupo !== 'templo') continue;\n  const etapa = etapaDe(cliente.estado);\n  if (!etapa) continue;\n\n  // Se busca la última respuesta REAL del cliente, aunque después haya respondido\n  // el agente. Por eso no se usa last_activity_at ni se filtra por último mensaje.\n  const mensajesData = await getJson(`${CHATWOOT_URL}/api/v1/accounts/${ACCOUNT_ID}/conversations/${cwId}/messages?per_page=100`, chatHeaders);\n  const mensajes = mensajesData?.payload || mensajesData?.data?.payload || [];\n  const entrantes = mensajes.filter(m => m.message_type === 0 || m.message_type === 'incoming');\n  if (!entrantes.length) continue;\n  const ultimaRespuesta = Math.max(...entrantes.map(m => Number(m.created_at || 0)).filter(Boolean));\n  if (!ultimaRespuesta) continue;\n  const horasDesdeRespuesta = (ahora - ultimaRespuesta) / 3600;\n\n  // Cuatro envíos, contados por cliente y etapa: 30 min, 3 h, 12 h y 23:30 h.\n  const logUrl = `${SUPABASE_URL}/rest/v1/recordatorios_whatsapp?cliente_id=eq.${cliente.id}&etapa=eq.${encodeURIComponent(cliente.estado)}&tipo=eq.${encodeURIComponent(etapa)}&select=plantilla,enviado_en&order=enviado_en.desc&limit=10`;\n  const logs = await getJson(logUrl, sbHeaders);\n  const intentos = Array.isArray(logs) ? logs.length : 0;\n  if (intentos >= 4) continue;\n  const umbrales = [0.5, 3, 12, 23.5];\n  if (horasDesdeRespuesta < umbrales[intentos]) continue;\n\n  const nombre = String(conv.meta?.sender?.name || '').trim();\n  const primerNombre = nombre && normalizar(nombre) !== 'cliente' ? nombre.split(' ')[0] : '';\n  const base = plantillas[etapa][intentos].replace('{{nombre}}', primerNombre).replace('Hola .', 'Hola');\n  const telefono = String(dbConv.numero_whatsapp || conv.meta?.sender?.phone_number || conv.meta?.sender?.identifier || '').replace(/[^0-9]/g, '');\n  if (!telefono || !base) continue;\n  salidas.push({ json: { conversationId: cwId, conversacionId: dbConv.id, clienteId: cliente.id, etapa, estado: cliente.estado, telefono, mensaje: base, intento: intentos + 1, nombre: primerNombre, ultimaRespuestaCliente: ultimaRespuesta, horasDesdeRespuesta: Math.floor(horasDesdeRespuesta) } });\n}\nreturn salidas;\n"
       },
       "id": "buscar-y-preparar",
       "name": "Buscar clientes y preparar recordatorio",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [-160, 0]
+      "position": [
+        -160,
+        0
+      ]
     },
     {
       "parameters": {
@@ -37,7 +43,10 @@
       "name": "Procesar uno a uno",
       "type": "n8n-nodes-base.splitInBatches",
       "typeVersion": 3,
-      "position": [80, 0]
+      "position": [
+        80,
+        0
+      ]
     },
     {
       "parameters": {
@@ -47,7 +56,10 @@
       "name": "Enviar por WhatsApp API",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [320, 0]
+      "position": [
+        320,
+        0
+      ]
     },
     {
       "parameters": {
@@ -57,18 +69,82 @@
       "name": "Registrar envío e impedir duplicados",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [560, 0]
+      "position": [
+        560,
+        0
+      ]
     }
   ],
   "connections": {
-    "Cada 15 minutos": { "main": [[{ "node": "Buscar clientes y preparar recordatorio", "type": "main", "index": 0 }]] },
-    "Buscar clientes y preparar recordatorio": { "main": [[{ "node": "Procesar uno a uno", "type": "main", "index": 0 }]] },
-    "Procesar uno a uno": { "main": [[{ "node": "Enviar por WhatsApp API", "type": "main", "index": 0 }], [{ "node": "Procesar uno a uno", "type": "main", "index": 0 }]] },
-    "Enviar por WhatsApp API": { "main": [[{ "node": "Registrar envío e impedir duplicados", "type": "main", "index": 0 }]] },
-    "Registrar envío e impedir duplicados": { "main": [[{ "node": "Procesar uno a uno", "type": "main", "index": 0 }]] }
+    "Cada 15 minutos": {
+      "main": [
+        [
+          {
+            "node": "Buscar clientes y preparar recordatorio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buscar clientes y preparar recordatorio": {
+      "main": [
+        [
+          {
+            "node": "Procesar uno a uno",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Procesar uno a uno": {
+      "main": [
+        [
+          {
+            "node": "Enviar por WhatsApp API",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Procesar uno a uno",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enviar por WhatsApp API": {
+      "main": [
+        [
+          {
+            "node": "Registrar envío e impedir duplicados",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Registrar envío e impedir duplicados": {
+      "main": [
+        [
+          {
+            "node": "Procesar uno a uno",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
   },
-  "settings": { "executionOrder": "v1" },
+  "settings": {
+    "executionOrder": "v1"
+  },
   "active": false,
   "pinData": {},
-  "meta": { "templateCredsSetupCompleted": true }
+  "meta": {
+    "templateCredsSetupCompleted": true
+  }
 }

@@ -19,9 +19,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const raiz = path.resolve(__dirname, "..");
 const BASE = path.join(__dirname, "luna", "base-workflow.json");
 const CODE = path.join(__dirname, "luna", "code");
-// 05-luna-etapas.json        → EL QUE SE IMPORTA EN n8n (llaves dentro, sin $env). Ignorado por git.
-// 05-luna-etapas.github.json → copia para el repo (sin secretos, usa $env). Versionada.
-const SALIDA = path.join(__dirname, "05-luna-etapas.json");
+// IMPORTAR-EN-N8N.json           → EL QUE SE IMPORTA EN n8n (llaves dentro, sin $env).
+//                                  No se versiona (lleva secretos) pero SI es visible.
+// 05-luna-etapas.github.json     → copia para el repo (sin secretos, usa $env).
+const SALIDA = path.join(__dirname, "IMPORTAR-EN-N8N.json");
 const SALIDA_GITHUB = path.join(__dirname, "05-luna-etapas.github.json");
 
 const wf = JSON.parse(fs.readFileSync(BASE, "utf8"));
@@ -36,7 +37,11 @@ wf.settings = { executionOrder: "v1", saveExecutionProgress: true, saveManualExe
 // Utilidades
 // ---------------------------------------------------------------------------
 const porNombre = new Map(wf.nodes.map((n) => [n.name, n]));
-const uuid = () => crypto.randomUUID();
+// IDs deterministas: reconstruir el workflow no debe cambiar el diff
+const uuid = (semilla) => {
+  const h = crypto.createHash("sha1").update(String(semilla)).digest("hex");
+  return [h.slice(0, 8), h.slice(8, 12), "4" + h.slice(13, 16), "8" + h.slice(17, 20), h.slice(20, 32)].join("-");
+};
 
 function reemplazarJsCode(nombre, archivo) {
   const nodo = porNombre.get(nombre);
@@ -61,7 +66,7 @@ function renombrarNodo(viejo, nuevo) {
 }
 
 function agregarNodo(nodo) {
-  if (!nodo.id) nodo.id = uuid();
+  if (!nodo.id) nodo.id = uuid("nodo:" + nodo.name);
   if (!nodo.typeVersion) nodo.typeVersion = 2;
   wf.nodes.push(nodo);
   porNombre.set(nodo.name, nodo);
@@ -133,7 +138,7 @@ agregarNodo({
       options: { caseSensitive: true, leftValue: "", typeValidation: "loose", version: 3 },
       conditions: [
         {
-          id: uuid(),
+          id: uuid("cond:lunaActua"),
           leftValue: "={{ $json.lunaActua }}",
           rightValue: "true",
           operator: { type: "string", operation: "equals", name: "filter.operator.equals" }

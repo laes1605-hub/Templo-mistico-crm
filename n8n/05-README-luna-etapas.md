@@ -58,11 +58,11 @@ aprende algo nuevo, para que el Maestro la vea en el CRM.
 1. Ejecuta `supabase/migrations/20260902_luna_etapas_expediente.sql` en el SQL Editor de Supabase.
    Agrega `motivo_consulta`, `motivo_categoria` y `luna_etapa` a `clientes`, y crea las etapas
    **Sin respuesta / Datos / Por consulta** solo si tu pipeline no las tiene ya con ese nombre.
-2. **Importa `n8n/05-luna-etapas.json`** ← llaves dentro, no usa `$env`, cero configuración.
+2. **Importa `n8n/IMPORTAR-EN-N8N.json`** ← llaves dentro, no usa `$env`, cero configuración.
 
    | Archivo | Para qué |
    |---|---|
-   | `n8n/05-luna-etapas.json` | **Importar en n8n.** Lleva las llaves dentro y no usa `$env`. Está en `.gitignore` (no se sube a GitHub). |
+   | `n8n/IMPORTAR-EN-N8N.json` | **Importar en n8n.** Lleva las llaves dentro y no usa `$env`. No se sube a GitHub (contiene secretos). |
    | `n8n/05-luna-etapas.github.json` | Copia versionada en GitHub, sin secretos: lee `$env.OPENAI_API_KEY`. **No la importes**: tu n8n tiene `N8N_BLOCK_ENV_ACCESS_IN_NODE` y falla con `access to env vars denied`. |
 
    `npm run build:luna` regenera los dos. El importable se construye a partir de

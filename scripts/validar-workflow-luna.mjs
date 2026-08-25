@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const raiz = path.resolve(__dirname, "..");
-const RUTA_WF = path.join(raiz, "n8n", "05-luna-etapas.json");
+const RUTA_WF = path.join(raiz, "n8n", "IMPORTAR-EN-N8N.json");
 
 let fallos = 0;
 let pruebas = 0;

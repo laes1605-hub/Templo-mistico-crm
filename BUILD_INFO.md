@@ -33,8 +33,8 @@
 - Motor de etapas + archivo persistente (motivo, tipo de trabajo, nombres y fotos) para que
   Luna no vuelva a pedir lo que ya le entregaron
 - Verificación: `npm run check:luna` (152 pruebas sobre el código real de los nodos) — ✅ 0 fallos
-- Regenerar: `npm run build:luna` → `05-luna-etapas.json` (importar en n8n, llaves dentro,
-  ignorado por git) y `05-luna-etapas.github.json` (versionado, sin secretos, usa $env)
+- Regenerar: `npm run build:luna` → `IMPORTAR-EN-N8N.json` (importar en n8n, llaves dentro,
+  sin versionar) y `05-luna-etapas.github.json` (versionado, sin secretos, usa $env)
 - El n8n del Templo tiene N8N_BLOCK_ENV_ACCESS_IN_NODE: por eso el archivo importable
   lleva las llaves dentro y no usa $env
 

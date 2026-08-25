@@ -63,7 +63,9 @@
     },
     {
       "parameters": {
-        "amount": "={{ $('Calcular Delay').item.json.delay }}"
+        "amount": "={{ $('Calcular Delay').item.json.delay }}",
+        "resume": "timeInterval",
+        "unit": "seconds"
       },
       "type": "n8n-nodes-base.wait",
       "typeVersion": 1.1,
@@ -127,7 +129,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={\n  \"number\": \"={{ ($('Verificar CRM').first().json.crmTelefono || $('Pulir y Auditar Respuesta').first().json.contactPhone || $('Webhook').first().json.body?.sender?.phone_number || '').replace(/[^0-9]/g, '') }}\",\n  \"presence\": \"composing\",\n  \"delay\": 10000\n}",
+        "jsonBody": "={\n  \"number\": \"={{ ($('Verificar CRM').first().json.crmTelefono || $('Pulir y Auditar Respuesta').first().json.contactPhone || $('Webhook').first().json.body?.sender?.phone_number || '').replace(/[^0-9]/g, '') }}\",\n  \"presence\": \"composing\",\n  \"delay\": {{ $json.delayPresenciaMs || $json.delayMs || 8000 }}\n}",
         "options": {}
       },
       "type": "n8n-nodes-base.httpRequest",
@@ -142,7 +144,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const respuesta = $input.first().json.choices[0].message.content;\nconst longitud = respuesta.length;\n\nlet delaySegundos;\n\nif (longitud < 50) {\n  delaySegundos = 3;\n} else if (longitud < 150) {\n  delaySegundos = 5;\n} else if (longitud < 300) {\n  delaySegundos = 10;\n} else if (longitud < 500) {\n  delaySegundos = 15;\n} else {\n  delaySegundos = 20;\n}\n\nlet numeroCliente = $('Webhook').first().json.body.conversation?.meta?.sender?.identifier || \n                    $('Webhook').first().json.body.sender?.identifier || \"\";\nnumeroCliente = numeroCliente.split('@')[0];\n\n// Pasar tambien el flag de consulta lista\nconst consultaLista = $input.first().json.consultaLista || false;\nconst contactName = $input.first().json.contactName || \"Cliente\";\nconst contactPhone = $input.first().json.contactPhone || \"\";\nconst chatwootUrl = $input.first().json.chatwootUrl || \"\";\n\nreturn [\n  {\n    json: {\n      content: respuesta,\n      delay: delaySegundos,\n      delayMs: delaySegundos * 1000,\n      numero: numeroCliente,\n      consultaLista: consultaLista,\n      contactName: contactName,\n      contactPhone: contactPhone,\n      chatwootUrl: chatwootUrl\n    }\n  }\n];"
+        "jsCode": "// =====================================================\n// CALCULAR DELAY NATURAL DE RESPUESTA (texto)\n// Luna \"lee\" y \"escribe\" como una persona:\n//   - una pausa para leer/pensar (aleatoria, 1.2s - 3.2s)\n//   - un tiempo de tipeo proporcional a la longitud del mensaje\n//   - una variacion aleatoria de +-25% para que nunca se sienta robotica\n//   - tope de 20s para no dejar esperando al cliente\n// El indicador \"escribiendo...\" dura casi todo el tipeo y desaparece justo\n// antes de enviar (sensacion de que termino de escribir y toca enviar).\n// =====================================================\nconst data = $input.first().json || {};\n\n// 1) Texto de la respuesta (llega desde \"Pulir y Auditar Respuesta\")\nlet respuesta = \"\";\ntry {\n  respuesta = data.choices?.[0]?.message?.content\n    || data.textoRespuesta\n    || data.content\n    || data.textoLimpio\n    || \"\";\n} catch (e) {\n  respuesta = \"\";\n}\nrespuesta = String(respuesta || \"\").trim();\nconst longitud = respuesta.length;\n\n// 2) Pausa de lectura/pensamiento (aleatoria)\nfunction aleatorioEntre(min, max) {\n  return min + Math.random() * (max - min);\n}\nconst pausaLecturaSeg = aleatorioEntre(1.2, 3.2);\n\n// 3) Tiempo de tipeo: un humano escribe ~30-45 palabras por minuto.\n//    Usamos un ritmo un poco mas vivo para no hacer esperar de mas.\nlet tipeoSeg;\nif (longitud < 40) tipeoSeg = 1.5;\nelse if (longitud < 90) tipeoSeg = 2.5;\nelse if (longitud < 160) tipeoSeg = 3.5;\nelse if (longitud < 260) tipeoSeg = 5.0;\nelse if (longitud < 400) tipeoSeg = 6.5;\nelse tipeoSeg = 8.0;\n\n// 4) Total con variacion natural de +-25% y limites 2s - 20s\nconst variacion = 1 + aleatorioEntre(-0.25, 0.25);\nlet delaySegundos = (pausaLecturaSeg + tipeoSeg) * variacion;\ndelaySegundos = Math.max(2, Math.min(20, delaySegundos));\ndelaySegundos = Math.round(delaySegundos * 10) / 10;\n\nconst delayMs = Math.round(delaySegundos * 1000);\n\n// 5) El \"escribiendo...\" cubre casi todo el tipeo y se apaga justo antes\n//    de que llegue el mensaje.\nconst delayPresenciaMs = Math.max(1500, delayMs - 700);\n\n// 6) Datos que necesitan los nodos siguientes\nlet numeroCliente = \"\";\ntry {\n  numeroCliente = $('Webhook').first().json.body?.conversation?.meta?.sender?.identifier\n    || $('Webhook').first().json.body?.sender?.identifier\n    || \"\";\n} catch (e) {\n  numeroCliente = \"\";\n}\nnumeroCliente = String(numeroCliente || \"\").split('@')[0];\n\nreturn [{\n  json: {\n    content: respuesta,\n    longitud: longitud,\n    delay: delaySegundos,\n    delayMs: delayMs,\n    delayPresenciaMs: delayPresenciaMs,\n    pausaLecturaSeg: Math.round(pausaLecturaSeg * 10) / 10,\n    tipeoSeg: tipeoSeg,\n    numero: numeroCliente,\n    consultaLista: data.consultaLista || false,\n    contactName: data.contactName || \"Cliente\",\n    contactPhone: data.contactPhone || \"\",\n    chatwootUrl: data.chatwootUrl || \"\"\n  }\n}];\n"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -724,7 +726,9 @@
     },
     {
       "parameters": {
-        "amount": 15
+        "amount": 5,
+        "resume": "timeInterval",
+        "unit": "seconds"
       },
       "type": "n8n-nodes-base.wait",
       "typeVersion": 1.1,

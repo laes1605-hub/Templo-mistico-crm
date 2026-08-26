@@ -212,12 +212,12 @@ export default function VoiceNotePlayer({ src, isMe }: { src: string; isMe: bool
                     : "bg-purple-400"
                   : isMe
                     ? "bg-white/40"
-                    : "bg-gray-600"
+                    : "bg-gray-700"
               }`}
             />
           ))}
         </div>
-        <div className={`flex items-center justify-between text-[10px] leading-none mt-1 ${isMe ? "text-purple-200" : "text-gray-500"}`}>
+        <div className={`flex items-center justify-between text-[10px] leading-none mt-1 ${isMe ? "text-white/75" : "text-gray-500"}`}>
           <span>{formatClock(currentTime)}</span>
           <span>{hasDuration ? formatClock(duration) : "…"}</span>
         </div>
@@ -231,7 +231,7 @@ export default function VoiceNotePlayer({ src, isMe }: { src: string; isMe: bool
         aria-label={`Nota de voz, velocidad ${speed}x`}
         className={`flex-shrink-0 w-9 h-9 rounded-full flex flex-col items-center justify-center transition-colors ${
           isMe
-            ? "bg-white/10 hover:bg-white/20 text-purple-100"
+            ? "bg-white/10 hover:bg-white/20 text-white"
             : "bg-purple-950/60 hover:bg-purple-900/60 text-purple-300 border border-purple-800/40"
         }`}
       >

@@ -2744,13 +2744,13 @@ export default function CRMApp() {
                       onClick={() => setChatCategoria("spam")}
                       className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-bold border transition-all ${
                         chatCategoria === "spam"
-                          ? "bg-black text-white border-gray-700 shadow-md"
+                          ? "bg-gray-100 text-background border-gray-300 shadow-md"
                           : "bg-surface border-border text-gray-500 hover:text-gray-300"
                       }`}
                       title="Chats marcados como spam (sin agente ni recordatorios)"
                     >
                       <Ban className="w-3 h-3" /> Spam
-                      <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-semibold ${chatCategoria === "spam" ? "bg-white/20 text-white" : "bg-background text-gray-500"}`}>{conversacionesSpam.length}</span>
+                      <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-semibold ${chatCategoria === "spam" ? "bg-background/25 text-background" : "bg-background text-gray-500"}`}>{conversacionesSpam.length}</span>
                     </button>
                   </div>
                 )}
@@ -2771,8 +2771,8 @@ export default function CRMApp() {
                     const tieneNotas = cliente?.notas_personales || cliente?.detalles_caso;
                     const esSpamChat = cliente?.es_spam === true;
                     const etapaCliente = getEtapa(cliente?.estado);
-                    const etapaColor = esSpamChat ? "border-black" : (etapaCliente?.color || "border-transparent");
-                    const etapaBg = esSpamChat ? "bg-black/20" : (etapaCliente?.bg_color || "");
+                    const etapaColor = esSpamChat ? "border-gray-500" : (etapaCliente?.color || "border-transparent");
+                    const etapaBg = esSpamChat ? "bg-gray-500/15" : (etapaCliente?.bg_color || "");
                     const etapaText = esSpamChat ? "text-gray-300" : (etapaCliente?.text_color || "text-gray-400");
                     return (
                       <div key={conv.id} className={`group relative w-full flex items-start gap-3 text-left hover:bg-surfaceHover transition-colors ${selectedConv?.id === conv.id ? `bg-surfaceHover border-l-4 ${etapaColor}` : `border-l-4 ${etapaColor} ${etapaBg}`}`}>
@@ -2913,13 +2913,13 @@ export default function CRMApp() {
                               return <p className="text-sm whitespace-pre-wrap leading-relaxed">{msg.contenido}</p>;
                             })()}
                             <div className={`flex items-center gap-1.5 mt-1 ${isMe ? "justify-end" : "justify-start"}`}>
-                              <span className={`text-[9px] ${isMe ? "text-purple-200" : "text-gray-500"}`}>{new Date(msg.creado_en).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                              <span className={`text-[9px] ${isMe ? "text-white/75" : "text-gray-500"}`}>{new Date(msg.creado_en).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
                               {isAudioMsg && msg.url_archivo && (
                                 <button
                                   type="button"
                                   onClick={() => descargarAudioMensaje(msg, idxMsg)}
                                   disabled={descargandoAudioId === String(msg.id || idxMsg)}
-                                  className={`p-0.5 rounded transition-colors disabled:opacity-50 ${isMe ? "text-purple-200 hover:text-white" : "text-gray-500 hover:text-purple-300"}`}
+                                  className={`p-0.5 rounded transition-colors disabled:opacity-50 ${isMe ? "text-white/75 hover:text-white" : "text-gray-500 hover:text-purple-300"}`}
                                   title="Descargar esta nota de voz (OGG)"
                                 >
                                   <Download className={`w-3 h-3 ${descargandoAudioId === String(msg.id || idxMsg) ? "animate-pulse" : ""}`} />
@@ -3408,9 +3408,9 @@ export default function CRMApp() {
                               return <p className="text-sm whitespace-pre-wrap leading-relaxed">{msg.contenido}</p>;
                             })()}
                             <div className={`flex items-center gap-1.5 mt-1 ${isMe ? "justify-end" : "justify-start"}`}>
-                              <span className={`text-[9px] ${isMe ? "text-purple-200" : "text-gray-500"}`}>{new Date(msg.creado_en).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                              <span className={`text-[9px] ${isMe ? "text-white/75" : "text-gray-500"}`}>{new Date(msg.creado_en).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
                               {isAudioMsg && msg.url_archivo && (
-                                <button type="button" onClick={() => descargarAudioMensaje(msg, idxMsg)} disabled={descargandoAudioId === String(msg.id || idxMsg)} className={`p-0.5 rounded transition-colors disabled:opacity-50 ${isMe ? "text-purple-200 hover:text-white" : "text-gray-500 hover:text-purple-300"}`} title="Descargar esta nota de voz (OGG)"><Download className={`w-3 h-3 ${descargandoAudioId === String(msg.id || idxMsg) ? "animate-pulse" : ""}`} /></button>
+                                <button type="button" onClick={() => descargarAudioMensaje(msg, idxMsg)} disabled={descargandoAudioId === String(msg.id || idxMsg)} className={`p-0.5 rounded transition-colors disabled:opacity-50 ${isMe ? "text-white/75 hover:text-white" : "text-gray-500 hover:text-purple-300"}`} title="Descargar esta nota de voz (OGG)"><Download className={`w-3 h-3 ${descargandoAudioId === String(msg.id || idxMsg) ? "animate-pulse" : ""}`} /></button>
                               )}
                             </div>
                           </div>
@@ -3582,10 +3582,10 @@ export default function CRMApp() {
               })}
 
               {/* Columna de Spam: pipeline fijo, color negro, no editable ni eliminable */}
-              <div className="w-64 flex-shrink-0 bg-black/30 border-2 border-gray-800 rounded-2xl p-4 flex flex-col gap-3 min-h-full">
-                <div className="flex items-center justify-between pb-2 border-b-2 border-black">
+              <div className="w-64 flex-shrink-0 bg-gray-900/60 border-2 border-gray-800 rounded-2xl p-4 flex flex-col gap-3 min-h-full">
+                <div className="flex items-center justify-between pb-2 border-b-2 border-gray-700">
                   <h2 className="text-xs font-bold text-gray-300 flex items-center gap-1"><Ban className="w-3 h-3" /> Spam</h2>
-                  <span className="text-xs px-2 py-0.5 rounded-full bg-black/60 text-gray-300 font-semibold">{conversacionesSpam.length}</span>
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-gray-800 text-gray-300 font-semibold">{conversacionesSpam.length}</span>
                 </div>
                 <div className="space-y-2 overflow-y-auto flex-1">
                   {conversacionesSpam.map((c) => (
@@ -3922,7 +3922,7 @@ export default function CRMApp() {
 
             {/* MODAL ABONO */}
             {abonoModalCliente && (
-              <div className="fixed inset-0 z-[70] bg-black/70 flex items-center justify-center p-4 backdrop-blur-md">
+              <div className="fixed inset-0 z-[70] bg-scrim flex items-center justify-center p-4 backdrop-blur-md">
                 <div className="w-full max-w-sm bg-surface border border-emerald-900/40 rounded-2xl p-6 space-y-4 shadow-2xl">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2 text-emerald-400"><Coins className="w-5 h-5" /><h3 className="text-base font-bold text-gray-100">Registrar abono</h3></div>
@@ -3957,7 +3957,7 @@ export default function CRMApp() {
 
             {/* MODAL REPROGRAMAR PAGO */}
             {reprogramarModal && (
-              <div className="fixed inset-0 z-[70] bg-black/70 flex items-center justify-center p-4 backdrop-blur-md">
+              <div className="fixed inset-0 z-[70] bg-scrim flex items-center justify-center p-4 backdrop-blur-md">
                 <div className="w-full max-w-sm bg-surface border border-amber-900/40 rounded-2xl p-6 space-y-4 shadow-2xl">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2 text-amber-300"><Calendar className="w-5 h-5" /><h3 className="text-base font-bold text-gray-100">Reprogramar pago</h3></div>
@@ -4018,7 +4018,7 @@ export default function CRMApp() {
 
       {/* MODAL CONFIRMAR ELIMINACIÓN COMPLETA DEL CLIENTE */}
       {showDeleteConfirm && (
-        <div className="fixed inset-0 z-[60] bg-black/70 flex items-center justify-center p-4 backdrop-blur-md">
+        <div className="fixed inset-0 z-[60] bg-scrim flex items-center justify-center p-4 backdrop-blur-md">
           <div className="w-full max-w-sm bg-surface border border-red-900/50 rounded-2xl p-6 space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto">
             {resultadoEliminar ? (
               <>
@@ -4080,7 +4080,7 @@ export default function CRMApp() {
 
       {/* MODAL IA */}
       {showAiModal && (
-        <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4 backdrop-blur-md">
+        <div className="fixed inset-0 z-50 bg-scrim flex items-center justify-center p-4 backdrop-blur-md">
           <div className="w-full max-w-2xl bg-surface border border-border rounded-2xl p-6 space-y-4 shadow-2xl max-h-[90vh] flex flex-col">
             <div className="flex items-center justify-between border-b border-border pb-3"><div className="flex items-center gap-2 text-purple-400"><Sparkles className="w-5 h-5" /><h3 className="text-lg font-bold text-gray-100">Auditoría IA</h3></div><button onClick={() => setShowAiModal(false)} className="text-gray-400 hover:text-white"><X className="w-5 h-5" /></button></div>
             <div className="flex-1 overflow-y-auto space-y-4 pr-1">{loadingAiAds ? (<div className="p-12 text-center space-y-3"><Sparkles className="w-10 h-10 text-purple-500 animate-spin mx-auto" /><p className="text-sm text-gray-300 font-medium">Analizando métricas con OpenAI...</p></div>) : (<div className="prose prose-invert max-w-none text-xs md:text-sm leading-relaxed whitespace-pre-wrap text-gray-200 bg-background/80 p-5 rounded-xl border border-border">{aiRecommendation}</div>)}</div>
@@ -4090,7 +4090,7 @@ export default function CRMApp() {
 
       {/* MODAL ADMIN */}
       {showAdmin && (
-        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4 backdrop-blur-sm">
+        <div className="fixed inset-0 z-50 bg-scrim flex items-center justify-center p-4 backdrop-blur-sm">
           <div className="w-full max-w-sm bg-surface border border-border rounded-2xl p-6 space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between"><div className="flex items-center gap-2"><Shield className="w-5 h-5 text-purple-400" /><h3 className="text-base font-bold text-gray-100">Panel Admin</h3></div><button onClick={() => { setShowAdmin(false); setBalances(null); setAdminSecret(""); }} className="text-gray-400 hover:text-white"><X className="w-5 h-5" /></button></div>
             <div className="space-y-2"><label className="text-xs text-gray-400">Clave admin</label><input type="password" placeholder="Ingresa tu clave admin" value={adminSecret} onChange={(e) => setAdminSecret(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") cargarSaldos(); }} className="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500" /></div>

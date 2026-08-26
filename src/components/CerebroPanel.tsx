@@ -301,7 +301,7 @@ export default function CerebroPanel() {
             <p className="font-bold mb-1">Falta crear la tabla en Supabase</p>
             <p className="text-amber-300/80">
               Abrí Supabase → SQL Editor y ejecutá el archivo
-              <code className="mx-1 px-1.5 py-0.5 rounded bg-black/40 font-mono text-[10px]">supabase/migrations/20260824_fase3_cerebro_ia.sql</code>
+              <code className="mx-1 px-1.5 py-0.5 rounded bg-gray-800/70 font-mono text-[10px]">supabase/migrations/20260824_fase3_cerebro_ia.sql</code>
               del repositorio. Después tocá “Actualizar”.
             </p>
           </div>
@@ -361,7 +361,7 @@ export default function CerebroPanel() {
             <button key={f.id} onClick={() => setFiltro(f.id)}
               className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${filtro === f.id ? "bg-purple-600 border-purple-500 text-white" : "bg-surface border-border text-gray-400 hover:text-gray-200"}`}>
               {f.label}
-              <span className={`ml-1.5 text-[10px] ${filtro === f.id ? "text-purple-200" : "text-gray-600"}`}>{(conteo as any)[f.id]}</span>
+              <span className={`ml-1.5 text-[10px] ${filtro === f.id ? "text-white/75" : "text-gray-500"}`}>{(conteo as any)[f.id]}</span>
             </button>
           ))}
         </div>
@@ -578,7 +578,7 @@ export default function CerebroPanel() {
 
       {/* ------------------------------------------------- MODAL: MEMORIA */}
       {showMemoria && (
-        <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4 backdrop-blur-md">
+        <div className="fixed inset-0 z-50 bg-scrim flex items-center justify-center p-4 backdrop-blur-md">
           <div className="w-full max-w-3xl bg-surface border border-border rounded-2xl p-6 space-y-4 shadow-2xl max-h-[90vh] flex flex-col">
             <div className="flex items-center justify-between border-b border-border pb-3">
               <div className="flex items-center gap-2 text-emerald-400">
@@ -611,7 +611,7 @@ export default function CerebroPanel() {
 
       {/* ------------------------------------------ MODAL: LECCIÓN MANUAL */}
       {showNueva && (
-        <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4 backdrop-blur-md">
+        <div className="fixed inset-0 z-50 bg-scrim flex items-center justify-center p-4 backdrop-blur-md">
           <div className="w-full max-w-lg bg-surface border border-border rounded-2xl p-6 space-y-4 shadow-2xl">
             <div className="flex items-center justify-between border-b border-border pb-3">
               <div className="flex items-center gap-2 text-purple-400"><Plus className="w-5 h-5" /><h3 className="text-lg font-bold text-gray-100">Enseñarle algo a Luna</h3></div>

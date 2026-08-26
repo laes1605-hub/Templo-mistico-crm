@@ -1,5 +1,5 @@
 /**
- * Lossless WebM/Matroska (Opus) -> OGG/Opus remuxer (server-side, zero dependencies).
+ * Lossless WebM/Matroska (Opus) -> OGG/Opus remuxer (isomorphic, zero dependencies).
  *
  * The WhatsApp Cloud API only accepts voice notes as OGG with the Opus codec
  * (`audio/ogg; codecs=opus`). Browsers record voice notes with MediaRecorder as
@@ -7,11 +7,39 @@
  * converted losslessly by rewrapping the packets into an OGG container — no
  * re-encoding and no native ffmpeg binary required (important for serverless).
  *
+ * Este archivo es isomórtico (solo `Uint8Array`/`DataView`, sin `Buffer` de
+ * Node): se usa en el route /api/send-message (servidor) y también en el
+ * navegador/APK para guardar las notas de voz del chat en formato OGG.
+ *
  * Supported input: Matroska/WebM files containing an `A_OPUS` track, including
  * live-recorded files (Chrome MediaRecorder) where the Segment AND every
  * Cluster are written with unknown sizes, blocks grouped in BlockGroup, and
  * Xiph/fixed/EBML lacing. SimpleBlock and BlockGroup, all lacing modes.
  */
+
+// ---- Helpers latin1 (el Buffer de Node no existe en el navegador) ----
+function latin1Decode(u8: Uint8Array, start: number, end: number): string {
+  let out = "";
+  for (let i = start; i < end; i++) out += String.fromCharCode(u8[i]);
+  return out;
+}
+
+function latin1Encode(str: string, u8: Uint8Array, offset: number): void {
+  for (let i = 0; i < str.length && offset + i < u8.length; i++) {
+    u8[offset + i] = str.charCodeAt(i) & 0xff;
+  }
+}
+
+function concatU8(parts: Uint8Array[]): Uint8Array {
+  const total = parts.reduce((s, p) => s + p.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const p of parts) {
+    out.set(p, offset);
+    offset += p.length;
+  }
+  return out;
+}
 
 // ---- Matroska element IDs (enough to locate the Opus track and packets) ----
 const ID_SEGMENT = 0x18538067;
@@ -41,9 +69,9 @@ type Element = {
 };
 
 /** Read the element that starts at `pos`, bounded by `scopeEnd`. Null when done/invalid. */
-function readElement(buf: Buffer, pos: number, scopeEnd: number): Element | null {
+function readElement(u8: Uint8Array, pos: number, scopeEnd: number): Element | null {
   if (pos + 2 > scopeEnd) return null;
-  const first = buf[pos];
+  const first = u8[pos];
   if (first === 0) return null; // padding / invalid
   let idLen = 1;
   let mask = 0x80;
@@ -55,9 +83,9 @@ function readElement(buf: Buffer, pos: number, scopeEnd: number): Element | null
   const sPos = pos + idLen;
   if (sPos >= scopeEnd) return null;
   let id = first;
-  for (let i = 1; i < idLen; i++) id = id * 256 + buf[pos + i];
+  for (let i = 1; i < idLen; i++) id = id * 256 + u8[pos + i];
 
-  const sFirst = buf[sPos];
+  const sFirst = u8[sPos];
   if (sFirst === undefined || sFirst === 0) return null;
   let sLen = 1;
   let sMask = 0x80;
@@ -68,7 +96,7 @@ function readElement(buf: Buffer, pos: number, scopeEnd: number): Element | null
   }
   if (sPos + sLen > scopeEnd) return null;
   let size = sFirst & (sMask - 1);
-  for (let i = 1; i < sLen; i++) size = size * 256 + buf[sPos + i];
+  for (let i = 1; i < sLen; i++) size = size * 256 + u8[sPos + i];
 
   const known = size !== Math.pow(2, 7 * sLen) - 1; // all-one vint = unknown (streaming)
   const bodyStart = sPos + sLen;
@@ -77,33 +105,34 @@ function readElement(buf: Buffer, pos: number, scopeEnd: number): Element | null
 }
 
 /** Iterate over the EBML children with KNOWN sizes contained in [start, end). */
-function forEachElement(buf: Buffer, start: number, end: number, cb: (id: number, bodyStart: number, bodyEnd: number) => void): void {
+function forEachElement(u8: Uint8Array, start: number, end: number, cb: (id: number, bodyStart: number, bodyEnd: number) => void): void {
   let pos = start;
   while (true) {
-    const el = readElement(buf, pos, end);
+    const el = readElement(u8, pos, end);
     if (!el || !el.known) return; // unknown-size children are handled by the callers
     cb(el.id, el.bodyStart, el.bodyEnd);
     pos = el.bodyEnd;
   }
 }
 
-function readUint(buf: Buffer, start: number, end: number): number {
+function readUint(u8: Uint8Array, start: number, end: number): number {
   let value = 0;
-  for (let i = start; i < end; i++) value = value * 256 + buf[i];
+  for (let i = start; i < end; i++) value = value * 256 + u8[i];
   return value;
 }
 
 /** Read a Matroska block (SimpleBlock or Block) and emit (track, timestampNs, frame) for every frame. */
 function forEachFrame(
-  buf: Buffer,
+  u8: Uint8Array,
+  dv: DataView,
   start: number,
   end: number,
   clusterTime: number,
   timecodeScale: number,
-  emit: (track: number, timecodeNs: number, frame: Buffer) => void,
+  emit: (track: number, timecodeNs: number, frame: Uint8Array) => void,
 ): void {
   let pos = start;
-  const first = buf[pos];
+  const first = u8[pos];
   if (first === undefined || first === 0) return;
 
   // Track number (vint with the marker bit stripped).
@@ -115,22 +144,22 @@ function forEachFrame(
     if (len > 8) return;
   }
   let track = first & (mask - 1);
-  for (let i = 1; i < len; i++) track = track * 256 + buf[start + i];
+  for (let i = 1; i < len; i++) track = track * 256 + u8[start + i];
   pos = start + len;
   if (pos + 3 > end) return;
 
-  const relTimecode = buf.readInt16BE(pos); // signed 16-bit, relative to the cluster timecode
+  const relTimecode = dv.getInt16(pos); // signed 16-bit, relative to the cluster timecode
   pos += 2;
-  const flags = buf[pos];
+  const flags = u8[pos];
   pos += 1;
   const lacing = (flags >> 1) & 0x03;
 
-  const frames: Buffer[] = [];
+  const frames: Uint8Array[] = [];
   if (lacing === 0) {
-    frames.push(buf.subarray(pos, end));
+    frames.push(u8.subarray(pos, end));
   } else {
     if (pos >= end) return;
-    const frameCount = buf[pos] + 1;
+    const frameCount = u8[pos] + 1;
     pos += 1;
     const sizes: number[] = [];
     if (lacing === 1) {
@@ -138,12 +167,15 @@ function forEachFrame(
       for (let f = 0; f < frameCount - 1 && pos < end; f++) {
         let size = 0;
         while (pos < end) {
-          const b = buf[pos++];
+          const b = u8[pos++];
           size += b;
           if (b < 255) break;
         }
         sizes.push(size);
       }
+      // El último frame = los bytes restantes del block (la spec de Xiph no
+      // lo declara; sin esto se perdía el frame final de cada block laceado).
+      sizes.push(end - pos - sizes.reduce((a, b) => a + b, 0));
     } else if (lacing === 2) {
       // Fixed: every frame has the same size, the last one takes the remainder.
       const available = end - pos;
@@ -154,7 +186,7 @@ function forEachFrame(
       // EBML: first size is a vint, then signed vint deltas (usually single byte).
       const readVint = () => {
         if (pos >= end) return { value: 0, length: 0 };
-        const vFirst = buf[pos];
+        const vFirst = u8[pos];
         let vLen = 1;
         let vMask = 0x80;
         while ((vFirst & vMask) === 0) {
@@ -164,7 +196,7 @@ function forEachFrame(
         }
         if (pos + vLen > end) return { value: 0, length: 0 };
         let v = vFirst & (vMask - 1);
-        for (let i = 1; i < vLen; i++) v = v * 256 + buf[pos + i];
+        for (let i = 1; i < vLen; i++) v = v * 256 + u8[pos + i];
         pos += vLen;
         return { value: v, length: vLen };
       };
@@ -183,7 +215,7 @@ function forEachFrame(
     let cursor = pos;
     for (const size of sizes) {
       const frameEnd = Math.min(cursor + Math.max(size, 0), end);
-      frames.push(buf.subarray(cursor, frameEnd));
+      frames.push(u8.subarray(cursor, frameEnd));
       cursor = frameEnd;
     }
   }
@@ -204,7 +236,7 @@ const OPUS_FRAME_MS: number[] = (() => {
   return table;
 })();
 
-function opusPacketSamples(pkt: Buffer): number {
+function opusPacketSamples(pkt: Uint8Array): number {
   const toc = pkt[0];
   const code = toc & 3;
   // code 0: one frame; code 1: two frames (VBR sizes); code 2: two frames (equal size);
@@ -224,9 +256,9 @@ const OGG_CRC_TABLE = (() => {
   return table;
 })();
 
-function oggCrc32(buf: Buffer): number {
+function oggCrc32(u8: Uint8Array): number {
   let crc = 0;
-  for (let i = 0; i < buf.length; i++) crc = (((crc << 8) >>> 0) ^ OGG_CRC_TABLE[((crc >>> 24) ^ buf[i]) & 0xff]) >>> 0;
+  for (let i = 0; i < u8.length; i++) crc = (((crc << 8) >>> 0) ^ OGG_CRC_TABLE[((crc >>> 24) ^ u8[i]) & 0xff]) >>> 0;
   return crc;
 }
 
@@ -241,45 +273,52 @@ const lacingValues = (length: number): number[] => {
   return values;
 };
 
-function buildOpusHead(codecPrivate: Buffer | null, channels: number): Buffer {
-  if (codecPrivate && codecPrivate.length >= 19 && codecPrivate.toString("latin1", 0, 8) === "OpusHead" && codecPrivate[8] <= 1) {
+function buildOpusHead(codecPrivate: Uint8Array | null, channels: number): Uint8Array {
+  if (codecPrivate && codecPrivate.length >= 19 && latin1Decode(codecPrivate, 0, 8) === "OpusHead" && codecPrivate[8] <= 1) {
     return codecPrivate;
   }
   // Fallback: synthesize a mono 48 kHz head (MediaRecorder always writes one,
   // so this is only defensive).
-  const head = Buffer.alloc(19);
-  head.write("OpusHead", 0, "latin1");
+  const head = new Uint8Array(19);
+  const dv = new DataView(head.buffer);
+  latin1Encode("OpusHead", head, 0);
   head[8] = 1; // version
   head[9] = Math.min(Math.max(channels || 1, 1), 2);
-  head.writeUInt16LE(312, 10); // pre-skip (libopus default)
-  head.writeUInt32LE(SAMPLES_PER_SECOND, 12); // input sample rate
-  head.writeInt16LE(0, 16); // output gain
+  dv.setUint16(10, 312, true); // pre-skip (libopus default)
+  dv.setUint32(12, SAMPLES_PER_SECOND, true); // input sample rate
+  dv.setInt16(16, 0, true); // output gain
   head[18] = 0; // channel mapping family
   return head;
 }
 
-function buildOpusTags(): Buffer {
+function buildOpusTags(): Uint8Array {
   const vendor = "templo-mistico-crm remux";
-  const tags = Buffer.alloc(8 + 4 + vendor.length + 4);
-  tags.write("OpusTags", 0, "latin1");
-  tags.writeUInt32LE(vendor.length, 8);
-  tags.write(vendor, 12, "latin1");
-  tags.writeUInt32LE(0, 8 + 4 + vendor.length); // zero user comments
+  const tags = new Uint8Array(8 + 4 + vendor.length + 4);
+  const dv = new DataView(tags.buffer);
+  latin1Encode("OpusTags", tags, 0);
+  dv.setUint32(8, vendor.length, true);
+  latin1Encode(vendor, tags, 12);
+  dv.setUint32(8 + 4 + vendor.length, 0, true); // zero user comments
   return tags;
 }
 
 /**
  * Remux the Opus track of a WebM/Matroska buffer into a valid OGG/Opus stream
  * (`audio/ogg; codecs=opus`). Throws when the input contains no Opus packets.
+ *
+ * Isomórtico: funciona en Node (pase un `Buffer`, que es un `Uint8Array`) y
+ * en el navegador/APK. Devuelve `Uint8Array` (el servidor puede envolverlo
+ * con `Buffer.from(...)`).
  */
-export function remuxWebmToOgg(webm: Uint8Array, options: { prerollMs?: number } = {}): Buffer {
-  const buf = Buffer.isBuffer(webm) ? webm : Buffer.from(webm);
-  if (!buf.length) throw new Error("El WebM está vacío");
+export function remuxWebmToOgg(webm: Uint8Array, options: { prerollMs?: number } = {}): Uint8Array {
+  if (!webm || !webm.length) throw new Error("El WebM está vacío");
+  const u8 = webm;
+  const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
 
-  type TrackInfo = { codecId: string; codecPrivate: Buffer | null; channels: number };
+  type TrackInfo = { codecId: string; codecPrivate: Uint8Array | null; channels: number };
   const tracks = new Map<number, TrackInfo>();
   let timecodeScale = 1_000_000; // nanoseconds per tick (Matroska default = 1 ms)
-  const packets: { data: Buffer }[] = [];
+  const packets: { data: Uint8Array }[] = [];
   let clusterTime = 0;
   let opusTrack: number | null = null;
 
@@ -293,7 +332,7 @@ export function remuxWebmToOgg(webm: Uint8Array, options: { prerollMs?: number }
       }
     }
     if (opusTrack === null) return;
-    forEachFrame(buf, start, end, clusterTime, timecodeScale, (track, _timecodeNs, frame) => {
+    forEachFrame(u8, dv, start, end, clusterTime, timecodeScale, (track, _timecodeNs, frame) => {
       if (track !== opusTrack) return;
       packets.push({ data: frame });
     });
@@ -304,20 +343,20 @@ export function remuxWebmToOgg(webm: Uint8Array, options: { prerollMs?: number }
     const end = cluster.known ? cluster.bodyEnd : segmentEnd;
     let pos = cluster.bodyStart;
     while (true) {
-      const child = readElement(buf, pos, end);
+      const child = readElement(u8, pos, end);
       if (!child) return end;
       // A live-recorded (unknown-size) cluster implicitly ends where the next
       // sibling element of the Segment level begins.
       if (!cluster.known && (child.id === ID_CLUSTER || child.id === ID_INFO || child.id === ID_TRACKS)) return pos;
       if (child.id === ID_TIMECODE) {
-        clusterTime = readUint(buf, child.bodyStart, child.bodyEnd);
+        clusterTime = readUint(u8, child.bodyStart, child.bodyEnd);
       } else if (child.id === ID_SIMPLE_BLOCK) {
         collectBlock(child.bodyStart, child.bodyEnd);
       } else if (child.id === ID_BLOCK_GROUP) {
         const groupEnd = child.known ? child.bodyEnd : end;
         let gpos = child.bodyStart;
         while (true) {
-          const inner = readElement(buf, gpos, groupEnd);
+          const inner = readElement(u8, gpos, groupEnd);
           if (!inner) break;
           if (!child.known && (inner.id === ID_TIMECODE || inner.id === ID_SIMPLE_BLOCK || inner.id === ID_BLOCK_GROUP || inner.id === ID_CLUSTER)) break;
           if (inner.id === ID_BLOCK) collectBlock(inner.bodyStart, inner.bodyEnd);
@@ -333,30 +372,30 @@ export function remuxWebmToOgg(webm: Uint8Array, options: { prerollMs?: number }
   // Walk the top level (EBML header, then one Segment).
   let top = 0;
   while (true) {
-    const el = readElement(buf, top, buf.length);
+    const el = readElement(u8, top, u8.length);
     if (!el) break;
     if (el.id === ID_SEGMENT) {
-      const segmentEnd = el.known ? el.bodyEnd : buf.length;
+      const segmentEnd = el.known ? el.bodyEnd : u8.length;
       let pos = el.bodyStart;
       while (pos + 2 <= segmentEnd) {
-        const child = readElement(buf, pos, segmentEnd);
+        const child = readElement(u8, pos, segmentEnd);
         if (!child) break;
         if (child.id === ID_INFO) {
-          forEachElement(buf, child.bodyStart, child.bodyEnd, (id, bs, be) => {
-            if (id === ID_TIMECODE_SCALE) timecodeScale = readUint(buf, bs, be) || 1_000_000;
+          forEachElement(u8, child.bodyStart, child.bodyEnd, (id, bs, be) => {
+            if (id === ID_TIMECODE_SCALE) timecodeScale = readUint(u8, bs, be) || 1_000_000;
           });
         } else if (child.id === ID_TRACKS) {
-          forEachElement(buf, child.bodyStart, child.bodyEnd, (id, bs, be) => {
+          forEachElement(u8, child.bodyStart, child.bodyEnd, (id, bs, be) => {
             if (id !== ID_TRACK_ENTRY) return;
             let trackNumber = -1;
             const info: TrackInfo = { codecId: "", codecPrivate: null, channels: 0 };
-            forEachElement(buf, bs, be, (id2, bs2, be2) => {
-              if (id2 === ID_TRACK_NUMBER) trackNumber = readUint(buf, bs2, be2);
-              else if (id2 === ID_CODEC_ID) info.codecId = buf.toString("latin1", bs2, be2);
-              else if (id2 === ID_CODEC_PRIVATE) info.codecPrivate = buf.subarray(bs2, be2);
+            forEachElement(u8, bs, be, (id2, bs2, be2) => {
+              if (id2 === ID_TRACK_NUMBER) trackNumber = readUint(u8, bs2, be2);
+              else if (id2 === ID_CODEC_ID) info.codecId = latin1Decode(u8, bs2, be2);
+              else if (id2 === ID_CODEC_PRIVATE) info.codecPrivate = u8.subarray(bs2, be2);
               else if (id2 === ID_AUDIO) {
-                forEachElement(buf, bs2, be2, (id3, bs3, be3) => {
-                  if (id3 === ID_CHANNELS) info.channels = readUint(buf, bs3, be3);
+                forEachElement(u8, bs2, be2, (id3, bs3, be3) => {
+                  if (id3 === ID_CHANNELS) info.channels = readUint(u8, bs3, be3);
                 });
               }
             });
@@ -378,12 +417,13 @@ export function remuxWebmToOgg(webm: Uint8Array, options: { prerollMs?: number }
   // ---- Mux the collected packets into OGG pages ----
   const serial = Math.floor(Math.random() * 0x100000000) >>> 0;
   let pageSeq = 0;
-  const pages: Buffer[] = [];
+  const pages: Uint8Array[] = [];
 
-  const buildPage = (headerType: number, granule: number, segments: number[], payload: Buffer[]): Buffer => {
+  const buildPage = (headerType: number, granule: number, segments: number[], payload: Uint8Array[]): Uint8Array => {
     const payloadLength = payload.reduce((total, chunk) => total + chunk.length, 0);
-    const page = Buffer.alloc(27 + segments.length + payloadLength);
-    page.write("OggS", 0, "latin1");
+    const page = new Uint8Array(27 + segments.length + payloadLength);
+    const pdv = new DataView(page.buffer);
+    latin1Encode("OggS", page, 0);
     page[4] = 0; // version
     page[5] = headerType;
     // Granule position as unsigned little-endian int64 (plain number arithmetic:
@@ -393,29 +433,29 @@ export function remuxWebmToOgg(webm: Uint8Array, options: { prerollMs?: number }
       page[6 + i] = granuleValue % 256;
       granuleValue = Math.floor(granuleValue / 256);
     }
-    page.writeUInt32LE(serial, 14);
-    page.writeUInt32LE(pageSeq, 18);
-    page.writeUInt32LE(0, 22); // CRC placeholder
+    pdv.setUint32(14, serial, true);
+    pdv.setUint32(18, pageSeq, true);
+    pdv.setUint32(22, 0, true); // CRC placeholder
     page[26] = segments.length;
     for (let i = 0; i < segments.length; i++) page[27 + i] = segments[i];
     let offset = 27 + segments.length;
     for (const chunk of payload) {
-      chunk.copy(page, offset);
+      page.set(chunk, offset);
       offset += chunk.length;
     }
-    page.writeUInt32LE(oggCrc32(page), 22);
+    pdv.setUint32(22, oggCrc32(page), true);
     pageSeq++;
     return page;
   };
 
   const trackInfo = tracks.get(opusTrack!) ?? { codecId: "A_OPUS", codecPrivate: null, channels: 1 };
   const head = buildOpusHead(trackInfo.codecPrivate, trackInfo.channels);
-  const preSkip = head.readUInt16LE(10);
+  const preSkip = new DataView(head.buffer, head.byteOffset, head.byteLength).getUint16(10, true);
   const prerollMs = Math.max(0, Math.min(options.prerollMs || 0, 3000));
   const silencePackets = Math.round(prerollMs / 20);
   // A valid 20 ms Opus silence/CN packet. Padding the start avoids the first
   // spoken syllables being eaten by mobile/WhatsApp decoder warm-up.
-  const opusSilence20Ms = Buffer.from([0xf8, 0xff, 0xfe]);
+  const opusSilence20Ms = Uint8Array.from([0xf8, 0xff, 0xfe]);
   pages.push(buildPage(0x02 /* BOS */, 0, lacingValues(head.length), [head]));
   const tags = buildOpusTags();
   pages.push(buildPage(0x00, 0, lacingValues(tags.length), [tags]));
@@ -424,7 +464,7 @@ export function remuxWebmToOgg(webm: Uint8Array, options: { prerollMs?: number }
   // Counting samples from each packet's TOC byte (exact) keeps granules monotonic
   // and immune to Matroska timestamp rounding.
   let segments: number[] = [];
-  let payload: Buffer[] = [];
+  let payload: Uint8Array[] = [];
   let segmentCount = 0;
   let payloadBytes = 0;
   let lastGranule = 0;
@@ -439,7 +479,7 @@ export function remuxWebmToOgg(webm: Uint8Array, options: { prerollMs?: number }
     payloadBytes = 0;
   };
 
-  const addPacket = (data: Buffer) => {
+  const addPacket = (data: Uint8Array) => {
     totalSamples += opusPacketSamples(data);
     lastGranule = preSkip + totalSamples;
     const lacing = lacingValues(data.length);
@@ -455,5 +495,5 @@ export function remuxWebmToOgg(webm: Uint8Array, options: { prerollMs?: number }
   for (const packet of packets) addPacket(packet.data);
   flushPage(true);
 
-  return Buffer.concat(pages);
+  return concatU8(pages);
 }

@@ -18,7 +18,7 @@
   nube, lo sube como artefacto y lo commitea en `apk/templo-mistico-crm-debug.apk`
 - App ID: com.templomistico.crm
 - App Name: Templo Místico CRM
-- Version: 1.2.0 (definida en `package.json` y usada por Android; `versionCode` 3)
+- Version: 1.3.0 (definida en `package.json` y usada por Android; `versionCode` 4)
 - WebDir: out · La APK carga https://templo-mistico-crm.vercel.app (server.url)
   → los cambios web van live con el deploy de Vercel, sin rebuild del APK
 
@@ -29,6 +29,7 @@
 - supabase/migrations/20260903_mensajes_id_chatwoot.sql   ← nueva (mensajes perdidos)
 - supabase/migrations/20260904_eliminar_cliente_completo.sql (eliminación completa v1)
 - supabase/migrations/20260905_eliminar_cliente_total.sql   ← nueva (eliminación total v2)
+- supabase/migrations/20260907_llamadas_seguimiento_contactos.sql ← nueva (etapa En seguimiento + alerta diaria)
 
 ## Luna por etapas (nuevo)
 - Workflow importable: `n8n/05-luna-etapas.json` (docs en `n8n/05-README-luna-etapas.md`)
@@ -53,4 +54,7 @@
   Detalle en `ELIMINAR-CLIENTE-COMPLETO.md`
 - Pruebas: `npm run test:eliminar` (endpoint + limpieza de Luna) y
   `npm run test:eliminar:sql` (función SQL contra PostgreSQL real) — ✅ 0 fallos
-- Guardar el contacto directamente en la agenda Android (o descargar vCard en web/PWA)
+- Guardar el contacto directamente en la agenda Android con consecutivo automático si ya existe el nombre (o descargar vCard en web/PWA)
+- Botón de llamada para WhatsApp Personal: valida que el contacto esté guardado e intenta abrir la voz nativa (con respaldo al chat Personal)
+- Etapa y chip "En seguimiento" junto a "Por leer", con aviso diario local en la APK a las 9:00 a. m.
+- Los mensajes con imagen ahora conservan y muestran su texto/pie de foto

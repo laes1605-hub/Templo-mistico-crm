@@ -201,6 +201,8 @@ export type ResultadoSync = {
   conversaciones_nuevas: number;
   clientes_nuevos: number;
   mensajes_nuevos: number;
+  /** Adjuntos existentes a los que se completó URL o pie de foto. */
+  mensajes_actualizados: number;
   mensajes_vinculados: number;
   errores: string[];
   tardo_ms: number;
@@ -213,6 +215,7 @@ function nuevoResultado(): ResultadoSync {
     conversaciones_nuevas: 0,
     clientes_nuevos: 0,
     mensajes_nuevos: 0,
+    mensajes_actualizados: 0,
     mensajes_vinculados: 0,
     errores: [],
     tardo_ms: 0,
@@ -405,7 +408,13 @@ export function mapMensajeCw(m: any): MensajeMapeado | null {
     else tipoContenido = "archivo";
   }
 
-  const contenido = String(m.content || "").trim();
+  const contenidoOriginal = String(m.content || "").trim();
+  // Algunas integraciones entregan el pie en el adjunto en vez de content.
+  // Si content es el marcador técnico [imagen], el pie real tiene prioridad.
+  const pieAdjunto = String(att?.caption || att?.caption_text || "").trim();
+  const contenido = (!contenidoOriginal || esMarcadorMultimedia(contenidoOriginal)) && pieAdjunto
+    ? pieAdjunto
+    : contenidoOriginal;
   if (!contenido && !urlArchivo) return null; // actividad sin contenido
 
   return {
@@ -428,24 +437,55 @@ type MensajeExistente = {
   creado_en: string;
 };
 
-/** ¿Misma huella? (tipo + tipo de contenido + contenido ± ventana de tiempo) */
+const MARCADORES_MULTIMEDIA = new Set([
+  "", "[audio]", "[nota_de_voz]", "[imagen]", "[image]", "[archivo]", "[video]", "[documento]", "[sticker]",
+]);
+
+function esMarcadorMultimedia(contenido: string | null | undefined): boolean {
+  return MARCADORES_MULTIMEDIA.has(String(contenido || "").trim().toLowerCase());
+}
+
+/** Un pie de foto real nunca debe ser reemplazado por el marcador de un webhook. */
+function debeActualizarContenido(existente: MensajeExistente, entrante: MensajeMapeado): boolean {
+  const previo = String(existente.contenido || "").trim();
+  const nuevo = String(entrante.contenido || "").trim();
+  return Boolean(nuevo) && !esMarcadorMultimedia(nuevo) && (esMarcadorMultimedia(previo) || !previo);
+}
+
+function mismoArchivo(a: string | null | undefined, b: string | null | undefined): boolean {
+  const aa = String(a || "").trim();
+  const bb = String(b || "").trim();
+  return Boolean(aa && bb && aa === bb);
+}
+
+/** ¿Misma huella? (tipo + tipo de contenido + contenido/archivo ± ventana). */
 function mismaHuella(a: MensajeMapeado, b: MensajeExistente, ventanaMs = 150_000): boolean {
   if ((b.tipo || "") !== a.tipo) return false;
   if ((b.tipo_contenido || "texto") !== a.tipo_contenido) return false;
   const tA = Date.parse(a.creado_en);
   const tB = Date.parse(b.creado_en);
-  if (Number.isNaN(tA) || Number.isNaN(tB) || Math.abs(tA - tB) > ventanaMs) return false;
+  const diferencia = Math.abs(tA - tB);
+  if (Number.isNaN(tA) || Number.isNaN(tB) || diferencia > ventanaMs) return false;
   const cA = (a.contenido || "").trim();
   const cB = (b.contenido || "").trim();
   if (cA === cB) return true;
-  // Placeholders tipo "[audio]" / "[imagen]" cuentan como igual.
-  const placeholders = new Set(["", "[audio]", "[nota_de_voz]", "[imagen]", "[archivo]", "[video]"]);
-  return placeholders.has(cA) && placeholders.has(cB);
+
+  // Para adjuntos, la URL es la huella más fiable. Esto evita duplicar una foto
+  // que n8n guardó como [imagen] y que Chatwoot trae después con su pie real.
+  if (a.tipo_contenido !== "texto" && mismoArchivo(a.url_archivo, b.url_archivo)) return true;
+
+  // Algunos webhooks guardaron antes el marcador sin URL. Se acepta esa pareja
+  // solo en una ventana corta, suficiente para la carrera n8n ↔ sincronización
+  // directa sin fusionar dos fotos diferentes enviadas minutos después.
+  return a.tipo_contenido !== "texto" &&
+    diferencia <= 30_000 &&
+    (esMarcadorMultimedia(cA) || esMarcadorMultimedia(cB));
 }
 
 /**
  * Inserta en `mensajes` lo que falte de una conversación.
- * Devuelve {nuevos, vinculados, entrantes: timestamps de mensajes entrantes}.
+ * Devuelve {nuevos, vinculados, entrantes: timestamps de mensajes entrantes};
+ * además incrementa mensajes_actualizados cuando completa un adjunto existente.
  */
 async function sincronizarMensajes(
   convSupabaseId: string,
@@ -465,32 +505,42 @@ async function sincronizarMensajes(
     ? existentesResp.json
     : [];
 
-  const idsExistentes = new Set(
-    existentes.map((m) => m.chatwoot_message_id).filter(Boolean) as string[]
-  );
-
   const porInsertar: MensajeMapeado[] = [];
   let vinculados = 0;
 
+  /** Completa URL, id y, sobre todo, el pie de foto que antes quedó como [imagen]. */
+  async function actualizarExistente(existente: MensajeExistente, msg: MensajeMapeado, vincularId: boolean) {
+    const seVincula = Boolean(vincularId && !existente.chatwoot_message_id);
+    const cambios: Record<string, any> = {
+      ...(seVincula ? { chatwoot_message_id: msg.chatwoot_message_id } : {}),
+      ...(msg.url_archivo && !existente.url_archivo ? { url_archivo: msg.url_archivo } : {}),
+      ...(debeActualizarContenido(existente, msg) ? { contenido: msg.contenido } : {}),
+    };
+    if (Object.keys(cambios).length === 0) return { seVincula: false, actualizado: false };
+    const respuesta = await sbFetch(`/mensajes?id=eq.${existente.id}`, {
+      method: "PATCH",
+      headers: { Prefer: "return=minimal" },
+      body: JSON.stringify(await depurar("mensajes", cambios)),
+    });
+    return { seVincula: seVincula && respuesta.ok, actualizado: respuesta.ok };
+  }
+
   for (const msg of mapeados) {
-    if (idsExistentes.has(msg.chatwoot_message_id)) continue;
+    // Incluso si el mensaje ya tiene id de Chatwoot, sincronizamos el pie de
+    // foto: versiones previas pudieron haber guardado solamente [imagen].
+    const existenteConId = existentes.find((e) => e.chatwoot_message_id === msg.chatwoot_message_id);
+    if (existenteConId) {
+      const actualizacion = await actualizarExistente(existenteConId, msg, false);
+      if (actualizacion.actualizado) res.mensajes_actualizados += 1;
+      continue;
+    }
+
     // ¿Ya está guardado por n8n o por send-message (sin id de Chatwoot)?
     const gemelo = existentes.find((e) => mismaHuella(msg, e));
     if (gemelo) {
-      // Vincularlo: le ponemos el id de Chatwoot para el futuro.
-      if (!gemelo.chatwoot_message_id) {
-        await sbFetch(`/mensajes?id=eq.${gemelo.id}`, {
-          method: "PATCH",
-          headers: { Prefer: "return=minimal" },
-          body: JSON.stringify(
-            await depurar("mensajes", {
-              chatwoot_message_id: msg.chatwoot_message_id,
-              ...(msg.url_archivo && !gemelo.url_archivo ? { url_archivo: msg.url_archivo } : {}),
-            })
-          ),
-        });
-        vinculados += 1;
-      }
+      const actualizacion = await actualizarExistente(gemelo, msg, true);
+      if (actualizacion.seVincula) vinculados += 1;
+      if (actualizacion.actualizado) res.mensajes_actualizados += 1;
       continue;
     }
     porInsertar.push(msg);
@@ -596,7 +646,7 @@ function resumenUltimoMensaje(mensajesCw: any[]): { contenido: string; en: strin
     ultimo.tipo_contenido === "audio"
       ? "[audio]"
       : ultimo.tipo_contenido === "imagen"
-        ? "[imagen]"
+        ? (esMarcadorMultimedia(ultimo.contenido) ? "[imagen]" : `📷 ${ultimo.contenido}`)
         : ultimo.contenido;
   return { contenido: vista, en: ultimo.creado_en };
 }
@@ -785,7 +835,7 @@ export async function procesarEventoWebhook(body: any): Promise<ResultadoSync> {
       ? mensaje.tipo_contenido === "audio"
         ? "[audio]"
         : mensaje.tipo_contenido === "imagen"
-          ? "[imagen]"
+          ? (esMarcadorMultimedia(mensaje.contenido) ? "[imagen]" : `📷 ${mensaje.contenido}`)
           : mensaje.contenido
       : "";
     const ultimoEn = mensaje ? mensaje.creado_en : fechaISO(conv.last_non_activity_message_at || Date.now() / 1000);

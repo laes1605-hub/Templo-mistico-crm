@@ -150,8 +150,8 @@ export default function AjustesPanel({ onClose }: { onClose: () => void }) {
         </button>
         <p className="text-[10px] text-gray-500 mt-2 leading-relaxed">
           Recibirás un aviso cuando llegue un mensaje nuevo de un cliente
-          {isNative() ? " y recordatorios de tus tareas pendientes" : ""}.
-          {isNative() ? " Funciona con la app abierta o en segundo plano. En Ajustes del teléfono podrás administrar por separado Mensajes de clientes, Recordatorios de tareas y Avisos del CRM." : ""}
+          {isNative() ? ", recordatorios de tus tareas y el aviso diario de En seguimiento" : ""}.
+          {isNative() ? " Funciona con la app abierta o en segundo plano. En Ajustes del teléfono podrás administrar por separado Mensajes de clientes, Recordatorios de tareas, Seguimientos de clientes y Avisos del CRM." : ""}
         </p>
         {notifError && <p className="text-[11px] text-red-400 mt-2">{notifError}</p>}
       </div>

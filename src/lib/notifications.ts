@@ -16,8 +16,12 @@ const PREF_KEY = "tm_notifs_enabled";
 export const NOTIFICATION_CHANNELS = {
   MESSAGES: "crm_messages",
   TASK_REMINDERS: "crm_task_reminders",
+  FOLLOW_UPS: "crm_follow_ups",
   GENERAL: "crm_general",
 } as const;
+
+/** ID fijo: al recalcular se reemplaza el único aviso diario, no se duplica. */
+const FOLLOW_UP_NOTIFICATION_ID = 320001;
 
 const ANDROID_CHANNELS = [
   {
@@ -39,6 +43,16 @@ const ANDROID_CHANNELS = [
     vibration: true,
     lights: true,
     lightColor: "#8B5CF6",
+  },
+  {
+    id: NOTIFICATION_CHANNELS.FOLLOW_UPS,
+    name: "Seguimientos de clientes",
+    description: "Aviso diario para revisar los clientes en la etapa En seguimiento.",
+    importance: 4 as const,
+    visibility: 0 as const,
+    vibration: true,
+    lights: true,
+    lightColor: "#06B6D4",
   },
   {
     id: NOTIFICATION_CHANNELS.GENERAL,
@@ -73,6 +87,9 @@ export function getNotifPref(): boolean {
 export function setNotifPref(enabled: boolean) {
   try {
     localStorage.setItem(PREF_KEY, enabled ? "1" : "0");
+    // La bandeja escucha este evento para crear/cancelar el aviso diario de
+    // seguimiento en el mismo instante, incluso si los clientes ya cargaron.
+    window.dispatchEvent(new Event("tm-notification-pref-changed"));
   } catch {}
 }
 
@@ -203,5 +220,54 @@ export async function scheduleTaskReminders(tareas: any[]) {
     }
   } catch (e) {
     console.warn("No se pudieron programar recordatorios:", e);
+  }
+}
+
+/**
+ * Programa un único aviso que se repite todos los días a las 9:00 a. m. en el
+ * teléfono. Se cancela antes de reprogramarlo para que el estado actual de la
+ * etapa En seguimiento nunca cree avisos duplicados. Es una notificación local:
+ * queda programada aunque la APK esté en segundo plano.
+ */
+export async function scheduleFollowUpReminders(clientesEnSeguimiento: any[]) {
+  if (!isNative()) return;
+
+  try {
+    // Al quitar el último cliente de la etapa o apagar Avisos, el recordatorio
+    // recurrente anterior debe desaparecer de Android de inmediato.
+    await LocalNotifications.cancel({ notifications: [{ id: FOLLOW_UP_NOTIFICATION_ID }] });
+  } catch {
+    // Cancelar una notificación que aún no existe no es un problema.
+  }
+
+  if (!getNotifPref() || !(await hasNotificationPermission())) return;
+  const cantidad = (clientesEnSeguimiento || []).filter(Boolean).length;
+  if (cantidad === 0) return;
+
+  try {
+    await initializeNotificationChannels();
+    await LocalNotifications.schedule({
+      notifications: [
+        {
+          id: FOLLOW_UP_NOTIFICATION_ID,
+          title: "📌 Seguimientos pendientes",
+          body: "Revisa los clientes que están en la etapa En seguimiento.",
+          summaryText: `${cantidad} cliente(s) en seguimiento al programar el aviso`,
+          smallIcon: "ic_stat_templo",
+          channelId: NOTIFICATION_CHANNELS.FOLLOW_UPS,
+          group: NOTIFICATION_CHANNELS.FOLLOW_UPS,
+          foreground: true,
+          // Un aviso diario no necesita abrir la pantalla de alarmas exactas.
+          isExactNotification: false,
+          schedule: {
+            on: { hour: 9, minute: 0 },
+            repeats: true,
+            allowWhileIdle: true,
+          },
+        },
+      ],
+    });
+  } catch (e) {
+    console.warn("No se pudo programar el aviso diario de seguimiento:", e);
   }
 }

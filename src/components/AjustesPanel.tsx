@@ -68,7 +68,7 @@ export default function AjustesPanel({ onClose }: { onClose: () => void }) {
   ];
 
   return (
-    <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4" onClick={onClose}>
+    <div className="fixed inset-0 bg-scrim backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
       <div
         className="bg-surface border border-border rounded-2xl w-full max-w-sm p-5 shadow-2xl max-h-[85dvh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
@@ -140,11 +140,11 @@ export default function AjustesPanel({ onClose }: { onClose: () => void }) {
             Avisos en el teléfono
           </span>
           <span
-            className={`w-10 rounded-full p-0.5 transition-colors ${notifs ? "bg-purple-600" : "bg-surfaceHover"}`}
+            className={`w-10 rounded-full p-0.5 transition-colors ${notifs ? "bg-purple-600" : "bg-gray-700"}`}
             style={{ height: 22 }}
           >
             <span
-              className={`block w-[18px] h-[18px] rounded-full bg-white transition-transform ${notifs ? "translate-x-[18px]" : ""}`}
+              className={`block w-[18px] h-[18px] rounded-full bg-white shadow ring-1 ring-gray-950/10 transition-transform ${notifs ? "translate-x-[18px]" : ""}`}
             />
           </span>
         </button>

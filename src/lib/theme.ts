@@ -44,7 +44,7 @@ export function applyTheme(mode: ThemeMode, accent: ThemeAccent) {
   root.setAttribute("data-accent", accent);
   // Color de la barra de estado / navegador
   const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.setAttribute("content", isLight ? "#f3f4f7" : "#090d16");
+  if (meta) meta.setAttribute("content", isLight ? "#f1f3f7" : "#090d16");
 }
 
 export function saveTheme(mode: ThemeMode, accent: ThemeAccent) {

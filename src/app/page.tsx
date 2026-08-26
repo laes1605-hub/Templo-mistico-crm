@@ -7,7 +7,16 @@ import VoiceNotePlayer from "../components/VoiceNotePlayer";
 import ChatImage from "../components/ChatImage";
 import CerebroPanel from "../components/CerebroPanel";
 import AjustesPanel from "../components/AjustesPanel";
-import { downloadMany, guessImageFilename, isImageMessage } from "../lib/download-media";
+import { downloadMany, guessImageFilename, isImageMessage, saveAudioFiles } from "../lib/download-media";
+import { audioMensajeToArchivo } from "../lib/audio-download";
+import {
+  type RespuestaRapida,
+  listarRespuestasRapidas,
+  guardarRespuestaRapida,
+  eliminarRespuestaRapida,
+  prepararAudioRR,
+  prepararImagenRR,
+} from "../lib/respuestas-rapidas";
 import { estaContactoGuardadoEnTelefono, guardarContactoEnTelefono } from "../lib/contacts";
 import { abrirLlamadaWhatsAppPersonal, llamadasWhatsAppPersonalDisponibles } from "../lib/whatsapp-personal";
 import { initTheme } from "../lib/theme";
@@ -24,7 +33,7 @@ import {
   Wallet, Target, TrendingDown, Award, Calendar, Shield, X,
   Mic, Paperclip, ArrowLeft, Info, ListTodo, CheckSquare, Square, MailOpen,
   Sparkles, Play, Pause, RefreshCw, Image as ImageIcon, ChevronDown, ChevronRight, Download,
-  Archive, ArchiveRestore, Search, AlertTriangle,
+  Archive, ArchiveRestore, Search, AlertTriangle, GitBranch, Check, Zap, Type,
   StickyNote, FileText, Coins, Globe, Percent, Save, Eye, EyeOff, Palette, Power, User, Landmark, UserPlus,
   PhoneCall, BellRing
 } from "lucide-react";
@@ -39,6 +48,20 @@ const ESTADO_PERSONAL_A_TEMPLO: Record<string, string> = {
   trabajo_completado: "trabajo_completado_templo",
   perdido: "perdido_templo",
 };
+
+// Cuotas: límite y fechas por defecto (una cuota por mes desde la primera).
+const MAX_CUOTAS = 30;
+const nCuotasLimite = (v: string) => Math.min(MAX_CUOTAS, Math.max(2, parseInt(v) || 2));
+function fechasCuotasPorDefecto(n: number, base: string): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < n; i++) {
+    if (!base) { out.push(""); continue; }
+    const d = new Date(base);
+    d.setMonth(d.getMonth() + i);
+    out.push(d.toISOString().split("T")[0]);
+  }
+  return out;
+}
 
 // Resumen que devuelve /api/clientes/eliminar al borrar un cliente por completo.
 type ResumenEliminacion = {
@@ -178,6 +201,9 @@ export default function CRMApp() {
   const [montoTotal, setMontoTotal] = useState("");
   const [numeroCuotas, setNumeroCuotas] = useState("2");
   const [fechaInicial, setFechaInicial] = useState("");
+  // Cuotas: fecha de CADA cuota (índice 0 = primera, sigue a fechaInicial).
+  // Por defecto una por mes desde la primera; cada una se puede editar.
+  const [fechasCuotas, setFechasCuotas] = useState<string[]>([]);
   const [metodoPago, setMetodoPago] = useState("Nequi");
   const [notaPago, setNotaPago] = useState("");
   const [monedaPago, setMonedaPago] = useState<"COP" | "PYG" | "USD" | "EUR" | "BRL" | "MXN">("COP");
@@ -224,6 +250,24 @@ export default function CRMApp() {
   const liveAudioCtxRef = useRef<AudioContext | null>(null);
   const liveBarsIntervalRef = useRef<any>(null);
   const [descargandoFotos, setDescargandoFotos] = useState(false);
+  // Descargar una nota de voz del chat como OGG (botón de la burbuja)
+  const [descargandoAudioId, setDescargandoAudioId] = useState<string | null>(null);
+  // Botón "Cambiar etapa" junto al clip de enviar archivos
+  const [showEtapaMenu, setShowEtapaMenu] = useState(false);
+  // RESPUESTAS RÁPIDAS (textos, audios OGG, imágenes) — sirven para todas las conversaciones
+  const [showRespuestasMenu, setShowRespuestasMenu] = useState(false);
+  const [respuestasRapidas, setRespuestasRapidas] = useState<RespuestaRapida[]>([]);
+  const [rrBorrador, setRrBorrador] = useState<null | {
+    tipo: "texto" | "audio" | "imagen";
+    texto: string;
+    titulo: string;
+    dataUri: string;
+    nombre: string;
+    mime: string;
+  }>(null);
+  const [rrError, setRrError] = useState("");
+  const [guardandoRR, setGuardandoRR] = useState(false);
+  const rrFileInputRef = useRef<HTMLInputElement>(null);
   const [guardandoContacto, setGuardandoContacto] = useState(false);
   const [contactoGuardado, setContactoGuardado] = useState<"nativo" | "vcf" | null>(null);
   // null = comprobando / sin acceso a agenda; true = puede llamar; false = debe guardarlo primero.
@@ -737,6 +781,32 @@ export default function CRMApp() {
       }
     } finally {
       setDescargandoFotos(false);
+    }
+  }
+
+  // ===================== DESCARGAR NOTAS DE VOZ (OGG) =====================
+  // Nombre de archivo legible: nota-voz-<cliente>-<aammdd-hhmmss>-<n>.ogg
+  function nombreBaseAudioMsg(msg: any, indice: number): string {
+    const slug = slugFoto(getDisplayName(clienteActual, selectedConv));
+    const d = new Date(msg.creado_en || Date.now());
+    const p2 = (n: number) => n.toString().padStart(2, "0");
+    return `nota-voz-${slug}-${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}-${indice + 1}`;
+  }
+
+  // Botón de la burbuja: descarga ESTA nota de voz en OGG. Las grabadas en
+  // WebM se remuevan sin recodificar; las que ya son OGG se guardan tal cual
+  // (otro formato, p. ej. mp3, se conserva en su formato original).
+  async function descargarAudioMensaje(msg: any, indice: number) {
+    const id = String(msg.id || indice);
+    setDescargandoAudioId(id);
+    try {
+      const { file } = await audioMensajeToArchivo(msg, nombreBaseAudioMsg(msg, indice), true);
+      await saveAudioFiles([file], "Nota de voz (OGG)");
+    } catch (e: any) {
+      console.error("Error descargando audio:", e);
+      alert(e?.message || "No se pudo descargar el audio. Puede que el enlace de WhatsApp ya haya vencido.");
+    } finally {
+      setDescargandoAudioId(null);
     }
   }
 
@@ -1797,6 +1867,231 @@ export default function CRMApp() {
     fetchConversaciones(); fetchTodosClientes();
   }
 
+  // Menú rápido "Cambiar etapa" que se abre en la barra de escribir (a la
+  // derecha del área de texto, junto a "Enviar archivos" y "Respuestas rápidas").
+  function renderMenuEtapaRapida(): React.ReactNode {
+    const estadoActual = clienteActual?.estado || (grupoActivo === "templo" ? "nuevo_lead_templo" : "nuevo_lead");
+    const grupos = [
+      { clave: "personal" as const, etiqueta: personalLabel },
+      { clave: "templo" as const, etiqueta: temploLabel },
+    ];
+    return (
+      <>
+        <div className="fixed inset-0 z-40" onClick={() => setShowEtapaMenu(false)} />
+        <div className="absolute bottom-full right-0 mb-2 z-50 w-64 max-h-80 overflow-y-auto bg-surface border border-border rounded-xl shadow-2xl p-1.5">
+          <p className="text-[9px] uppercase font-bold text-gray-500 px-2 py-1.5 truncate">
+            Cambiar etapa — {getDisplayName(clienteActual, selectedConv)}
+          </p>
+          {grupos.map((g) => {
+            const etapas = pipelineEtapas.filter((e: any) => e.grupo === g.clave && !e.es_spam && !e.es_archivado).sort((a: any, b: any) => a.orden - b.orden);
+            if (etapas.length === 0) return null;
+            return (
+              <div key={g.clave} className="mb-1">
+                <p className="text-[8px] uppercase font-bold text-gray-600 px-2 pt-1">{g.etiqueta}</p>
+                {etapas.map((etapa: any) => {
+                  const activa = etapa.clave === estadoActual;
+                  return (
+                    <button
+                      key={etapa.id}
+                      onClick={() => { setShowEtapaMenu(false); if (!activa) actualizarEstadoCliente(clienteActual.id, etapa.clave); }}
+                      className={`w-full flex items-center justify-between gap-2 px-2 py-1.5 rounded-lg text-left text-xs transition-colors ${activa ? "bg-purple-950/40 text-purple-300 font-bold" : "text-gray-300 hover:bg-surfaceHover"}`}
+                    >
+                      <span className="truncate">{etapa.nombre}</span>
+                      {activa && <Check className="w-3.5 h-3.5 flex-shrink-0" />}
+                    </button>
+                  );
+                })}
+              </div>
+            );
+          })}
+        </div>
+      </>
+    );
+  }
+
+  // ===================== RESPUESTAS RÁPIDAS =====================
+  // Librería de respuestas (texto, audio OGG, imagen) que sirven para TODAS
+  // las conversaciones. Se guardan en el dispositivo (localStorage).
+  function abrirMenuRespuestas() {
+    setRespuestasRapidas(listarRespuestasRapidas());
+    setRrError("");
+    setShowRespuestasMenu(true);
+  }
+
+  async function handleRRFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file || !rrBorrador) return;
+    try {
+      if (rrBorrador.tipo === "audio") {
+        const { dataUri, titulo, mime } = await prepararAudioRR(file);
+        setRrBorrador({ ...rrBorrador, dataUri, nombre: file.name, mime, titulo: rrBorrador.titulo || titulo });
+      } else {
+        const { dataUri, titulo } = await prepararImagenRR(file);
+        setRrBorrador({ ...rrBorrador, dataUri, nombre: file.name, titulo: rrBorrador.titulo || titulo });
+      }
+      setRrError("");
+    } catch (err: any) {
+      setRrError(err?.message || "No se pudo leer el archivo.");
+    } finally {
+      if (rrFileInputRef.current) rrFileInputRef.current.value = "";
+    }
+  }
+
+  async function guardarNuevaRR() {
+    if (!rrBorrador || guardandoRR) return;
+    setGuardandoRR(true);
+    setRrError("");
+    try {
+      if (rrBorrador.tipo === "texto") {
+        const texto = rrBorrador.texto.trim();
+        if (!texto) { setRrError("Escribe el texto de la respuesta."); return; }
+        const nueva = guardarRespuestaRapida({ tipo: "texto", titulo: rrBorrador.titulo.trim() || texto.slice(0, 40), contenido: texto });
+        setRespuestasRapidas([...respuestasRapidas, nueva]);
+      } else {
+        if (!rrBorrador.dataUri) { setRrError("Selecciona el archivo de la respuesta."); return; }
+        const nueva = guardarRespuestaRapida({ tipo: rrBorrador.tipo, titulo: rrBorrador.titulo.trim() || rrBorrador.nombre || "respuesta", contenido: rrBorrador.dataUri });
+        setRespuestasRapidas([...respuestasRapidas, nueva]);
+      }
+      setRrBorrador(null);
+    } catch (e: any) {
+      setRrError(e?.message || "No se pudo guardar la respuesta.");
+    } finally {
+      setGuardandoRR(false);
+    }
+  }
+
+  function borrarRespuestaRapida(id: string) {
+    if (!window.confirm("¿Borrar esta respuesta rápida?")) return;
+    setRespuestasRapidas(eliminarRespuestaRapida(id));
+  }
+
+  // Envía la respuesta seleccionada a la conversación actual (mismo camino
+  // que un mensaje normal: texto plano, o archivo vía /api/send-message).
+  async function enviarRespuestaRapida(rr: RespuestaRapida) {
+    if (!selectedConv) return;
+    setShowRespuestasMenu(false);
+    setRrBorrador(null);
+    try {
+      if (rr.tipo === "texto") {
+        await sendToApi(rr.contenido);
+      } else if (rr.tipo === "audio") {
+        const base64 = rr.contenido.split(",")[1] || "";
+        await sendToApi("", `data:audio/ogg;base64,${base64}`, "audio/ogg", "nota_de_voz.ogg");
+      } else {
+        const mime = (rr.contenido.split(";")[0] || "data:image/jpeg").replace("data:", "");
+        await sendToApi("", rr.contenido, mime, rr.titulo ? `${rr.titulo}.jpg` : "respuesta-rapida.jpg");
+      }
+    } catch (e: any) {
+      console.error("Error enviando respuesta rápida:", e);
+    }
+  }
+
+  function renderMenuRespuestasRapidas(): React.ReactNode {
+    return (
+      <>
+        <div className="fixed inset-0 z-40" onClick={() => { setShowRespuestasMenu(false); setRrBorrador(null); }} />
+        <div className="absolute bottom-full right-0 mb-2 z-50 w-80 max-w-[92vw] bg-surface border border-border rounded-xl shadow-2xl p-2">
+          <p className="text-[9px] uppercase font-bold text-gray-500 px-1.5 pb-1.5">Respuestas rápidas</p>
+          {rrBorrador ? (
+            <div className="bg-background border border-border rounded-lg p-2 space-y-2 mb-2">
+              <div className="flex items-center justify-between">
+                <p className="text-[10px] font-bold text-gray-300">Nueva respuesta</p>
+                <button type="button" onClick={() => setRrBorrador(null)} className="text-gray-500 hover:text-gray-300"><X className="w-3.5 h-3.5" /></button>
+              </div>
+              <div className="flex gap-1">
+                {(["texto", "audio", "imagen"] as const).map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    onClick={() => setRrBorrador({ ...rrBorrador, tipo: t, dataUri: "", nombre: "", mime: "" })}
+                    className={`flex-1 flex items-center justify-center gap-1 py-1 rounded-md text-[10px] font-bold capitalize ${rrBorrador.tipo === t ? "bg-purple-600 text-white" : "bg-surface text-gray-400 hover:text-gray-200"}`}
+                  >
+                    {t === "audio" ? <Mic className="w-3 h-3" /> : t === "imagen" ? <ImageIcon className="w-3 h-3" /> : <Type className="w-3 h-3" />} {t}
+                  </button>
+                ))}
+              </div>
+              {rrBorrador.tipo === "texto" ? (
+                <textarea
+                  value={rrBorrador.texto}
+                  onChange={(e) => setRrBorrador({ ...rrBorrador, texto: e.target.value })}
+                  placeholder="Escribe el texto de la respuesta..."
+                  rows={3}
+                  className="w-full bg-surface border border-border rounded-lg px-2 py-1.5 text-xs text-gray-200 placeholder-gray-600 focus:outline-none focus:border-purple-500 resize-none"
+                />
+              ) : rrBorrador.dataUri ? (
+                <div className="space-y-1">
+                  {rrBorrador.tipo === "imagen" ? (
+                    <img src={rrBorrador.dataUri} alt="" className="max-h-24 rounded-md border border-border" />
+                  ) : (
+                    <p className="text-[10px] text-emerald-400 flex items-center gap-1"><Mic className="w-3 h-3" /> {rrBorrador.mime || "audio/ogg"} listo</p>
+                  )}
+                  <button type="button" onClick={() => setRrBorrador({ ...rrBorrador, dataUri: "", nombre: "" })} className="text-[10px] text-gray-500 hover:text-red-400">Quitar archivo</button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => rrFileInputRef.current?.click()}
+                  className="w-full bg-surface border border-dashed border-border rounded-lg py-2 text-[10px] text-gray-400 hover:text-purple-300"
+                >
+                  {rrBorrador.tipo === "audio" ? "Seleccionar audio (se guarda en OGG)" : "Seleccionar imagen"}
+                </button>
+              )}
+              <input
+                type="text"
+                value={rrBorrador.titulo}
+                onChange={(e) => setRrBorrador({ ...rrBorrador, titulo: e.target.value })}
+                placeholder="Título (para identificarla)"
+                className="w-full bg-surface border border-border rounded-lg px-2 py-1.5 text-xs text-gray-200 placeholder-gray-600 focus:outline-none focus:border-purple-500"
+              />
+              {rrError && <p className="text-[10px] text-red-400">{rrError}</p>}
+              <button
+                type="button"
+                onClick={guardarNuevaRR}
+                disabled={guardandoRR}
+                className="w-full bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white rounded-lg py-1.5 text-[11px] font-bold"
+              >
+                {guardandoRR ? "Guardando..." : "Guardar respuesta"}
+              </button>
+              <p className="text-[9px] text-gray-600">Disponible en todas las conversaciones (se guarda en este teléfono).</p>
+            </div>
+          ) : (
+            <>
+              {respuestasRapidas.length === 0 ? (
+                <p className="text-[11px] text-gray-600 italic px-1.5 py-2">Aún no hay respuestas guardadas.</p>
+              ) : (
+                <div className="max-h-56 overflow-y-auto space-y-0.5">
+                  {respuestasRapidas.map((rr) => (
+                    <div key={rr.id} className="group flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => enviarRespuestaRapida(rr)}
+                        className="flex-1 min-w-0 flex items-center gap-2 px-2 py-1.5 rounded-lg text-left text-xs text-gray-300 hover:bg-surfaceHover"
+                        title="Enviar a esta conversación"
+                      >
+                        <span className={rr.tipo === "audio" ? "text-purple-400" : rr.tipo === "imagen" ? "text-emerald-400" : "text-gray-400"}>
+                          {rr.tipo === "audio" ? <Mic className="w-3.5 h-3.5" /> : rr.tipo === "imagen" ? <ImageIcon className="w-3.5 h-3.5" /> : <Type className="w-3.5 h-3.5" />}
+                        </span>
+                        <span className="truncate">{rr.titulo || (rr.tipo === "audio" ? "Nota de voz" : rr.tipo === "imagen" ? "Imagen" : rr.contenido)}</span>
+                      </button>
+                      <button type="button" onClick={() => borrarRespuestaRapida(rr.id)} className="p-1 text-gray-600 hover:text-red-400 md:opacity-0 md:group-hover:opacity-100 transition-opacity" title="Borrar"><Trash2 className="w-3 h-3" /></button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={() => { setRrBorrador({ tipo: "texto", texto: "", titulo: "", dataUri: "", nombre: "", mime: "" }); setRrError(""); }}
+                className="w-full mt-1.5 border border-dashed border-purple-700/50 text-purple-300 hover:bg-purple-950/30 rounded-lg py-1.5 text-[11px] font-bold flex items-center justify-center gap-1"
+              >
+                <Plus className="w-3.5 h-3.5" /> Nueva respuesta rápida
+              </button>
+            </>
+          )}
+        </div>
+      </>
+    );
+  }
+
   // ===================== TAREAS =====================
   async function agregarTarea(e: React.FormEvent) {
     e.preventDefault();
@@ -1815,6 +2110,28 @@ export default function CRMApp() {
   }
 
   // ===================== PAGOS CON DIVISAS =====================
+  // Al activar "Cuotas" se prellenan las fechas (una por mes desde la primera).
+  function activarCuotas() {
+    setTipoPago("cuotas");
+    setFechasCuotas((prev) => (prev.length >= 2 ? prev : fechasCuotasPorDefecto(nCuotasLimite(numeroCuotas), fechaInicial)));
+  }
+  // Cambiar el número de cuotas vuelve a generar las fechas por defecto.
+  function cambiarNumeroCuotas(v: string) {
+    const n = nCuotasLimite(v);
+    setNumeroCuotas(String(n));
+    setFechasCuotas(fechasCuotasPorDefecto(n, fechaInicial));
+  }
+  // Cambiar la primera cuota reorganiza el calendario; después cada cuota
+  // puede editarse por separado.
+  function cambiarFechaInicialCuotas(v: string) {
+    setFechaInicial(v);
+    if (tipoPago === "cuotas") setFechasCuotas(fechasCuotasPorDefecto(nCuotasLimite(numeroCuotas), v));
+  }
+  // Editar la fecha de una cuota individual (índice 0 = primera, gestionada arriba).
+  function editarFechaCuota(indice: number, v: string) {
+    setFechasCuotas((prev) => prev.map((f, i) => (i === indice ? v : f)));
+  }
+
   async function agregarPagos(e: React.FormEvent) {
     e.preventDefault();
     if (!clienteActual || !montoTotal) return;
@@ -1840,12 +2157,19 @@ export default function CRMApp() {
         notas: notaPago || `Pago único ${monedaPago}` 
       });
     } else {
-      const n = parseInt(numeroCuotas);
+      const n = nCuotasLimite(numeroCuotas);
       const mCuota = t / n;
       const mCuotaConvertida = convertirACOP(mCuota, monedaPago, tasaNum, comisionNum);
+      // Cada cuota tiene SU fecha editable (por defecto una por mes desde la
+      // primera). Si falta alguna se pide completarla antes de guardar.
+      const fechas = [fechaInicial, ...fechasCuotas.slice(1, n)];
+      while (fechas.length < n) fechas.push("");
+      const faltantes = fechas.map((f, i) => (!f ? i + 1 : null)).filter((x): x is number => x !== null);
+      if (faltantes.length > 0) {
+        alert(`Faltan las fechas de las cuotas: ${faltantes.join(", ")}.`);
+        return;
+      }
       for (let i = 0; i < n; i++) {
-        const fc = new Date(fBase);
-        fc.setMonth(fc.getMonth() + i);
         arr.push({ 
           cliente_id: clienteActual.id, 
           monto: mCuota,
@@ -1854,7 +2178,7 @@ export default function CRMApp() {
           moneda: monedaPago,
           comision_porcentaje: comisionNum,
           tasa_cambio: tasaNum,
-          fecha_vencimiento: fc.toISOString().split("T")[0], 
+          fecha_vencimiento: fechas[i], 
           estado: "pendiente", 
           metodo_pago: metodoPago, 
           notas: `Cuota ${i + 1}/${n} ${monedaPago}${notaPago ? " - " + notaPago : ""}` 
@@ -1891,6 +2215,7 @@ export default function CRMApp() {
       setPagosCliente([...pagosCliente, ...data]); 
       setMontoTotal(""); 
       setFechaInicial(""); 
+      setFechasCuotas([]); 
       setNotaPago(""); 
       setTipoPago("unico");
     }
@@ -2562,13 +2887,13 @@ export default function CRMApp() {
                   </header>
 
                   <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4">
-                    {mensajes.map((msg) => {
+                    {mensajes.map((msg, idxMsg) => {
                       const isMe = msg.tipo === "enviado";
+                      const isAudioMsg = msg.tipo_contenido === "audio" || msg.contenido === "[audio]" || msg.contenido === "[nota_de_voz]" || (msg.url_archivo && (msg.url_archivo.startsWith("data:audio/") || /\.(ogg|opus|webm|mp3|wav|m4a|aac)($|\?)/i.test(msg.url_archivo)));
                       return (
                         <div key={msg.id} className={`flex ${isMe ? "justify-end" : "justify-start"}`}>
                           <div className={`max-w-[85%] md:max-w-[70%] rounded-2xl px-3 py-2 shadow-sm ${isMe ? "bg-purple-600 text-white rounded-br-none" : "bg-surface border border-border text-gray-200 rounded-bl-none"}`}>
                             {(() => {
-                              const isAudioMsg = msg.tipo_contenido === "audio" || msg.contenido === "[audio]" || msg.contenido === "[nota_de_voz]" || (msg.url_archivo && (msg.url_archivo.startsWith("data:audio/") || /\.(ogg|opus|webm|mp3|wav|m4a|aac)($|\?)/i.test(msg.url_archivo)));
                               if (isAudioMsg && msg.url_archivo) {
                                 return <VoiceNotePlayer src={msg.url_archivo} isMe={isMe} />;
                               }
@@ -2587,7 +2912,20 @@ export default function CRMApp() {
                               }
                               return <p className="text-sm whitespace-pre-wrap leading-relaxed">{msg.contenido}</p>;
                             })()}
-                            <span className={`block text-[9px] mt-1 ${isMe ? "text-purple-200 text-right" : "text-gray-500"}`}>{new Date(msg.creado_en).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                            <div className={`flex items-center gap-1.5 mt-1 ${isMe ? "justify-end" : "justify-start"}`}>
+                              <span className={`text-[9px] ${isMe ? "text-purple-200" : "text-gray-500"}`}>{new Date(msg.creado_en).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                              {isAudioMsg && msg.url_archivo && (
+                                <button
+                                  type="button"
+                                  onClick={() => descargarAudioMensaje(msg, idxMsg)}
+                                  disabled={descargandoAudioId === String(msg.id || idxMsg)}
+                                  className={`p-0.5 rounded transition-colors disabled:opacity-50 ${isMe ? "text-purple-200 hover:text-white" : "text-gray-500 hover:text-purple-300"}`}
+                                  title="Descargar esta nota de voz (OGG)"
+                                >
+                                  <Download className={`w-3 h-3 ${descargandoAudioId === String(msg.id || idxMsg) ? "animate-pulse" : ""}`} />
+                                </button>
+                              )}
+                            </div>
                           </div>
                         </div>
                       );
@@ -2597,7 +2935,7 @@ export default function CRMApp() {
 
                   <div className="p-3 border-t border-border bg-surface/80 backdrop-blur-md flex items-center gap-2 flex-shrink-0">
                     <input type="file" ref={fileInputRef} className="hidden" onChange={handleFileUpload} accept="image/*,audio/*,video/*,.pdf,.doc,.docx,.xls,.xlsx" />
-                    <button type="button" onClick={() => fileInputRef.current?.click()} disabled={clienteActual.es_spam || isRecording} className="p-2.5 text-gray-400 hover:text-purple-400 hover:bg-surfaceHover rounded-full transition-colors disabled:opacity-40"><Paperclip className="w-5 h-5" /></button>
+                    <input type="file" ref={rrFileInputRef} className="hidden" onChange={handleRRFile} accept="audio/*,image/*" />
                     {(isRecording || isPreparingRecording) ? (
                       <div className="flex-1 bg-red-950/30 border border-red-900/50 rounded-full px-4 py-2 flex items-center justify-between gap-2">
                         <div className="flex items-center gap-2 text-red-400 text-sm font-medium flex-shrink-0"><span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" /><Mic className="w-4 h-4" /> {isPreparingRecording ? "Preparando micrófono..." : formatTime(recordingTime)}</div>
@@ -2614,8 +2952,17 @@ export default function CRMApp() {
                         </div>
                       </div>
                     ) : (
-                      <form onSubmit={handleSendMessage} className="flex-1 flex flex-wrap items-center gap-2">
-                        <input type="text" value={nuevoMensaje} onChange={(e) => setNuevoMensaje(e.target.value)} placeholder="Escribe un mensaje..." disabled={clienteActual.es_spam || isSending} className="flex-1 bg-background border border-border rounded-full px-4 py-2.5 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-purple-500 disabled:opacity-50" />
+                      <form onSubmit={handleSendMessage} className="flex-1 min-w-0 flex flex-wrap items-center gap-1.5">
+                        <input type="text" value={nuevoMensaje} onChange={(e) => setNuevoMensaje(e.target.value)} placeholder="Escribe un mensaje..." disabled={clienteActual.es_spam || isSending} className="flex-1 min-w-[140px] bg-background border border-border rounded-full px-4 py-2.5 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-purple-500 disabled:opacity-50" />
+                        <button type="button" onClick={() => fileInputRef.current?.click()} disabled={clienteActual.es_spam || isSending} className="p-2.5 text-gray-400 hover:text-purple-400 hover:bg-surfaceHover rounded-full transition-colors disabled:opacity-40 flex-shrink-0" title="Enviar archivos"><Paperclip className="w-5 h-5" /></button>
+                        <div className="relative flex-shrink-0">
+                          <button type="button" onClick={() => setShowEtapaMenu((v) => !v)} disabled={isSending} className="p-2.5 text-gray-400 hover:text-purple-400 hover:bg-surfaceHover rounded-full transition-colors disabled:opacity-40" title="Cambiar etapa del cliente"><GitBranch className="w-5 h-5" /></button>
+                          {showEtapaMenu && renderMenuEtapaRapida()}
+                        </div>
+                        <div className="relative flex-shrink-0">
+                          <button type="button" onClick={abrirMenuRespuestas} disabled={isSending} className="p-2.5 text-gray-400 hover:text-purple-400 hover:bg-surfaceHover rounded-full transition-colors disabled:opacity-40" title="Respuestas rápidas (textos, audios e imágenes para todas las conversaciones)"><Zap className="w-5 h-5" /></button>
+                          {showRespuestasMenu && renderMenuRespuestasRapidas()}
+                        </div>
                         {nuevoMensaje.trim() ? (
                           <button type="submit" disabled={isSending} className="bg-purple-600 hover:bg-purple-700 text-white p-2.5 rounded-full transition-colors disabled:opacity-50"><Send className="w-5 h-5" /></button>
                         ) : (
@@ -2898,7 +3245,7 @@ export default function CRMApp() {
                       <form onSubmit={agregarPagos} className="pt-2 border-t border-border/50 flex flex-col gap-2">
                         <div className="flex bg-surface p-0.5 rounded-lg text-[10px]">
                           <button type="button" onClick={() => setTipoPago("unico")} className={`flex-1 py-1.5 rounded-md transition-all ${tipoPago === "unico" ? "bg-purple-600 text-white" : "text-gray-400"}`}>Único</button>
-                          <button type="button" onClick={() => setTipoPago("cuotas")} className={`flex-1 py-1.5 rounded-md transition-all ${tipoPago === "cuotas" ? "bg-purple-600 text-white" : "text-gray-400"}`}>Cuotas</button>
+                          <button type="button" onClick={activarCuotas} className={`flex-1 py-1.5 rounded-md transition-all ${tipoPago === "cuotas" ? "bg-purple-600 text-white" : "text-gray-400"}`}>Cuotas</button>
                         </div>
 
                         {/* DIVISA Y COMISION */}
@@ -2927,24 +3274,40 @@ export default function CRMApp() {
                         )}
 
                         <input type="number" placeholder="Monto total" value={montoTotal} onChange={(e) => setMontoTotal(e.target.value)} className="w-full bg-surface border border-border rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:border-purple-500" required />
-                        {tipoPago === "cuotas" && (
-                          <div className="flex items-center gap-2 text-xs text-gray-400">
-                            <span>Dividir en</span>
-                            <input type="number" min="2" max="12" value={numeroCuotas} onChange={(e) => setNumeroCuotas(e.target.value)} className="w-14 bg-surface border border-border rounded-lg px-2 py-1 text-center text-xs focus:outline-none" />
-                            <span>cuotas</span>
+                        {tipoPago === "cuotas" ? (
+                          <div className="space-y-1.5">
+                            <div className="flex items-center gap-2 text-xs text-gray-400">
+                              <span>Dividir en</span>
+                              <input type="number" min="2" max={MAX_CUOTAS} value={numeroCuotas} onChange={(e) => cambiarNumeroCuotas(e.target.value)} className="w-14 bg-surface border border-border rounded-lg px-2 py-1 text-center text-xs focus:outline-none" />
+                              <span>cuotas</span>
+                            </div>
+                            <div>
+                              <label className="text-[9px] text-gray-500 font-bold uppercase block mb-0.5">Primera cuota</label>
+                              <input type="date" value={fechaInicial} onChange={(e) => cambiarFechaInicialCuotas(e.target.value)} className="w-full bg-surface border border-border rounded-lg px-2 py-1.5 text-xs text-gray-400 focus:outline-none" />
+                            </div>
+                            {fechasCuotas.length >= 2 && (
+                              <div className="max-h-40 overflow-y-auto space-y-1 pr-1">
+                                {fechasCuotas.slice(1).map((f, i) => (
+                                  <div key={i} className="flex items-center gap-2">
+                                    <span className="text-[10px] text-gray-400 w-14 flex-shrink-0">Cuota {i + 2}</span>
+                                    <input type="date" value={f} onChange={(e) => editarFechaCuota(i + 1, e.target.value)} className="flex-1 bg-surface border border-border rounded-lg px-2 py-1 text-xs text-gray-400 focus:outline-none" />
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            <p className="text-[9px] text-gray-600">Por defecto una cuota por mes desde la primera; cada fecha se puede editar.</p>
                           </div>
+                        ) : (
+                          <input type="date" value={fechaInicial} onChange={(e) => setFechaInicial(e.target.value)} className="w-full bg-surface border border-border rounded-lg px-2 py-1.5 text-xs text-gray-400 focus:outline-none" />
                         )}
-                        <div className="flex gap-2">
-                          <input type="date" value={fechaInicial} onChange={(e) => setFechaInicial(e.target.value)} className="flex-1 bg-surface border border-border rounded-lg px-2 py-1.5 text-xs text-gray-400 focus:outline-none" />
-                          <select value={metodoPago} onChange={(e) => setMetodoPago(e.target.value)} className="flex-1 bg-surface border border-border rounded-lg px-2 py-1.5 text-xs text-gray-300 focus:outline-none">
-                            <option value="Nequi">Nequi</option>
-                            <option value="Daviplata">Daviplata</option>
-                            <option value="Bancolombia">Bancolombia</option>
-                            <option value="Efectivo">Efectivo</option>
-                            <option value="Transferencia">Transferencia</option>
-                            <option value="Otro">Otro</option>
-                          </select>
-                        </div>
+                        <select value={metodoPago} onChange={(e) => setMetodoPago(e.target.value)} className="w-full bg-surface border border-border rounded-lg px-2 py-1.5 text-xs text-gray-300 focus:outline-none">
+                          <option value="Nequi">Nequi</option>
+                          <option value="Daviplata">Daviplata</option>
+                          <option value="Bancolombia">Bancolombia</option>
+                          <option value="Efectivo">Efectivo</option>
+                          <option value="Transferencia">Transferencia</option>
+                          <option value="Otro">Otro</option>
+                        </select>
                         <input type="text" placeholder="Nota: amarre, limpieza..." value={notaPago} onChange={(e) => setNotaPago(e.target.value)} className="w-full bg-surface border border-border rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:border-purple-500" />
                         <button type="submit" className="w-full bg-surface border border-border hover:bg-purple-600 text-gray-300 hover:text-white py-1.5 rounded-lg text-xs transition-colors flex items-center justify-center gap-1"><Plus className="w-3.5 h-3.5" /> Agregar Cobro</button>
                       </form>
@@ -3025,13 +3388,13 @@ export default function CRMApp() {
                   </header>
                   <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4 bg-background">
                     <div className="bg-amber-950/20 border border-amber-900/30 rounded-xl p-3 flex items-start gap-2 text-xs text-amber-200/80"><AlertTriangle className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" /><p>Esta conversación está archivada porque no hubo respuesta en más de 7 días. Puedes restaurarla para que vuelva a la bandeja principal o enviar un mensaje y se restaurará automáticamente.</p></div>
-                    {mensajes.map((msg) => {
+                    {mensajes.map((msg, idxMsg) => {
                       const isMe = msg.tipo === "enviado";
+                      const isAudioMsg = msg.tipo_contenido === "audio" || msg.contenido === "[audio]" || msg.contenido === "[nota_de_voz]" || (msg.url_archivo && (msg.url_archivo.startsWith("data:audio/") || /\.(ogg|opus|webm|mp3|wav|m4a|aac)($|\?)/i.test(msg.url_archivo)));
                       return (
                         <div key={msg.id} className={`flex ${isMe ? "justify-end" : "justify-start"}`}>
                           <div className={`max-w-[85%] md:max-w-[70%] rounded-2xl px-3 py-2 shadow-sm ${isMe ? "bg-purple-600 text-white rounded-br-none opacity-90" : "bg-surface border border-border text-gray-300 rounded-bl-none opacity-80"}`}>
                             {(() => {
-                              const isAudioMsg = msg.tipo_contenido === "audio" || msg.contenido === "[audio]" || msg.contenido === "[nota_de_voz]" || (msg.url_archivo && (msg.url_archivo.startsWith("data:audio/") || /\.(ogg|opus|webm|mp3|wav|m4a|aac)($|\?)/i.test(msg.url_archivo)));
                               if (isAudioMsg && msg.url_archivo) return <VoiceNotePlayer src={msg.url_archivo} isMe={isMe} />;
                               if (isImageMessage(msg)) {
                                 const pieDeFoto = textoAdjuntoMultimedia(msg);
@@ -3044,7 +3407,12 @@ export default function CRMApp() {
                               }
                               return <p className="text-sm whitespace-pre-wrap leading-relaxed">{msg.contenido}</p>;
                             })()}
-                            <span className={`block text-[9px] mt-1 ${isMe ? "text-purple-200 text-right" : "text-gray-500"}`}>{new Date(msg.creado_en).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                            <div className={`flex items-center gap-1.5 mt-1 ${isMe ? "justify-end" : "justify-start"}`}>
+                              <span className={`text-[9px] ${isMe ? "text-purple-200" : "text-gray-500"}`}>{new Date(msg.creado_en).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                              {isAudioMsg && msg.url_archivo && (
+                                <button type="button" onClick={() => descargarAudioMensaje(msg, idxMsg)} disabled={descargandoAudioId === String(msg.id || idxMsg)} className={`p-0.5 rounded transition-colors disabled:opacity-50 ${isMe ? "text-purple-200 hover:text-white" : "text-gray-500 hover:text-purple-300"}`} title="Descargar esta nota de voz (OGG)"><Download className={`w-3 h-3 ${descargandoAudioId === String(msg.id || idxMsg) ? "animate-pulse" : ""}`} /></button>
+                              )}
+                            </div>
                           </div>
                         </div>
                       );
@@ -3053,11 +3421,11 @@ export default function CRMApp() {
                   </div>
                   <div className="p-3 border-t border-border bg-surface/80 backdrop-blur-md flex items-center gap-2 flex-shrink-0">
                     <input type="file" ref={fileInputRef} className="hidden" onChange={handleFileUpload} accept="image/*,audio/*,video/*,.pdf,.doc,.docx,.xls,.xlsx" />
-                    <button type="button" onClick={() => fileInputRef.current?.click()} disabled={isRecording} className="p-2.5 text-gray-400 hover:text-purple-400 hover:bg-surfaceHover rounded-full transition-colors disabled:opacity-40"><Paperclip className="w-5 h-5" /></button>
+                    <input type="file" ref={rrFileInputRef} className="hidden" onChange={handleRRFile} accept="audio/*,image/*" />
                     {(isRecording || isPreparingRecording) ? (
                       <div className="flex-1 bg-red-950/30 border border-red-900/50 rounded-full px-4 py-2 flex items-center justify-between gap-2"><div className="flex items-center gap-2 text-red-400 text-sm font-medium flex-shrink-0"><span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" /><Mic className="w-4 h-4" /> {isPreparingRecording ? "Preparando..." : formatTime(recordingTime)}</div><div className="flex items-center gap-1 flex-shrink-0"><button onClick={cancelRecording} disabled={!isRecording} className="p-1.5 text-gray-400 hover:text-white rounded-full disabled:opacity-40"><Trash2 className="w-4 h-4" /></button><button onClick={stopRecording} disabled={isPreparingRecording || !isRecording} className="p-1.5 text-white bg-red-600 hover:bg-red-500 rounded-full shadow-lg disabled:opacity-40"><Send className="w-4 h-4 ml-0.5" /></button></div></div>
                     ) : (
-                      <form onSubmit={handleSendMessage} className="flex-1 flex flex-wrap items-center gap-2"><input type="text" value={nuevoMensaje} onChange={(e) => setNuevoMensaje(e.target.value)} placeholder="Escribe para restaurar y responder..." disabled={isSending} className="flex-1 bg-background border border-border rounded-full px-4 py-2.5 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-amber-600 disabled:opacity-50" />{nuevoMensaje.trim() ? (<button type="submit" disabled={isSending} className="bg-amber-700 hover:bg-amber-600 text-white p-2.5 rounded-full transition-colors disabled:opacity-50"><Send className="w-5 h-5" /></button>) : (<button type="button" onClick={startRecording} disabled={isSending || isPreparingRecording} className="bg-surface border border-border text-amber-400 hover:bg-amber-600 hover:text-white hover:border-amber-600 p-2.5 rounded-full transition-colors disabled:opacity-50"><Mic className="w-5 h-5" /></button>)} {sendError && <p className="w-full text-xs text-red-400 px-2">{sendError}</p>}</form>
+                      <form onSubmit={handleSendMessage} className="flex-1 min-w-0 flex flex-wrap items-center gap-1.5"><input type="text" value={nuevoMensaje} onChange={(e) => setNuevoMensaje(e.target.value)} placeholder="Escribe para restaurar y responder..." disabled={isSending} className="flex-1 min-w-[140px] bg-background border border-border rounded-full px-4 py-2.5 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-amber-600 disabled:opacity-50" /><button type="button" onClick={() => fileInputRef.current?.click()} disabled={isSending} className="p-2.5 text-gray-400 hover:text-purple-400 hover:bg-surfaceHover rounded-full transition-colors disabled:opacity-40 flex-shrink-0" title="Enviar archivos"><Paperclip className="w-5 h-5" /></button><div className="relative flex-shrink-0"><button type="button" onClick={() => setShowEtapaMenu((v) => !v)} disabled={isSending} className="p-2.5 text-gray-400 hover:text-purple-400 hover:bg-surfaceHover rounded-full transition-colors disabled:opacity-40" title="Cambiar etapa del cliente"><GitBranch className="w-5 h-5" /></button>{showEtapaMenu && renderMenuEtapaRapida()}</div><div className="relative flex-shrink-0"><button type="button" onClick={abrirMenuRespuestas} disabled={isSending} className="p-2.5 text-gray-400 hover:text-purple-400 hover:bg-surfaceHover rounded-full transition-colors disabled:opacity-40" title="Respuestas rápidas (textos, audios e imágenes para todas las conversaciones)"><Zap className="w-5 h-5" /></button>{showRespuestasMenu && renderMenuRespuestasRapidas()}</div>{nuevoMensaje.trim() ? (<button type="submit" disabled={isSending} className="bg-amber-700 hover:bg-amber-600 text-white p-2.5 rounded-full transition-colors disabled:opacity-50"><Send className="w-5 h-5" /></button>) : (<button type="button" onClick={startRecording} disabled={isSending || isPreparingRecording} className="bg-surface border border-border text-amber-400 hover:bg-amber-600 hover:text-white hover:border-amber-600 p-2.5 rounded-full transition-colors disabled:opacity-50"><Mic className="w-5 h-5" /></button>)} {sendError && <p className="w-full text-xs text-red-400 px-2">{sendError}</p>}</form>
                     )}
                   </div>
                 </section>

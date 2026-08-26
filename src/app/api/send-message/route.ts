@@ -93,7 +93,7 @@ export async function POST(req: Request) {
 
         if (isAudio && (mime.includes("webm") || isWebmBuffer(bytes))) {
           try {
-            bytes = remuxWebmToOgg(bytes, { prerollMs: WEBM_OGG_PREROLL_MS });
+            bytes = Buffer.from(remuxWebmToOgg(bytes, { prerollMs: WEBM_OGG_PREROLL_MS }));
             outgoingMime = "audio/ogg";
             outgoingName = /\.webm$/i.test(outgoingName) ? outgoingName.replace(/\.webm$/i, ".ogg") : `${outgoingName}.ogg`;
             storedFileBase64 = `data:${outgoingMime};base64,${bytes.toString("base64")}`;
@@ -176,7 +176,7 @@ export async function POST(req: Request) {
 
         if (mime.includes("webm") || isWebmBuffer(bytes)) {
           try {
-            bytes = remuxWebmToOgg(bytes, { prerollMs: WEBM_OGG_PREROLL_MS });
+            bytes = Buffer.from(remuxWebmToOgg(bytes, { prerollMs: WEBM_OGG_PREROLL_MS }));
             audioMime = "audio/ogg";
             outgoingName = /\.webm$/i.test(outgoingName) ? outgoingName.replace(/\.webm$/i, ".ogg") : `${outgoingName.replace(/\.[^.]+$/, "")}.ogg`;
             storedFileBase64 = `data:${audioMime};base64,${bytes.toString("base64")}`;

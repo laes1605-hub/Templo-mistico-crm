@@ -266,3 +266,74 @@ export async function borrarConversacionCompleta(
   }
   return resultado;
 }
+
+/**
+ * Busca o crea una conversación en Chatwoot (inbox 5 = WhatsApp Cloud API) para
+ * un número telefónico. Permite enviar vía WhatsApp API a un cliente cuya
+ * conversación original se haya creado por Evolution (WhatsApp Personal).
+ */
+export async function buscarOCrearConversacionChatwoot(
+  cleanPhone: string,
+  inboxId = 5
+): Promise<string | number | null> {
+  const digits = cleanPhone.replace(/\D/g, "");
+  if (!digits) return null;
+  const cfg = chatwootConfig();
+  const e164 = `+${digits}`;
+
+  try {
+    // 1. Buscar contacto existente
+    let contactId: number | string | null = null;
+    const search = await cwFetch(cfg, `/contacts/search?q=${encodeURIComponent(digits)}`);
+    if (search.ok) {
+      const payload = search.json?.payload || search.json?.data || [];
+      if (Array.isArray(payload) && payload.length > 0) {
+        contactId = payload[0]?.id || null;
+      }
+    }
+
+    // 2. Si no existe el contacto en Chatwoot, crearlo
+    if (!contactId) {
+      const creacion = await cwFetch(cfg, "/contacts", {
+        method: "POST",
+        body: JSON.stringify({
+          name: e164,
+          phone_number: e164,
+        }),
+      });
+      if (creacion.ok) {
+        contactId = creacion.json?.payload?.contact?.id || creacion.json?.id || null;
+      }
+    }
+
+    if (!contactId) return null;
+
+    // 3. Buscar si el contacto ya tiene una conversación en Chatwoot
+    const convs = await cwFetch(cfg, `/contacts/${contactId}/conversations`);
+    if (convs.ok) {
+      const lista = convs.json?.payload || [];
+      if (Array.isArray(lista) && lista.length > 0) {
+        const abierta = lista.find((c: any) => c.status === "open") || lista[0];
+        if (abierta?.id) return abierta.id;
+      }
+    }
+
+    // 4. Si no tiene conversación en Chatwoot, crearla en el inbox especificado (inbox 5 = API)
+    const nuevaConv = await cwFetch(cfg, "/conversations", {
+      method: "POST",
+      body: JSON.stringify({
+        source_id: digits,
+        inbox_id: inboxId,
+        contact_id: contactId,
+        status: "open",
+      }),
+    });
+    if (nuevaConv.ok) {
+      return nuevaConv.json?.id || null;
+    }
+  } catch (err) {
+    console.error("[chatwoot] Error buscando o creando conversación:", err);
+  }
+  return null;
+}
+

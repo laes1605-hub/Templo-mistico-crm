@@ -32,22 +32,35 @@ import {
   CheckCircle2, Clock, Plus, Ban, Settings, Edit2, Trash2, ArrowUp, ArrowDown,
   Wallet, Target, TrendingDown, Award, Calendar, Shield, X,
   Mic, Paperclip, ArrowLeft, Info, ListTodo, CheckSquare, Square, MailOpen,
-  Sparkles, Play, Pause, RefreshCw, Image as ImageIcon, ChevronDown, ChevronRight, Download,
+  Sparkles, Play, Pause, RefreshCw, Image as ImageIcon, ChevronDown, ChevronRight, ChevronLeft, Download,
   Archive, ArchiveRestore, Search, AlertTriangle, GitBranch, Check, Zap, Type,
   StickyNote, FileText, Coins, Globe, Percent, Save, Eye, EyeOff, Palette, Power, User, Landmark, UserPlus,
   PhoneCall, BellRing
 } from "lucide-react";
 
-// Equivalencias de etapas Personal → Templo (para re-enrutar leads por número)
-const ESTADO_PERSONAL_A_TEMPLO: Record<string, string> = {
-  nuevo_lead: "nuevo_lead_templo",
-  en_consulta: "en_consulta_templo",
-  consulta_hecha: "consulta_hecha_templo",
-  pago_recibido: "pago_recibido_templo",
-  trabajo_proceso: "trabajo_proceso_templo",
-  trabajo_completado: "trabajo_completado_templo",
-  perdido: "perdido_templo",
-};
+// Normaliza estados antiguos o con sufijo _templo al pipeline unificado
+function normalizarEstado(estado: string | null | undefined): string {
+  if (!estado) return "nuevo_lead";
+  const s = String(estado).trim();
+  if (s.endsWith("_templo")) {
+    return s.replace(/_templo$/, "");
+  }
+  if (s === "en_seguimiento") return "en_consulta";
+  if (s === "spam_personal" || s === "spam_templo") return "spam";
+  if (s === "archivado_personal" || s === "archivado_templo") return "__archivados__";
+  return s;
+}
+
+// Etapas base del pipeline unificado con su cuenta encargada por defecto
+const ETAPAS_DEFAULT = [
+  { clave: "nuevo_lead", nombre: "Nuevo Lead", orden: 1, color: "border-blue-500", bg_color: "bg-blue-500/10", text_color: "text-blue-300", cuenta_responsable: "meta_business" },
+  { clave: "en_consulta", nombre: "En Consulta", orden: 2, color: "border-yellow-500", bg_color: "bg-yellow-500/10", text_color: "text-yellow-300", cuenta_responsable: "meta_business" },
+  { clave: "consulta_hecha", nombre: "Consulta Hecha", orden: 3, color: "border-orange-500", bg_color: "bg-orange-500/10", text_color: "text-orange-300", cuenta_responsable: "evolution" },
+  { clave: "pago_recibido", nombre: "Pago Recibido", orden: 4, color: "border-emerald-500", bg_color: "bg-emerald-500/10", text_color: "text-emerald-300", cuenta_responsable: "evolution" },
+  { clave: "trabajo_proceso", nombre: "Trabajo en Proceso", orden: 5, color: "border-purple-500", bg_color: "bg-purple-500/10", text_color: "text-purple-300", cuenta_responsable: "evolution" },
+  { clave: "trabajo_completado", nombre: "Trabajo Completado", orden: 6, color: "border-green-500", bg_color: "bg-green-500/10", text_color: "text-green-300", cuenta_responsable: "evolution" },
+  { clave: "perdido", nombre: "Perdido", orden: 7, color: "border-red-500", bg_color: "bg-red-500/10", text_color: "text-red-300", cuenta_responsable: "evolution" },
+];
 
 // Cuotas: límite y fechas por defecto (una cuota por mes desde la primera).
 const MAX_CUOTAS = 30;
@@ -123,14 +136,35 @@ function lineasResumenChatwoot(chatwoot: ResumenEliminacion["chatwoot"]): string
 }
 
 export default function CRMApp() {
-  // Subcategoría especial de chats: "Por leer" (chats de TODAS las categorías
-  // con mensajes pendientes por leer). No es una etapa del pipeline.
+  // Subcategorías especiales de chats:
+  // - Por leer: chats con mensajes sin leer
+  // - En seguimiento: clientes con check activo pendientes para hoy (corte 8:00 AM)
+  // - Archivados: subcategoría para chats archivados (ya no es pestaña separada)
   const CATEGORIA_POR_LEER = "__por_leer__";
-  // Etapa real, exclusiva de WhatsApp Personal. Se muestra como chip especial
-  // junto a "Por leer" para que el seguimiento quede siempre a la vista.
-  const CATEGORIA_EN_SEGUIMIENTO = "en_seguimiento";
+  const CATEGORIA_EN_SEGUIMIENTO = "__en_seguimiento__";
+  const CATEGORIA_ARCHIVADOS = "__archivados__";
 
-  const [tab, setTab] = useState<"chats" | "pipeline" | "cartera" | "tareas" | "ads" | "cerebro" | "archivados">("chats");
+  // Hora de corte diaria para la subcategoría En seguimiento (8:00 AM)
+  function getHoraCorteSeguimiento(): Date {
+    const ahora = new Date();
+    const corte = new Date(ahora);
+    corte.setHours(8, 0, 0, 0); // 8:00 AM hoy
+    if (ahora.getTime() < corte.getTime()) {
+      corte.setDate(corte.getDate() - 1); // 8:00 AM de ayer si aún no son las 8 AM
+    }
+    return corte;
+  }
+
+  function estaPendienteSeguimientoHoy(cliente: any): boolean {
+    if (!cliente || !cliente.en_seguimiento) return false;
+    if (cliente.es_spam) return false;
+    if (!cliente.seguimiento_revisado_en) return true;
+    const revisado = new Date(cliente.seguimiento_revisado_en).getTime();
+    return revisado < getHoraCorteSeguimiento().getTime();
+  }
+
+  const [tab, setTab] = useState<"chats" | "pipeline" | "cartera" | "tareas" | "ads" | "cerebro">("chats");
+  const subcatScrollRef = useRef<HTMLDivElement>(null);
   
   const [conversaciones, setConversaciones] = useState<any[]>([]);
   const [selectedConv, setSelectedConv] = useState<any | null>(null);
@@ -327,28 +361,26 @@ export default function CRMApp() {
     setLlamadasPersonalDisponibles(llamadasWhatsAppPersonalDisponibles());
   }, []);
 
-  // TICKER: mantiene la cartera y los días restantes actualizados día a día
+  // Ticker: actualiza cartera y cortes cada minuto
   useEffect(() => {
     const t = setInterval(() => setNowTick(Date.now()), 60_000);
     return () => clearInterval(t);
   }, []);
 
-  // Mantener el filtro de cartera sincronizado con el grupo activo (Personal/Templo)
+  // Si la subcategoría de chat seleccionada no existe en el pipeline, volver a nuevo_lead
   useEffect(() => {
-    setCarteraGrupoFiltro(grupoActivo);
-  }, [grupoActivo]);
-
-  // Si la subcategoría de chat seleccionada no existe en el grupo activo, volver a Nuevos Leads
-  useEffect(() => {
-    const claveNuevoLead = grupoActivo === "templo" ? "nuevo_lead_templo" : "nuevo_lead";
-    const existe = pipelineEtapas.find((e) => e.grupo === grupoActivo && e.clave === chatCategoria);
     if (
-      !existe &&
-      chatCategoria !== claveNuevoLead &&
-      chatCategoria !== CATEGORIA_POR_LEER &&
-      !(grupoActivo === "personal" && chatCategoria === CATEGORIA_EN_SEGUIMIENTO)
-    ) setChatCategoria(claveNuevoLead);
-  }, [grupoActivo, pipelineEtapas]);
+      chatCategoria === CATEGORIA_POR_LEER ||
+      chatCategoria === CATEGORIA_EN_SEGUIMIENTO ||
+      chatCategoria === CATEGORIA_ARCHIVADOS ||
+      chatCategoria === "spam" ||
+      chatCategoria === "nuevo_lead"
+    ) return;
+    const existe = pipelineEtapas.find((e) => e.clave === chatCategoria);
+    if (!existe && pipelineEtapas.length > 0) {
+      setChatCategoria("nuevo_lead");
+    }
+  }, [chatCategoria, pipelineEtapas]);
 
   // Al volver a la app con un chat abierto, ese chat cuenta como revisado
   useEffect(() => {
@@ -372,12 +404,14 @@ export default function CRMApp() {
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "mensajes" }, (payload) => {
         const msg = payload.new as any;
         if (!msg || msg.tipo === "enviado") return; // solo mensajes entrantes
-        const conv = conversacionesRef.current.find((c) => c.id === msg.conversacion_id);
+        const conv = conversacionesRef.current.find((c) => c.id === msg.conversacion_id || (c.all_conv_ids && c.all_conv_ids.includes(msg.conversacion_id)));
         // Spam: ni recordatorios ni notificaciones
         if (conv?.clientes?.es_spam) return;
         // Si el chat está abierto y la app visible, se marca como leído al vuelo
         const abierta = typeof document !== "undefined" && document.visibilityState === "visible";
-        if (abierta && selectedConvRef.current?.id === msg.conversacion_id) {
+        const convAbierta = selectedConvRef.current;
+        const estaEnChat = convAbierta && (convAbierta.id === msg.conversacion_id || (convAbierta.all_conv_ids && convAbierta.all_conv_ids.includes(msg.conversacion_id)));
+        if (abierta && estaEnChat) {
           marcarLeido(msg.conversacion_id);
           return;
         }
@@ -410,15 +444,13 @@ export default function CRMApp() {
     if (todasTareas.length > 0) scheduleTaskReminders(todasTareas);
   }, [todasTareas]);
 
-  // Aviso diario de la etapa En seguimiento (solo WhatsApp Personal). Se
+  // Aviso diario de En seguimiento (8:00 AM todos los días). Se
   // recalcula al cargar/sincronizar clientes y cuando se activan o apagan los
   // avisos desde Ajustes, sin crear alarmas duplicadas en Android.
   useEffect(() => {
     const programarSeguimiento = () => {
       const clientesSeguimiento = todosClientes.filter((cliente) =>
-        !cliente?.es_spam &&
-        cliente?.estado === CATEGORIA_EN_SEGUIMIENTO &&
-        cliente?.grupo !== "templo"
+        estaPendienteSeguimientoHoy(cliente)
       );
       void scheduleFollowUpReminders(clientesSeguimiento);
     };
@@ -583,8 +615,40 @@ export default function CRMApp() {
   }
 
   function getEtapa(clienteEstado: string | undefined) {
-    const clave = clienteEstado || "nuevo_lead";
-    return pipelineEtapas.find(e => e.clave === clave) || null;
+    const clave = normalizarEstado(clienteEstado);
+    return pipelineEtapas.find(e => e.clave === clave) || pipelineEtapas.find(e => e.clave === "nuevo_lead") || null;
+  }
+
+  async function toggleEnSeguimientoCliente(clienteId: string) {
+    const cli = todosClientes.find(c => c.id === clienteId) || clienteActual;
+    const nuevoEstado = !cli?.en_seguimiento;
+
+    setTodosClientes(prev => prev.map(c => c.id === clienteId ? { ...c, en_seguimiento: nuevoEstado } : c));
+    setConversaciones(prev => prev.map(c => c.cliente_id === clienteId ? { ...c, clientes: { ...c.clientes, en_seguimiento: nuevoEstado } } : c));
+    if (clienteActual?.id === clienteId) {
+      setClienteActual((prev: any) => prev ? { ...prev, en_seguimiento: nuevoEstado } : null);
+    }
+
+    try {
+      await supabase.from("clientes").update({ en_seguimiento: nuevoEstado }).eq("id", clienteId);
+    } catch (e) {
+      console.warn("No se pudo actualizar en_seguimiento:", e);
+    }
+  }
+
+  async function marcarSeguimientoRevisado(clienteId: string) {
+    const ahoraISO = new Date().toISOString();
+    setTodosClientes(prev => prev.map(c => c.id === clienteId ? { ...c, seguimiento_revisado_en: ahoraISO } : c));
+    setConversaciones(prev => prev.map(c => c.cliente_id === clienteId ? { ...c, clientes: { ...c.clientes, seguimiento_revisado_en: ahoraISO } } : c));
+    if (clienteActual?.id === clienteId) {
+      setClienteActual((prev: any) => prev ? { ...prev, seguimiento_revisado_en: ahoraISO } : null);
+    }
+
+    try {
+      await supabase.from("clientes").update({ seguimiento_revisado_en: ahoraISO }).eq("id", clienteId);
+    } catch (e) {
+      console.warn("No se pudo actualizar seguimiento_revisado_en:", e);
+    }
   }
 
   // ============ IDENTIDAD DEL CLIENTE: NÚMERO PRIMERO, NOMBRE SOLO SI ES MANUAL ============
@@ -946,9 +1010,8 @@ export default function CRMApp() {
     if (fallbackDelete) {
       await supabase.from("pagos").delete().eq("cliente_id", cliente.id).eq("estado", "pendiente");
     }
-    const grupoCli = getGrupoCliente(cliente);
     await supabase.from("clientes").update({
-      estado: grupoCli === "templo" ? "perdido_templo" : "perdido",
+      estado: "perdido",
       notas_personales: `${cliente.notas_personales ? cliente.notas_personales + "\n" : ""}[${new Date().toLocaleDateString("es-CO")}] ⚠️ Abandonó cartera (pagos pendientes eliminados)`,
       actualizado_en: new Date().toISOString(),
     }).eq("id", cliente.id);
@@ -1024,12 +1087,6 @@ export default function CRMApp() {
   }, []);
 
   async function fetchConversaciones(completa = true) {
-    // Si el mismo cliente escribió al WhatsApp API y al Personal, conservar
-    // Personal como conversación principal y copiar allí todo el historial.
-    // La RPC es idempotente; si la migración aún no fue aplicada, no bloquea
-    // la carga normal del CRM.
-    // `completa=false` (refrescos por sondeo/realtime) se salta la RPC para no
-    // saturar Supabase: no cambia datos, sólo los lee.
     if (completa) {
       try {
         await supabase.rpc("unificar_conversaciones_whatsapp");
@@ -1038,36 +1095,79 @@ export default function CRMApp() {
       }
     }
     const { data } = await supabase.from("conversaciones").select("*, clientes(*)").order("ultimo_mensaje_en", { ascending: false });
-    if (data) setConversaciones(data);
+    if (data) {
+      // Unificar conversaciones por cliente_id para que haya una sola conversación por cliente
+      const convsPorCliente = new Map<string, any>();
+      data.forEach((c: any) => {
+        const cid = c.cliente_id || c.id;
+        const existente = convsPorCliente.get(cid);
+        if (!existente) {
+          convsPorCliente.set(cid, {
+            ...c,
+            all_conv_ids: [c.id],
+          });
+        } else {
+          // Combinar datos en una sola fila representativa
+          const cwId = existente.chatwoot_conversation_id || c.chatwoot_conversation_id;
+          const tExistente = new Date(existente.ultimo_mensaje_en || 0).getTime();
+          const tNuevo = new Date(c.ultimo_mensaje_en || 0).getTime();
+          const principal = tNuevo > tExistente ? c : existente;
+          const secundaria = tNuevo > tExistente ? existente : c;
+          convsPorCliente.set(cid, {
+            ...principal,
+            chatwoot_conversation_id: cwId,
+            no_leidos: (principal.no_leidos || 0) + (secundaria.no_leidos || 0),
+            all_conv_ids: [...(existente.all_conv_ids || [existente.id]), c.id],
+          });
+        }
+      });
+      setConversaciones(Array.from(convsPorCliente.values()));
+    }
     setLoadingChats(false);
   }
+
   async function fetchPipelineEtapas() {
     const { data } = await supabase.from("pipeline_etapas").select("*").order("orden", { ascending: true });
-    if (!data) return;
-
-    // Respaldo para instalaciones que aún no aplicaron la migración: el SQL es
-    // la ruta principal, pero el chip de seguimiento no queda inutilizado.
-    if (!data.some((etapa: any) => etapa.clave === CATEGORIA_EN_SEGUIMIENTO)) {
-      const etapasPersonal = data.filter((etapa: any) => etapa.grupo === "personal" && !etapa.es_spam && !etapa.es_archivado);
-      const orden = Math.max(0, ...etapasPersonal.map((etapa: any) => Number(etapa.orden) || 0)) + 1;
-      const { data: creada } = await supabase.from("pipeline_etapas").insert([{
-        clave: CATEGORIA_EN_SEGUIMIENTO,
-        nombre: "En seguimiento",
-        orden,
-        color: "border-cyan-500",
-        bg_color: "bg-cyan-500/15",
-        text_color: "text-cyan-300",
-        grupo: "personal",
-        es_spam: false,
-        es_archivado: false,
-      }]).select();
-      if (creada?.[0]) {
-        setPipelineEtapas([...data, creada[0]].sort((a: any, b: any) => a.orden - b.orden));
-        return;
-      }
+    if (!data || data.length === 0) {
+      setPipelineEtapas(ETAPAS_DEFAULT);
+      return;
     }
-    setPipelineEtapas(data);
+
+    // Filtrar duplicados con sufijo _templo y etapas técnicas (spam/archivado/en_seguimiento)
+    const limpias: any[] = [];
+    const clavesVistas = new Set<string>();
+
+    data.forEach((e: any) => {
+      if (e.es_spam || e.es_archivado || e.clave === "en_seguimiento") return;
+      const claveNorm = normalizarEstado(e.clave);
+      if (clavesVistas.has(claveNorm)) return;
+      clavesVistas.add(claveNorm);
+
+      let cuentaResp = e.cuenta_responsable;
+      if (!cuentaResp) {
+        cuentaResp = ["nuevo_lead", "en_consulta"].includes(claveNorm) ? "meta_business" : "evolution";
+      }
+      limpias.push({
+        ...e,
+        clave: claveNorm,
+        cuenta_responsable: cuentaResp,
+      });
+    });
+
+    // Garantizar que las etapas base siempre existan
+    ETAPAS_DEFAULT.forEach((def) => {
+      if (!limpias.some((e) => e.clave === def.clave)) {
+        limpias.push({
+          id: def.clave,
+          ...def,
+        });
+      }
+    });
+
+    limpias.sort((a, b) => (Number(a.orden) || 0) - (Number(b.orden) || 0));
+    setPipelineEtapas(limpias);
   }
+
   async function fetchTodosPagos() {
     const { data } = await supabase.from("pagos").select("*");
     if (data) setTodosPagos(data);
@@ -1077,64 +1177,61 @@ export default function CRMApp() {
     if (data) setTodosClientes(data);
   }
   async function fetchTodasTareas() {
-    // clientes(*) trae nombre_manual y teléfonos para mostrar número con + si no hay nombre manual
     const { data } = await supabase.from("tareas").select("*, clientes(*)").order("fecha_vencimiento", { ascending: true });
     if (data) setTodosTareas(data);
   }
 
-  // ===================== 📲 ENRUTAR LEADS POR NÚMERO =====================
-  // Los leads de la publicidad van dirigidos al número del WhatsApp API
-  // (conversaciones.fuente = "meta_business" = grupo Templo). Si un webhook
-  // los clasifica en el personal (ej: "No Contesta"), aquí se corrigen y caen
-  // en "Nuevo Lead" del Templo. Los leads del WhatsApp personal no se tocan.
+  // ===================== 📲 ENRUTAR LEADS POR NÚMERO (Publicidad → WhatsApp API) =====================
+  // Los leads de publicidad que escriben al número WhatsApp API (fuente = "meta_business")
+  // se aseguran siempre en "Nuevo Lead" con la cuenta WhatsApp API encargada.
   const enrutarEnCurso = useRef(false);
   async function enrutarLeadsPorNumero() {
     if (enrutarEnCurso.current) return;
     if (conversaciones.length === 0 || pipelineEtapas.length === 0) return;
     enrutarEnCurso.current = true;
     try {
-      const clavesPersonales = new Set(pipelineEtapas.filter(e => e.grupo === "personal").map(e => e.clave));
-      // ¿Cuántas conversaciones tiene cada cliente en cada número?
-      const statsPorCliente = new Map<string, { meta: number; otras: number }>();
-      conversaciones.forEach(c => {
-        if (!c.cliente_id) return;
-        const stat = statsPorCliente.get(c.cliente_id) || { meta: 0, otras: 0 };
-        if (c.fuente === "meta_business") stat.meta++; else stat.otras++;
-        statsPorCliente.set(c.cliente_id, stat);
-      });
-
       const tareasFix: any[] = [];
-      const fixes: { id: string; grupo?: string; estado?: string }[] = [];
-      statsPorCliente.forEach((stat, clienteId) => {
-        if (stat.meta === 0) return; // lead del WhatsApp personal: no se toca
-        const cliente = todosClientes.find(c => c.id === clienteId)
-          || conversaciones.find(c => c.cliente_id === clienteId)?.clientes;
-        if (!cliente) return;
-        const grupoActual = cliente.grupo || "";
-        const estadoActual = cliente.estado || "";
-        // Grupo: Templo si TODAS sus conversaciones son del número API
-        const grupoNuevo = stat.otras === 0 ? "templo" : grupoActual;
-        // Estado: etapas del pipeline personal (o vacía) → equivalente Templo
-        let estadoNuevo = estadoActual;
-        if (grupoNuevo === "templo" && (!estadoActual || clavesPersonales.has(estadoActual))) {
-          estadoNuevo = ESTADO_PERSONAL_A_TEMPLO[estadoActual] || "nuevo_lead_templo";
+      const fixes: { id: string; estado?: string; en_seguimiento?: boolean }[] = [];
+
+      todosClientes.forEach((cliente) => {
+        const estActual = cliente.estado || "";
+        const estNorm = normalizarEstado(estActual);
+        let cambios: any = null;
+
+        // Si el cliente tiene estado con sufijo _templo, normalizar al pipeline unificado
+        if (estActual.endsWith("_templo")) {
+          cambios = { ...(cambios || {}), estado: estNorm };
         }
-        const cambios: any = { actualizado_en: new Date().toISOString() };
-        if (grupoNuevo && grupoNuevo !== grupoActual) cambios.grupo = grupoNuevo;
-        if (estadoNuevo !== estadoActual) cambios.estado = estadoNuevo || null;
-        if (Object.keys(cambios).length === 1) return; // solo actualizado_en → nada que arreglar
-        tareasFix.push(supabase.from("clientes").update(cambios).eq("id", clienteId));
-        fixes.push({ id: clienteId, ...(cambios.grupo ? { grupo: cambios.grupo } : {}), ...(cambios.estado !== undefined ? { estado: cambios.estado } : {}) });
+
+        // Si el cliente tenía la antigua etapa en_seguimiento, pasar a check booleano
+        if (estActual === "en_seguimiento") {
+          cambios = { ...(cambios || {}), estado: "en_consulta", en_seguimiento: true };
+        }
+
+        // Si el cliente llegó por WhatsApp API (publicidad) y no tiene etapa o era nuevo_lead_templo, asegurar nuevo_lead
+        const convMeta = conversaciones.find((c) => c.cliente_id === cliente.id && c.fuente === "meta_business");
+        if (convMeta && (!estActual || estActual === "nuevo_lead_templo")) {
+          cambios = { ...(cambios || {}), estado: "nuevo_lead" };
+        }
+
+        if (cambios) {
+          cambios.actualizado_en = new Date().toISOString();
+          tareasFix.push(supabase.from("clientes").update(cambios).eq("id", cliente.id));
+          fixes.push({ id: cliente.id, ...cambios });
+        }
       });
 
       if (tareasFix.length === 0) return;
-      console.log(`📲 Re-enrutando ${tareasFix.length} lead(s) al número correcto (WhatsApp API Templo)`);
+      console.log(`📲 Normalizando y enrutando ${tareasFix.length} lead(s) al pipeline unificado (WhatsApp API)`);
       await Promise.all(tareasFix);
-      // Actualizar el estado local sin esperar el refetch del realtime
-      setTodosClientes(prev => prev.map(c => { const f = fixes.find(x => x.id === c.id); return f ? { ...c, ...(f.grupo ? { grupo: f.grupo } : {}), ...(f.estado !== undefined ? { estado: f.estado } : {}) } : c; }));
-      setConversaciones(prev => prev.map(c => {
-        const f = c.cliente_id ? fixes.find(x => x.id === c.cliente_id) : undefined;
-        return f ? { ...c, clientes: { ...c.clientes, ...(f.grupo ? { grupo: f.grupo } : {}), ...(f.estado !== undefined ? { estado: f.estado } : {}) } } : c;
+
+      setTodosClientes((prev) => prev.map((c) => {
+        const f = fixes.find((x) => x.id === c.id);
+        return f ? { ...c, ...(f.estado !== undefined ? { estado: f.estado } : {}), ...(f.en_seguimiento !== undefined ? { en_seguimiento: f.en_seguimiento } : {}) } : c;
+      }));
+      setConversaciones((prev) => prev.map((c) => {
+        const f = c.cliente_id ? fixes.find((x) => x.id === c.cliente_id) : undefined;
+        return f ? { ...c, clientes: { ...c.clientes, ...(f.estado !== undefined ? { estado: f.estado } : {}), ...(f.en_seguimiento !== undefined ? { en_seguimiento: f.en_seguimiento } : {}) } } : c;
       }));
     } finally {
       enrutarEnCurso.current = false;
@@ -1443,12 +1540,13 @@ export default function CRMApp() {
     setContactoGuardado(null);
     setContactoEnTelefono(null);
     setLlamandoWhatsApp(false);
-    // Al abrir un chat, mostrar su categoría en la subpestaña correspondiente
+    // Al abrir un chat, mantener la subcategoría si estamos en Por leer, En seguimiento o Archivados
     const esSpamCliente = conv.clientes?.es_spam === true;
-    const estCliente = esSpamCliente
-      ? "spam"
-      : (conv.clientes?.estado || (conv.clientes?.grupo === "templo" || conv.fuente === "meta_business" ? "nuevo_lead_templo" : "nuevo_lead"));
-    setChatCategoria(estCliente);
+    const isArchivada = (conv as any).archivada === true;
+    if (chatCategoria !== CATEGORIA_POR_LEER && chatCategoria !== CATEGORIA_EN_SEGUIMIENTO && chatCategoria !== CATEGORIA_ARCHIVADOS) {
+      const estCliente = esSpamCliente ? "spam" : normalizarEstado(conv.clientes?.estado);
+      setChatCategoria(estCliente);
+    }
     // Revisar el chat limpia el contador de mensajes no leídos
     marcarLeido(conv.id);
     setIsEditingNombre(false);
@@ -1456,18 +1554,23 @@ export default function CRMApp() {
     setTempNotas(conv.clientes?.notas_personales || "");
     setTempDetallesCaso(conv.clientes?.detalles_caso || "");
     setShowMobileDetails(false);
-    fetchMensajes(conv.id);
+    fetchMensajes(conv);
     fetchPagos(conv.cliente_id);
     fetchTareasCliente(conv.cliente_id);
-    // Traer el historial fresco directo de Chatwoot para ESTE chat: si el
-    // webhook de n8n se cayó, el chat se llena igual (y al instante).
+    // Traer el historial fresco directo de Chatwoot para ESTE chat
     if (conv.chatwoot_conversation_id) {
       void sincronizarConChatwoot({ conversacionId: conv.chatwoot_conversation_id, silencioso: true });
     }
   }
 
-  async function fetchMensajes(convId: string) {
-    const { data } = await supabase.from("mensajes").select("*").eq("conversacion_id", convId).order("creado_en", { ascending: true });
+  async function fetchMensajes(conv: any) {
+    const convId = typeof conv === "string" ? conv : conv?.id;
+    const ids = (typeof conv === "object" && conv?.all_conv_ids) ? conv.all_conv_ids : [convId];
+    const { data } = await supabase
+      .from("mensajes")
+      .select("*")
+      .in("conversacion_id", ids)
+      .order("creado_en", { ascending: true });
     if (data) setMensajes(data);
   }
   async function fetchPagos(clienteId: string) {
@@ -1483,25 +1586,29 @@ export default function CRMApp() {
 
   useEffect(() => {
     if (!selectedConv) return;
-    const msgSub = supabase.channel(`r-msg-${selectedConv.id}`)
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "mensajes", filter: `conversacion_id=eq.${selectedConv.id}` },
-        (payload) => setMensajes((prev) => {
+    const ids = selectedConv.all_conv_ids || [selectedConv.id];
+    const msgSub = supabase.channel(`r-msg-convs`)
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "mensajes" },
+        (payload) => {
           const nuevo = payload.new as any;
-          if (prev.some((m) => m.id === nuevo.id)) return prev;
-          const tNuevo = new Date(nuevo.creado_en).getTime();
-          const dup = prev.some((m) => {
-            const t = new Date(m.creado_en).getTime();
-            const near = Math.abs(tNuevo - t) < 20000;
-            const sameTipo = (m.tipo || "") === (nuevo.tipo || "");
-            const sameKind = (m.tipo_contenido || "texto") === (nuevo.tipo_contenido || "texto");
-            const c1 = (m.contenido || "").trim();
-            const c2 = (nuevo.contenido || "").trim();
-            const sameContent = c1 === c2 || (sameKind && (c1 === `[${m.tipo_contenido}]` || c2 === `[${nuevo.tipo_contenido}]`));
-            return near && sameTipo && sameKind && sameContent;
+          if (!nuevo || !ids.includes(nuevo.conversacion_id)) return;
+          setMensajes((prev) => {
+            if (prev.some((m) => m.id === nuevo.id)) return prev;
+            const tNuevo = new Date(nuevo.creado_en).getTime();
+            const dup = prev.some((m) => {
+              const t = new Date(m.creado_en).getTime();
+              const near = Math.abs(tNuevo - t) < 20000;
+              const sameTipo = (m.tipo || "") === (nuevo.tipo || "");
+              const sameKind = (m.tipo_contenido || "texto") === (nuevo.tipo_contenido || "texto");
+              const c1 = (m.contenido || "").trim();
+              const c2 = (nuevo.contenido || "").trim();
+              const sameContent = c1 === c2 || (sameKind && (c1 === `[${m.tipo_contenido}]` || c2 === `[${nuevo.tipo_contenido}]`));
+              return near && sameTipo && sameKind && sameContent;
+            });
+            if (dup) return prev;
+            return [...prev, nuevo];
           });
-          if (dup) return prev;
-          return [...prev, nuevo];
-        })
+        }
       ).subscribe();
     return () => { supabase.removeChannel(msgSub); };
   }, [selectedConv]);
@@ -1577,14 +1684,19 @@ export default function CRMApp() {
     setIsSending(true);
     setSendError("");
     setSendNotice("");
+
+    const etapaActual = getEtapa(clienteActual?.estado);
+    const cuentaResponsable = etapaActual?.cuenta_responsable || "meta_business";
+
     try {
       const response = await fetch("/api/send-message", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           conversacionId: selectedConv.id,
-          clienteId: selectedConv.cliente_id,
+          clienteId: selectedConv.cliente_id || clienteActual?.id,
           numeroWhatsApp: selectedConv.numero_whatsapp,
+          cuentaResponsable,
           texto, fileBase64, fileMime, fileName
         }),
       });
@@ -1596,6 +1708,11 @@ export default function CRMApp() {
       }
       if ((selectedConv as any).archivada) {
         archivarConversacion(selectedConv.id, false);
+      }
+
+      // Si el cliente estaba en seguimiento, al responder queda marcado como revisado hoy y sale de la subcategoría
+      if (clienteActual?.id && clienteActual.en_seguimiento) {
+        marcarSeguimientoRevisado(clienteActual.id);
       }
     } catch (error: any) {
       const message = error.message || "No se pudo enviar el mensaje.";
@@ -1845,36 +1962,25 @@ export default function CRMApp() {
   }
 
   async function actualizarEstadoCliente(clienteId: string, nuevoEstado: string) {
-    // Al pasar por "Consulta Hecha" el cliente queda marcado como atendido para
-    // siempre, aunque después salga del pipeline (perdido, abandono, etc.)
-    const pasaConsultaHecha = nuevoEstado.startsWith("consulta_hecha");
-    // El grupo del cliente sigue a la etapa: si lo mueves a una etapa del
-    // Templo cae en esa bandeja (y viceversa con el Personal).
-    const etapaDestino = pipelineEtapas.find(e => e.clave === nuevoEstado);
-    const grupoDestino = etapaDestino?.grupo === "templo" ? "templo" : (etapaDestino?.grupo === "personal" ? "personal" : undefined);
+    const estadoNorm = normalizarEstado(nuevoEstado);
+    const pasaConsultaHecha = estadoNorm === "consulta_hecha";
     await supabase.from("clientes").update({
-      estado: nuevoEstado,
-      ...(grupoDestino ? { grupo: grupoDestino } : {}),
+      estado: estadoNorm,
       ...(pasaConsultaHecha ? { atendido: true } : {}),
       actualizado_en: new Date().toISOString(),
     }).eq("id", clienteId);
     if (clienteActual?.id === clienteId) setClienteActual({
       ...clienteActual,
-      estado: nuevoEstado,
-      ...(grupoDestino ? { grupo: grupoDestino } : {}),
+      estado: estadoNorm,
       ...(pasaConsultaHecha ? { atendido: true } : {}),
     });
-    fetchConversaciones(); fetchTodosClientes();
+    fetchConversaciones(false); fetchTodosClientes();
   }
 
-  // Menú rápido "Cambiar etapa" que se abre en la barra de escribir (a la
-  // derecha del área de texto, junto a "Enviar archivos" y "Respuestas rápidas").
+  // Menú rápido "Cambiar etapa" que se abre en la barra de escribir
   function renderMenuEtapaRapida(): React.ReactNode {
-    const estadoActual = clienteActual?.estado || (grupoActivo === "templo" ? "nuevo_lead_templo" : "nuevo_lead");
-    const grupos = [
-      { clave: "personal" as const, etiqueta: personalLabel },
-      { clave: "templo" as const, etiqueta: temploLabel },
-    ];
+    const estadoActual = normalizarEstado(clienteActual?.estado);
+    const etapas = pipelineEtapas.filter((e: any) => !e.es_spam && !e.es_archivado).sort((a: any, b: any) => a.orden - b.orden);
     return (
       <>
         <div className="fixed inset-0 z-40" onClick={() => setShowEtapaMenu(false)} />
@@ -1882,28 +1988,30 @@ export default function CRMApp() {
           <p className="text-[9px] uppercase font-bold text-gray-500 px-2 py-1.5 truncate">
             Cambiar etapa — {getDisplayName(clienteActual, selectedConv)}
           </p>
-          {grupos.map((g) => {
-            const etapas = pipelineEtapas.filter((e: any) => e.grupo === g.clave && !e.es_spam && !e.es_archivado).sort((a: any, b: any) => a.orden - b.orden);
-            if (etapas.length === 0) return null;
-            return (
-              <div key={g.clave} className="mb-1">
-                <p className="text-[8px] uppercase font-bold text-gray-600 px-2 pt-1">{g.etiqueta}</p>
-                {etapas.map((etapa: any) => {
-                  const activa = etapa.clave === estadoActual;
-                  return (
-                    <button
-                      key={etapa.id}
-                      onClick={() => { setShowEtapaMenu(false); if (!activa) actualizarEstadoCliente(clienteActual.id, etapa.clave); }}
-                      className={`w-full flex items-center justify-between gap-2 px-2 py-1.5 rounded-lg text-left text-xs transition-colors ${activa ? "bg-purple-950/40 text-purple-300 font-bold" : "text-gray-300 hover:bg-surfaceHover"}`}
-                    >
-                      <span className="truncate">{etapa.nombre}</span>
-                      {activa && <Check className="w-3.5 h-3.5 flex-shrink-0" />}
-                    </button>
-                  );
-                })}
-              </div>
-            );
-          })}
+          <div className="space-y-0.5">
+            {etapas.map((etapa: any) => {
+              const activa = etapa.clave === estadoActual;
+              const esApi = etapa.cuenta_responsable === "meta_business";
+              return (
+                <button
+                  key={etapa.id || etapa.clave}
+                  onClick={() => { setShowEtapaMenu(false); if (!activa) actualizarEstadoCliente(clienteActual.id, etapa.clave); }}
+                  className={`w-full flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg text-left text-xs transition-colors ${
+                    activa ? "bg-purple-950/40 text-purple-300 font-bold" : "text-gray-300 hover:bg-surfaceHover"
+                  }`}
+                >
+                  <div className="flex items-center gap-2 truncate">
+                    <span className={`w-2 h-2 rounded-full ${etapa.color ? etapa.color.replace("border-", "bg-") : "bg-purple-500"}`} />
+                    <span className="truncate">{etapa.nombre}</span>
+                    <span className={`text-[9px] px-1 py-0.2 rounded font-normal ${esApi ? "bg-indigo-950 text-indigo-300" : "bg-blue-950 text-blue-300"}`}>
+                      {esApi ? "API" : "Personal"}
+                    </span>
+                  </div>
+                  {activa && <Check className="w-3.5 h-3.5 flex-shrink-0 text-purple-400" />}
+                </button>
+              );
+            })}
+          </div>
         </div>
       </>
     );
@@ -2234,66 +2342,89 @@ export default function CRMApp() {
     fetchTodosPagos();
   }
 
-  // ===================== PIPELINE =====================
-  async function agregarEtapaPipeline(grupo: "personal" | "templo" = grupoActivo) {
-    const etapasGrupo = pipelineEtapas.filter(e => e.grupo === grupo && !e.es_spam && !e.es_archivado);
-    const paletaDefault = PALETA_COLORES[etapasGrupo.length % PALETA_COLORES.length];
+  // ===================== PIPELINE UNIFICADO =====================
+  async function agregarEtapaPipeline(cuentaResponsable: "meta_business" | "evolution" = "meta_business") {
+    const etapasValidas = pipelineEtapas.filter(e => !e.es_spam && !e.es_archivado);
+    const paletaDefault = PALETA_COLORES[etapasValidas.length % PALETA_COLORES.length];
     const nuevaEtapa = {
-      clave: `etapa_${grupo}_${Date.now()}`,
+      clave: `etapa_${Date.now()}`,
       nombre: "Nueva Etapa",
-      orden: etapasGrupo.length + 1,
+      orden: etapasValidas.length + 1,
       color: paletaDefault.color,
       bg_color: paletaDefault.bg,
       text_color: paletaDefault.text,
-      grupo,
+      cuenta_responsable: cuentaResponsable,
+      grupo: "general",
       es_spam: false,
       es_archivado: false,
     };
     const { data } = await supabase.from("pipeline_etapas").insert([nuevaEtapa]).select();
     if (data) setPipelineEtapas([...pipelineEtapas, data[0]]);
   }
+
   async function actualizarNombreEtapa(id: string, nuevoNombre: string) {
     setPipelineEtapas(pipelineEtapas.map((e) => (e.id === id ? { ...e, nombre: nuevoNombre } : e)));
     await supabase.from("pipeline_etapas").update({ nombre: nuevoNombre }).eq("id", id);
   }
-  async function actualizarGrupoEtapa(id: string, nuevoGrupo: "personal" | "templo") {
-    setPipelineEtapas(pipelineEtapas.map((e) => (e.id === id ? { ...e, grupo: nuevoGrupo } : e)));
-    await supabase.from("pipeline_etapas").update({ grupo: nuevoGrupo }).eq("id", id);
+
+  async function actualizarCuentaResponsableEtapa(id: string, cuenta: "meta_business" | "evolution") {
+    setPipelineEtapas(pipelineEtapas.map((e) => (e.id === id ? { ...e, cuenta_responsable: cuenta } : e)));
+    await supabase.from("pipeline_etapas").update({ cuenta_responsable: cuenta }).eq("id", id);
   }
+
   async function eliminarEtapa(id: string) {
     const etapa = pipelineEtapas.find(e => e.id === id);
     if (!etapa) return;
-    if (etapa.es_spam || etapa.es_archivado || etapa.clave === CATEGORIA_EN_SEGUIMIENTO) {
-      alert(etapa.clave === CATEGORIA_EN_SEGUIMIENTO
-        ? "En seguimiento no se puede eliminar porque activa la alerta diaria del WhatsApp Personal."
-        : "No puedes eliminar la etapa de Spam ni Archivados.");
+    if (etapa.clave === "nuevo_lead") {
+      alert("No puedes eliminar la etapa inicial Nuevo Lead.");
       return;
     }
-    if (!confirm(`¿Eliminar la etapa "${etapa.nombre}"? Los clientes en esa etapa quedarán como "Nuevo Lead" del grupo ${etapa.grupo === "templo" ? temploLabel : personalLabel}.`)) return;
-    // Reasignar clientes al nuevo_lead del grupo correspondiente
-    const nuevoLeadKey = etapa.grupo === "templo" ? "nuevo_lead_templo" : "nuevo_lead";
-    await supabase.from("clientes").update({ estado: nuevoLeadKey }).eq("estado", etapa.clave);
+    if (!confirm(`¿Eliminar la etapa "${etapa.nombre}"? Los clientes en esta etapa pasarán a "Nuevo Lead".`)) return;
+    await supabase.from("clientes").update({ estado: "nuevo_lead" }).eq("estado", etapa.clave);
     await supabase.from("pipeline_etapas").delete().eq("id", id);
     setPipelineEtapas(pipelineEtapas.filter((e) => e.id !== id));
     fetchTodosClientes();
-    fetchConversaciones();
+    fetchConversaciones(false);
   }
+
   async function moverEtapaPipeline(idA: string, idB: string) {
     const a = pipelineEtapas.find(e => e.id === idA);
     const b = pipelineEtapas.find(e => e.id === idB);
     if (!a || !b) return;
-    if (a.grupo !== b.grupo) return; // no intercambiar entre grupos
     const tempOrden = a.orden;
     const nuevas = pipelineEtapas.map(e => {
       if (e.id === idA) return { ...e, orden: b.orden };
       if (e.id === idB) return { ...e, orden: tempOrden };
       return e;
-    });
+    }).sort((x, y) => x.orden - y.orden);
     setPipelineEtapas(nuevas);
     try {
       await supabase.from("pipeline_etapas").update({ orden: b.orden }).eq("id", idA);
       await supabase.from("pipeline_etapas").update({ orden: tempOrden }).eq("id", idB);
     } catch (e) { console.error(e); }
+  }
+
+  // Desplazamiento suave y selección de subcategorías
+  function selectSubcat(clave: string) {
+    setChatCategoria(clave);
+    setTimeout(() => {
+      if (subcatScrollRef.current) {
+        const el = subcatScrollRef.current.querySelector(`[data-cat="${clave}"]`);
+        if (el && typeof (el as any).scrollIntoView === "function") {
+          (el as any).scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
+        }
+      }
+    }, 50);
+  }
+
+  function scrollSubcat(dir: "left" | "right") {
+    if (subcatScrollRef.current) {
+      const scrollAmount = 220;
+      subcatScrollRef.current.scrollBy({
+        left: dir === "left" ? -scrollAmount : scrollAmount,
+        behavior: "smooth",
+      });
+    }
   }
 
   // ===================== ADMIN SALDOS =====================
@@ -2309,78 +2440,90 @@ export default function CRMApp() {
     setLoadingBal(false);
   }
 
-  // ===================== RENDER Y FILTROS =====================
-  // Chats con mensajes pendientes por leer, de TODAS las categorías del grupo activo
+  // ===================== RENDER Y FILTROS UNIFICADOS =====================
+  // Chats con mensajes pendientes por leer (todas las etapas)
   const conversacionesPorLeer = conversaciones.filter((c) => {
     if ((c as any).archivada === true) return false;
     if (c.clientes?.es_spam === true) return false;
-    const grupoCliente = c.clientes?.grupo || (c.fuente === "meta_business" ? "templo" : "personal");
-    if (grupoCliente !== grupoActivo) return false;
     return (c.no_leidos || 0) > 0;
   });
   const totalMensajesPorLeer = conversacionesPorLeer.reduce((s, c) => s + (c.no_leidos || 0), 0);
 
-  // En seguimiento es una etapa real, exclusiva del WhatsApp Personal. Este
-  // contador alimenta el chip especial junto a "Por leer" y la alerta diaria.
+  // Clientes con check "En seguimiento" activo pendientes de revisar para hoy (corte 8:00 AM)
   const conversacionesEnSeguimiento = conversaciones.filter((c) => {
     if ((c as any).archivada === true || c.clientes?.es_spam === true) return false;
-    const grupoCliente = c.clientes?.grupo || (c.fuente === "meta_business" ? "templo" : "personal");
-    return grupoCliente === "personal" && c.clientes?.estado === CATEGORIA_EN_SEGUIMIENTO;
+    return estaPendienteSeguimientoHoy(c.clientes);
   });
 
-  const conversacionesFiltradas = conversaciones.filter((c) => {
+  // Conversaciones archivadas (subcategoría dentro de Chats)
+  const conversacionesArchivadas = conversaciones.filter((c) => {
     const esSpam = c.clientes?.es_spam === true;
     const isArchivada = (c as any).archivada === true;
-    // Filtrar por grupo Personal/Templo
-    const grupoCliente = c.clientes?.grupo || (c.fuente === "meta_business" ? "templo" : "personal");
-    if (grupoCliente !== grupoActivo) return false;
-    if (isArchivada) return false;
-    // 📬 "Por leer": chats de TODAS las categorías con mensajes sin leer
-    if (chatCategoria === CATEGORIA_POR_LEER) {
-      if (esSpam) return false;
-      if (!(c.no_leidos > 0)) return false;
-    } else {
-      // Spam es una categoría más del pipeline (chip negro, sin agente ni recordatorios)
-      if (esSpam) return chatCategoria === "spam";
-      // En seguimiento pertenece únicamente a WhatsApp Personal, aunque el
-      // usuario cambie de grupo justo mientras el filtro está seleccionado.
-      if (chatCategoria === CATEGORIA_EN_SEGUIMIENTO && grupoActivo !== "personal") return false;
-      // Filtrar por subcategoría seleccionada (por defecto: solo Nuevos Leads)
-      const estadoCliente = c.clientes?.estado || (grupoActivo === "templo" ? "nuevo_lead_templo" : "nuevo_lead");
-      if (chatCategoria !== "spam" && estadoCliente !== chatCategoria) return false;
-    }
-    // Búsqueda: nombre manual, número tal cual o dígitos del número (aunque se escriba con espacios)
+    if (!isArchivada || esSpam) return false;
     const q = searchChats.toLowerCase();
     const qDigits = q.replace(/\D/g, "");
     const tel = getTelefonoE164(c.clientes, c);
     const matchSearch = !searchChats ||
       getDisplayName(c.clientes, c).toLowerCase().includes(q) ||
       tel.includes(searchChats) ||
-      (!!qDigits && tel.replace("+", "").includes(qDigits));
-    return matchSearch;
-  });
-
-  const conversacionesArchivadas = conversaciones.filter((c) => {
-    const esSpam = c.clientes?.es_spam === true;
-    const isArchivada = (c as any).archivada === true;
-    const grupoCliente = c.clientes?.grupo || (c.fuente === "meta_business" ? "templo" : "personal");
-    if (grupoCliente !== grupoActivo) return false;
-    if (!isArchivada || esSpam) return false;
-    const q = searchArchivados.toLowerCase();
-    const qDigits = q.replace(/\D/g, "");
-    const tel = getTelefonoE164(c.clientes, c);
-    const matchSearch = !searchArchivados ||
-      getDisplayName(c.clientes, c).toLowerCase().includes(q) ||
-      tel.includes(searchArchivados) ||
       (!!qDigits && tel.replace("+", "").includes(qDigits)) ||
       (c.ultimo_mensaje || "").toLowerCase().includes(q);
     return matchSearch;
   });
 
+  // Conversaciones spam
   const conversacionesSpam = conversaciones.filter((c) => {
+    return c.clientes?.es_spam === true;
+  });
+
+  // Conteo de chats por cada etapa del pipeline unificado
+  const conteosPorEtapa = React.useMemo(() => {
+    const counts: Record<string, number> = {};
+    conversaciones.forEach((c) => {
+      if (c.clientes?.es_spam || (c as any).archivada) return;
+      const est = normalizarEstado(c.clientes?.estado);
+      counts[est] = (counts[est] || 0) + 1;
+    });
+    return counts;
+  }, [conversaciones]);
+
+  const conversacionesFiltradas = conversaciones.filter((c) => {
     const esSpam = c.clientes?.es_spam === true;
-    const grupoCliente = c.clientes?.grupo || (c.fuente === "meta_business" ? "templo" : "personal");
-    return esSpam && grupoCliente === grupoActivo;
+    const isArchivada = (c as any).archivada === true;
+
+    // 📬 Por leer
+    if (chatCategoria === CATEGORIA_POR_LEER) {
+      if (esSpam || isArchivada || !(c.no_leidos > 0)) return false;
+    }
+    // 🔔 En seguimiento
+    else if (chatCategoria === CATEGORIA_EN_SEGUIMIENTO) {
+      if (esSpam || isArchivada || !estaPendienteSeguimientoHoy(c.clientes)) return false;
+    }
+    // 📦 Archivados (subcategoría en vez de pestaña)
+    else if (chatCategoria === CATEGORIA_ARCHIVADOS) {
+      if (esSpam || !isArchivada) return false;
+    }
+    // 🚫 Spam
+    else if (chatCategoria === "spam") {
+      if (!esSpam) return false;
+    }
+    // Etapas normales del pipeline unificado
+    else {
+      if (esSpam || isArchivada) return false;
+      const estadoCliente = normalizarEstado(c.clientes?.estado);
+      if (estadoCliente !== chatCategoria) return false;
+    }
+
+    // Búsqueda: nombre manual, número o dígitos
+    const q = searchChats.toLowerCase();
+    const qDigits = q.replace(/\D/g, "");
+    const tel = getTelefonoE164(c.clientes, c);
+    const matchSearch = !searchChats ||
+      getDisplayName(c.clientes, c).toLowerCase().includes(q) ||
+      tel.includes(searchChats) ||
+      (!!qDigits && tel.replace("+", "").includes(qDigits)) ||
+      (chatCategoria === CATEGORIA_ARCHIVADOS && (c.ultimo_mensaje || "").toLowerCase().includes(q));
+    return matchSearch;
   });
 
   const ahora = new Date(); const inicioMes = new Date(ahora.getFullYear(), ahora.getMonth(), 1);
@@ -2451,7 +2594,7 @@ export default function CRMApp() {
   // "Convertidos" = de esos atendidos, cuántos pasaron a pago (estado de pago o con pago cobrado)
   const clienteIdsPagados = new Set(todosPagos.filter((p) => p.estado === "pagado").map((p) => p.cliente_id));
   const totalConvertidos = clientesNoSpam.filter((c) => c.atendido && (
-    ["pago_recibido", "pago_recibido_templo", "trabajo_proceso", "trabajo_proceso_templo", "trabajo_completado", "trabajo_completado_templo"].includes(c.estado) ||
+    ["pago_recibido", "trabajo_proceso", "trabajo_completado"].includes(normalizarEstado(c.estado)) ||
     clienteIdsPagados.has(c.id)
   )).length;
   const efectividad = totalAtendidos > 0 ? ((totalConvertidos / totalAtendidos) * 100).toFixed(1) : "0";
@@ -2470,9 +2613,9 @@ export default function CRMApp() {
   const totalPendiente = totalPendienteCOP;
   const totalVencido = totalVencidoCOP;
 
-  const leadsEnConsulta = clientesNoSpam.filter((c) => ["en_consulta", "consulta_hecha"].includes(c.estado)).length;
-  const leadsPerdidos = clientesNoSpam.filter((c) => c.estado === "perdido").length;
-  const leadsNuevos = clientesNoSpam.filter((c) => c.estado === "nuevo_lead" || !c.estado).length;
+  const leadsEnConsulta = clientesNoSpam.filter((c) => ["en_consulta", "consulta_hecha"].includes(normalizarEstado(c.estado))).length;
+  const leadsPerdidos = clientesNoSpam.filter((c) => normalizarEstado(c.estado) === "perdido").length;
+  const leadsNuevos = clientesNoSpam.filter((c) => normalizarEstado(c.estado) === "nuevo_lead" || !c.estado).length;
 
   const adsSpend = campanas.reduce((sum, c) => sum + Number(c.spend || 0), 0);
   const adsLeads = campanas.reduce((sum, c) => sum + Number(c.leads || 0), 0);
@@ -2487,7 +2630,6 @@ export default function CRMApp() {
 
   const menuItems = [
     { id: "chats", icon: MessageSquare, label: "Chats" },
-    { id: "archivados", icon: Archive, label: "Archivados" },
     { id: "pipeline", icon: Users, label: "Pipeline" },
     { id: "tareas", icon: ListTodo, label: "Tareas" },
     { id: "cartera", icon: DollarSign, label: "Cartera" },
@@ -2495,7 +2637,7 @@ export default function CRMApp() {
     { id: "cerebro", icon: Brain, label: "Cerebro" }
   ];
 
-  const etapasGrupoActual = pipelineEtapas.filter(e => e.grupo === grupoActivo && !e.es_spam && !e.es_archivado).sort((a, b) => a.orden - b.orden);
+  const etapasGrupoActual = pipelineEtapas.filter(e => !e.es_spam && !e.es_archivado).sort((a, b) => a.orden - b.orden);
   const etapaSpam = pipelineEtapas.find(e => e.grupo === grupoActivo && e.es_spam);
   const etapaArchivado = pipelineEtapas.find(e => e.grupo === grupoActivo && e.es_archivado);
 
@@ -2549,67 +2691,6 @@ export default function CRMApp() {
             <section className={`w-full md:w-80 border-r border-border bg-surface/50 flex-col ${selectedConv ? "hidden md:flex" : "flex"}`}>
               <div className="p-4 border-b border-border flex flex-col gap-3 pt-6 md:pt-4">
 
-                {/* SELECTOR DE GRUPO: PERSONAL / TEMPLO */}
-                <div className="flex items-stretch gap-2">
-                  <button
-                    onClick={() => cambiarGrupo("personal")}
-                    className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-xs font-bold border transition-all ${
-                      grupoActivo === "personal"
-                        ? "bg-gradient-to-br from-blue-600 to-indigo-600 text-white border-blue-500 shadow-lg shadow-blue-900/30"
-                        : "bg-surface border-border text-gray-400 hover:text-white"
-                    }`}
-                  >
-                    <User className="w-3.5 h-3.5" />
-                    {personalLabel}
-                  </button>
-                  <button
-                    onClick={() => cambiarGrupo("templo")}
-                    className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-xs font-bold border transition-all ${
-                      grupoActivo === "templo"
-                        ? "bg-gradient-to-br from-purple-600 to-fuchsia-600 text-white border-purple-500 shadow-lg shadow-purple-900/30"
-                        : "bg-surface border-border text-gray-400 hover:text-white"
-                    }`}
-                  >
-                    <Landmark className="w-3.5 h-3.5" />
-                    {temploLabel}
-                  </button>
-                  <button
-                    onClick={() => setIsEditingGroupLabels(!isEditingGroupLabels)}
-                    className="px-2 rounded-lg border border-border text-gray-500 hover:text-purple-300 hover:border-purple-500 transition-colors"
-                    title="Editar nombres de grupos"
-                  >
-                    <Edit2 className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-
-                {isEditingGroupLabels && (
-                  <div className="bg-background border border-purple-900/40 rounded-xl p-3 space-y-2">
-                    <p className="text-[10px] text-purple-300 font-bold uppercase">Editar nombres</p>
-                    <div className="flex gap-2 items-center">
-                      <User className="w-3 h-3 text-blue-400 flex-shrink-0" />
-                      <input
-                        type="text"
-                        value={personalLabel}
-                        onChange={(e) => setPersonalLabel(e.target.value)}
-                        className="flex-1 bg-surface border border-border rounded px-2 py-1 text-xs focus:outline-none focus:border-purple-500"
-                      />
-                    </div>
-                    <div className="flex gap-2 items-center">
-                      <Landmark className="w-3 h-3 text-purple-400 flex-shrink-0" />
-                      <input
-                        type="text"
-                        value={temploLabel}
-                        onChange={(e) => setTemploLabel(e.target.value)}
-                        className="flex-1 bg-surface border border-border rounded px-2 py-1 text-xs focus:outline-none focus:border-purple-500"
-                      />
-                    </div>
-                    <div className="flex gap-2 pt-1">
-                      <button onClick={guardarLabelsGrupos} className="flex-1 bg-purple-600 hover:bg-purple-700 text-white text-[10px] font-bold py-1.5 rounded flex items-center justify-center gap-1"><Save className="w-3 h-3" /> Guardar</button>
-                      <button onClick={() => setIsEditingGroupLabels(false)} className="flex-1 bg-surface border border-border text-gray-400 text-[10px] py-1.5 rounded">Cancelar</button>
-                    </div>
-                  </div>
-                )}
-
                 {/* KILL SWITCH GLOBAL LUNA */}
                 <button
                   onClick={toggleLunaGlobal}
@@ -2661,96 +2742,139 @@ export default function CRMApp() {
                   </button>
                 </div>
 
-                {/* SUBPESTAÑAS DE CATEGORÍA: por defecto solo Nuevos Leads */}
+                {/* SUBPESTAÑAS DE CATEGORÍA UNIFICADAS (CARRUSEL FLUIDO) */}
                 {tab === "chats" && (
-                  <div className="flex gap-1.5 overflow-x-auto -mx-1 px-1 pb-0.5">
-                    {(() => {
-                      // En seguimiento es una etapa normal para el Pipeline, pero aquí se
-                      // coloca a propósito junto a Por leer para priorizarla en Personal.
-                      const etapasChats = pipelineEtapas
-                        .filter(e => e.grupo === grupoActivo && !e.es_spam && !e.es_archivado)
-                        .filter(e => !(grupoActivo === "personal" && e.clave === CATEGORIA_EN_SEGUIMIENTO))
-                        .sort((a, b) => a.orden - b.orden);
-                      const claveNL = grupoActivo === "templo" ? "nuevo_lead_templo" : "nuevo_lead";
-                      const idxNL = etapasChats.findIndex(e => e.clave === claveNL);
-                      const idxPorLeer = idxNL >= 0 ? idxNL : 0; // "Por leer" va al lado de Leads Nuevos
-                      return etapasChats.map((etapa, idx) => {
-                        const activa = chatCategoria === etapa.clave;
-                        const conteo = conversaciones.filter((c) => {
-                          if (c.clientes?.es_spam || (c as any).archivada) return false;
-                          const grupoCliente = c.clientes?.grupo || (c.fuente === "meta_business" ? "templo" : "personal");
-                          if (grupoCliente !== grupoActivo) return false;
-                          const est = c.clientes?.estado || (grupoActivo === "templo" ? "nuevo_lead_templo" : "nuevo_lead");
-                          return est === etapa.clave;
-                        }).length;
-                        const chipEtapa = (
-                          <button
-                            key={etapa.id}
-                            onClick={() => setChatCategoria(etapa.clave)}
-                            className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-bold border transition-all ${
-                              activa
-                                ? "bg-purple-600 text-white border-purple-500 shadow-md shadow-purple-900/30"
-                                : "bg-surface border-border text-gray-500 hover:text-gray-300 hover:border-purple-500/40"
-                            }`}
-                            title={`Mostrar chats en "${etapa.nombre}"`}
-                          >
-                            {etapa.nombre}
-                            <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-semibold ${activa ? "bg-white/20 text-white" : "bg-background text-gray-500"}`}>{conteo}</span>
-                          </button>
-                        );
-                        // 📬 Pestaña "Por leer": chats de TODAS las categorías con mensajes sin leer
-                        if (idx !== idxPorLeer) return chipEtapa;
-                        const chipPorLeer = (
-                          <button
-                            key="chip-por-leer"
-                            onClick={() => setChatCategoria(CATEGORIA_POR_LEER)}
-                            className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-bold border transition-all ${
-                              chatCategoria === CATEGORIA_POR_LEER
-                                ? "bg-red-600 text-white border-red-500 shadow-md shadow-red-900/30"
-                                : "bg-red-950/30 border-red-900/50 text-red-300 hover:text-red-200 hover:border-red-600/60"
-                            }`}
-                            title={`Chats de todas las categorías con mensajes pendientes por leer (${totalMensajesPorLeer} mensaje(s) en ${conversacionesPorLeer.length} chat(s))`}
-                          >
-                            <MailOpen className="w-3 h-3" /> Por leer
-                            <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-semibold ${chatCategoria === CATEGORIA_POR_LEER ? "bg-white/20 text-white" : "bg-background text-red-300"}`}>{conversacionesPorLeer.length}</span>
-                          </button>
-                        );
-                        const chipSeguimiento = grupoActivo === "personal" && (
-                          <button
-                            key="chip-en-seguimiento"
-                            onClick={() => setChatCategoria(CATEGORIA_EN_SEGUIMIENTO)}
-                            className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-bold border transition-all ${
-                              chatCategoria === CATEGORIA_EN_SEGUIMIENTO
-                                ? "bg-cyan-600 text-white border-cyan-500 shadow-md shadow-cyan-900/30"
-                                : "bg-cyan-950/30 border-cyan-900/50 text-cyan-300 hover:text-cyan-200 hover:border-cyan-600/60"
-                            }`}
-                            title={`Clientes de WhatsApp Personal en seguimiento (${conversacionesEnSeguimiento.length}). La APK avisa todos los días a las 9:00 a. m.`}
-                          >
-                            <BellRing className="w-3 h-3" /> En seguimiento
-                            <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-semibold ${chatCategoria === CATEGORIA_EN_SEGUIMIENTO ? "bg-white/20 text-white" : "bg-background text-cyan-300"}`}>{conversacionesEnSeguimiento.length}</span>
-                          </button>
-                        );
-                        return (
-                          <React.Fragment key={etapa.id}>
-                            {chipEtapa}
-                            {chipPorLeer}
-                            {chipSeguimiento}
-                          </React.Fragment>
-                        );
-                      });
-                    })()}
-                    {/* Chip de Spam: pipeline fijo de color negro, no editable ni eliminable */}
+                  <div className="relative flex items-center group">
                     <button
-                      onClick={() => setChatCategoria("spam")}
-                      className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-bold border transition-all ${
-                        chatCategoria === "spam"
-                          ? "bg-gray-100 text-background border-gray-300 shadow-md"
-                          : "bg-surface border-border text-gray-500 hover:text-gray-300"
-                      }`}
-                      title="Chats marcados como spam (sin agente ni recordatorios)"
+                      type="button"
+                      onClick={() => scrollSubcat("left")}
+                      className="hidden sm:flex items-center justify-center w-6 h-6 rounded-full bg-surface border border-border text-gray-400 hover:text-white hover:bg-surfaceHover shadow-md mr-1 flex-shrink-0"
+                      title="Desplazar subcategorías a la izquierda"
                     >
-                      <Ban className="w-3 h-3" /> Spam
-                      <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-semibold ${chatCategoria === "spam" ? "bg-background/25 text-background" : "bg-background text-gray-500"}`}>{conversacionesSpam.length}</span>
+                      <ChevronLeft className="w-3.5 h-3.5" />
+                    </button>
+
+                    <div
+                      ref={subcatScrollRef}
+                      className="flex-1 flex gap-1.5 overflow-x-auto scroll-smooth py-1 px-0.5 no-scrollbar select-none"
+                      style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
+                    >
+                      {/* 1. Por leer */}
+                      <button
+                        data-cat={CATEGORIA_POR_LEER}
+                        onClick={() => selectSubcat(CATEGORIA_POR_LEER)}
+                        className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all ${
+                          chatCategoria === CATEGORIA_POR_LEER
+                            ? "bg-red-600 text-white border-red-500 shadow-md shadow-red-900/30 ring-2 ring-red-500/30"
+                            : "bg-red-950/20 border-red-900/40 text-red-300 hover:text-red-200 hover:border-red-600/50 hover:bg-red-950/40"
+                        }`}
+                        title={`Chats con mensajes pendientes por leer (${conversacionesPorLeer.length})`}
+                      >
+                        <MailOpen className="w-3.5 h-3.5" />
+                        <span>Por leer</span>
+                        <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+                          chatCategoria === CATEGORIA_POR_LEER ? "bg-white/20 text-white" : "bg-red-900/50 text-red-200"
+                        }`}>
+                          {conversacionesPorLeer.length}
+                        </span>
+                      </button>
+
+                      {/* 2. En seguimiento diario (corte 8:00 AM) */}
+                      <button
+                        data-cat={CATEGORIA_EN_SEGUIMIENTO}
+                        onClick={() => selectSubcat(CATEGORIA_EN_SEGUIMIENTO)}
+                        className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all ${
+                          chatCategoria === CATEGORIA_EN_SEGUIMIENTO
+                            ? "bg-cyan-600 text-white border-cyan-500 shadow-md shadow-cyan-900/30 ring-2 ring-cyan-500/30"
+                            : "bg-cyan-950/20 border-cyan-900/40 text-cyan-300 hover:text-cyan-200 hover:border-cyan-600/50 hover:bg-cyan-950/40"
+                        }`}
+                        title={`Clientes en seguimiento diario pendientes para hoy (${conversacionesEnSeguimiento.length}). Se renueva cada día a las 8:00 AM.`}
+                      >
+                        <BellRing className="w-3.5 h-3.5" />
+                        <span>En seguimiento</span>
+                        <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+                          chatCategoria === CATEGORIA_EN_SEGUIMIENTO ? "bg-white/20 text-white" : "bg-cyan-900/50 text-cyan-200"
+                        }`}>
+                          {conversacionesEnSeguimiento.length}
+                        </span>
+                      </button>
+
+                      {/* 3. Etapas del pipeline unificado */}
+                      {pipelineEtapas.filter(e => !e.es_spam && !e.es_archivado).sort((a, b) => (Number(a.orden) || 0) - (Number(b.orden) || 0)).map((etapa) => {
+                        const activa = chatCategoria === etapa.clave;
+                        const conteo = conteosPorEtapa[etapa.clave] || 0;
+                        const esApi = etapa.cuenta_responsable === "meta_business";
+                        return (
+                          <button
+                            key={etapa.id || etapa.clave}
+                            data-cat={etapa.clave}
+                            onClick={() => selectSubcat(etapa.clave)}
+                            className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all ${
+                              activa
+                                ? "bg-purple-600 text-white border-purple-500 shadow-md shadow-purple-900/30 ring-2 ring-purple-500/30"
+                                : "bg-surface border-border text-gray-400 hover:text-gray-200 hover:border-purple-500/40 hover:bg-surfaceHover"
+                            }`}
+                            title={`Etapa "${etapa.nombre}" • Cuenta: ${esApi ? "WhatsApp API" : "WhatsApp Personal"}`}
+                          >
+                            <span className="text-[10px]">{esApi ? "🌐" : "👤"}</span>
+                            <span>{etapa.nombre}</span>
+                            <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+                              activa ? "bg-white/20 text-white" : "bg-background text-gray-400"
+                            }`}>
+                              {conteo}
+                            </span>
+                          </button>
+                        );
+                      })}
+
+                      {/* 4. Spam */}
+                      <button
+                        data-cat="spam"
+                        onClick={() => selectSubcat("spam")}
+                        className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all ${
+                          chatCategoria === "spam"
+                            ? "bg-gray-200 text-gray-900 border-gray-100 shadow-md ring-2 ring-gray-400/30"
+                            : "bg-surface border-border text-gray-400 hover:text-gray-200 hover:border-gray-600 hover:bg-surfaceHover"
+                        }`}
+                        title={`Chats marcados como spam (${conversacionesSpam.length})`}
+                      >
+                        <Ban className="w-3.5 h-3.5" />
+                        <span>Spam</span>
+                        <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+                          chatCategoria === "spam" ? "bg-gray-800 text-white" : "bg-background text-gray-400"
+                        }`}>
+                          {conversacionesSpam.length}
+                        </span>
+                      </button>
+
+                      {/* 5. Archivados (subcategoría en vez de pestaña completa) */}
+                      <button
+                        data-cat={CATEGORIA_ARCHIVADOS}
+                        onClick={() => selectSubcat(CATEGORIA_ARCHIVADOS)}
+                        className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all ${
+                          chatCategoria === CATEGORIA_ARCHIVADOS
+                            ? "bg-amber-600 text-white border-amber-500 shadow-md shadow-amber-900/30 ring-2 ring-amber-500/30"
+                            : "bg-amber-950/20 border-amber-900/40 text-amber-300 hover:text-amber-200 hover:border-amber-600/50 hover:bg-amber-950/40"
+                        }`}
+                        title={`Conversaciones archivadas (${conversacionesArchivadas.length})`}
+                      >
+                        <Archive className="w-3.5 h-3.5" />
+                        <span>Archivados</span>
+                        <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+                          chatCategoria === CATEGORIA_ARCHIVADOS ? "bg-white/20 text-white" : "bg-amber-900/50 text-amber-200"
+                        }`}>
+                          {conversacionesArchivadas.length}
+                        </span>
+                      </button>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => scrollSubcat("right")}
+                      className="hidden sm:flex items-center justify-center w-6 h-6 rounded-full bg-surface border border-border text-gray-400 hover:text-white hover:bg-surfaceHover shadow-md ml-1 flex-shrink-0"
+                      title="Desplazar subcategorías a la derecha"
+                    >
+                      <ChevronRight className="w-3.5 h-3.5" />
                     </button>
                   </div>
                 )}
@@ -2764,48 +2888,86 @@ export default function CRMApp() {
               <div className="flex-1 overflow-y-auto divide-y divide-border/50">
                 {loadingChats ? <div className="p-6 text-center text-sm text-gray-500">Cargando...</div>
                   : conversacionesFiltradas.length === 0
-                  ? <div className="p-6 text-center text-sm text-gray-500">{chatCategoria === CATEGORIA_POR_LEER ? "No hay chats pendientes por leer 🎉" : chatCategoria === CATEGORIA_EN_SEGUIMIENTO ? "No hay clientes en seguimiento 🎉" : "Bandeja vacía"}</div>
+                  ? <div className="p-6 text-center text-sm text-gray-500">
+                      {chatCategoria === CATEGORIA_POR_LEER ? "No hay chats pendientes por leer 🎉"
+                        : chatCategoria === CATEGORIA_EN_SEGUIMIENTO ? "No hay clientes en seguimiento pendientes para hoy 🎉"
+                        : chatCategoria === CATEGORIA_ARCHIVADOS ? "No hay conversaciones archivadas 📦"
+                        : chatCategoria === "spam" ? "No hay chats marcados como spam 🛡️"
+                        : "Bandeja vacía"}
+                    </div>
                   : conversacionesFiltradas.map((conv) => {
                     const cliente = conv.clientes;
                     const displayName = getDisplayName(cliente, conv);
                     const tieneNotas = cliente?.notas_personales || cliente?.detalles_caso;
                     const esSpamChat = cliente?.es_spam === true;
+                    const isArchivada = (conv as any).archivada === true;
                     const etapaCliente = getEtapa(cliente?.estado);
-                    const etapaColor = esSpamChat ? "border-gray-500" : (etapaCliente?.color || "border-transparent");
-                    const etapaBg = esSpamChat ? "bg-gray-500/15" : (etapaCliente?.bg_color || "");
-                    const etapaText = esSpamChat ? "text-gray-300" : (etapaCliente?.text_color || "text-gray-400");
+                    const etapaColor = esSpamChat ? "border-gray-500" : isArchivada ? "border-amber-700" : (etapaCliente?.color || "border-transparent");
+                    const etapaBg = esSpamChat ? "bg-gray-500/15" : isArchivada ? "bg-amber-950/20" : (etapaCliente?.bg_color || "");
+                    const etapaText = esSpamChat ? "text-gray-300" : isArchivada ? "text-amber-300" : (etapaCliente?.text_color || "text-gray-400");
+                    const esApi = etapaCliente?.cuenta_responsable === "meta_business";
+                    const diasArchivado = conv.fecha_archivado ? Math.floor((Date.now() - new Date(conv.fecha_archivado).getTime()) / (1000*60*60*24)) : Math.floor((Date.now() - new Date(conv.ultimo_mensaje_en).getTime()) / (1000*60*60*24));
+
                     return (
                       <div key={conv.id} className={`group relative w-full flex items-start gap-3 text-left hover:bg-surfaceHover transition-colors ${selectedConv?.id === conv.id ? `bg-surfaceHover border-l-4 ${etapaColor}` : `border-l-4 ${etapaColor} ${etapaBg}`}`}>
                         <button onClick={() => selectConversation(conv)} className="flex-1 p-4 flex items-start gap-3 text-left">
                           <div className="relative flex-shrink-0">
-                            <div className={`w-12 h-12 rounded-full bg-surface border ${etapaColor} flex items-center justify-center ${etapaText} font-bold overflow-hidden`}>
+                            <div className={`w-12 h-12 rounded-full bg-surface border ${etapaColor} flex items-center justify-center ${etapaText} font-bold overflow-hidden ${isArchivada ? "opacity-80" : ""}`}>
                               {cliente?.foto_url
-                                ? <img src={cliente.foto_url} alt="" className="w-full h-full object-cover" />
+                                ? <img src={cliente.foto_url} alt="" className={`w-full h-full object-cover ${isArchivada ? "grayscale" : ""}`} />
                                 : displayName.startsWith("+")
                                   ? <Phone className="w-5 h-5" />
                                   : <span>{displayName.charAt(0).toUpperCase()}</span>}
                             </div>
-                            {conv.agente_activo && !cliente?.es_spam && lunaGlobalActiva && <span className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-purple-600 border-2 border-surface flex items-center justify-center"><Bot className="w-2.5 h-2.5 text-white" /></span>}
-                            {!lunaGlobalActiva && !cliente?.es_spam && <span className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-red-800 border-2 border-surface flex items-center justify-center" title="Luna apagada globalmente"><Power className="w-2 h-2 text-red-200" /></span>}
+                            {conv.agente_activo && !cliente?.es_spam && lunaGlobalActiva && !isArchivada && <span className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-purple-600 border-2 border-surface flex items-center justify-center"><Bot className="w-2.5 h-2.5 text-white" /></span>}
+                            {!lunaGlobalActiva && !cliente?.es_spam && !isArchivada && <span className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-red-800 border-2 border-surface flex items-center justify-center" title="Luna apagada globalmente"><Power className="w-2 h-2 text-red-200" /></span>}
+                            {isArchivada && <span className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-amber-900 border-2 border-surface flex items-center justify-center"><Archive className="w-2.5 h-2.5 text-amber-300" /></span>}
                             {tieneNotas && <span className="absolute -top-1 -left-1 w-4 h-4 rounded-full bg-amber-600 border-2 border-surface flex items-center justify-center"><StickyNote className="w-2.5 h-2.5 text-white" /></span>}
                           </div>
                           <div className="flex-1 min-w-0">
                             <div className="flex justify-between mb-1 gap-2">
-                              <h2 className={`text-sm font-semibold truncate flex items-center gap-1 ${etapaText} ${displayName.startsWith("+") ? "font-mono tracking-tight" : ""}`}>{displayName}{tieneNotas && <StickyNote className="w-3 h-3 text-amber-400" />}</h2>
+                              <h2 className={`text-sm font-semibold truncate flex items-center gap-1 ${etapaText} ${displayName.startsWith("+") ? "font-mono tracking-tight" : ""}`}>
+                                {displayName}
+                                {cliente?.en_seguimiento && (
+                                  <span title={estaPendienteSeguimientoHoy(cliente) ? "En seguimiento (pendiente hoy)" : "En seguimiento (revisado)"}>
+                                    <BellRing className={`w-3 h-3 ${estaPendienteSeguimientoHoy(cliente) ? "text-cyan-400 animate-pulse" : "text-gray-500"}`} />
+                                  </span>
+                                )}
+                                {tieneNotas && <StickyNote className="w-3 h-3 text-amber-400" />}
+                              </h2>
                               <div className="flex flex-col items-end gap-1 flex-shrink-0">
-                                <span className="text-[10px] text-gray-500">{new Date(conv.ultimo_mensaje_en).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
-                                {conv.no_leidos > 0 && (
+                                <span className="text-[10px] text-gray-500">
+                                  {isArchivada ? `${diasArchivado}d` : new Date(conv.ultimo_mensaje_en).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                                </span>
+                                {conv.no_leidos > 0 && !isArchivada && (
                                   <span className="bg-red-600 text-white text-[9px] min-w-[18px] h-[18px] px-1 rounded-full flex items-center justify-center font-bold" title={`${conv.no_leidos} mensaje(s) sin revisar`}>
                                     {conv.no_leidos > 99 ? "99+" : conv.no_leidos}
                                   </span>
                                 )}
                               </div>
                             </div>
-                            {etapaCliente && !cliente?.es_spam && (
-                              <span className={`inline-block text-[9px] px-1.5 py-0 rounded ${etapaBg} ${etapaText} border ${etapaColor} mb-1`}>
-                                {etapaCliente.nombre}
-                              </span>
-                            )}
+                            <div className="flex items-center gap-1 mb-1 flex-wrap">
+                              {isArchivada ? (
+                                <span className="text-[9px] px-1.5 py-0 rounded bg-amber-900/50 text-amber-300 border border-amber-800/50">
+                                  ARCHIVADO
+                                </span>
+                              ) : etapaCliente && !cliente?.es_spam ? (
+                                <span className={`inline-flex items-center gap-1 text-[9px] px-1.5 py-0 rounded ${etapaBg} ${etapaText} border ${etapaColor}`}>
+                                  <span>{esApi ? "🌐" : "👤"}</span>
+                                  <span>{etapaCliente.nombre}</span>
+                                </span>
+                              ) : null}
+                              {chatCategoria === CATEGORIA_EN_SEGUIMIENTO && estaPendienteSeguimientoHoy(cliente) && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => { e.stopPropagation(); marcarSeguimientoRevisado(conv.cliente_id); }}
+                                  className="text-[9px] px-1.5 py-0.5 rounded bg-cyan-950 border border-cyan-700 text-cyan-300 hover:bg-cyan-900 transition-colors flex items-center gap-1 font-semibold"
+                                  title="Marcar revisado por hoy (sale de la lista hasta mañana 8:00 AM)"
+                                >
+                                  <Check className="w-2.5 h-2.5" /> Revisado
+                                </button>
+                              )}
+                            </div>
                             <p className="text-xs text-gray-400 truncate flex items-center gap-1">
                               {(conv.ultimo_mensaje === "[audio]" || conv.ultimo_mensaje === "[nota_de_voz]" || (conv.ultimo_mensaje && /\[audio\]|nota_de_voz|Nota de voz/i.test(conv.ultimo_mensaje)))
                                 ? (<><Mic className="w-3.5 h-3.5 text-purple-400 flex-shrink-0" /><span>Nota de voz</span></>)
@@ -2814,8 +2976,12 @@ export default function CRMApp() {
                           </div>
                         </button>
                         <div className="absolute right-2 top-2 hidden group-hover:flex items-center gap-1 bg-surface border border-border rounded-lg p-1 shadow-lg">
-                          <button onClick={(e) => { e.stopPropagation(); archivarConversacion(conv.id, true); }} className="p-1.5 text-amber-400 hover:bg-amber-950/50 rounded-md transition-colors" title="Archivar"><Archive className="w-3.5 h-3.5" /></button>
-                          <button onClick={(e) => { e.stopPropagation(); solicitarEliminarCliente(conv); }} className="p-1.5 text-red-400 hover:bg-red-950/50 rounded-md transition-colors" title="Eliminar"><Trash2 className="w-3.5 h-3.5" /></button>
+                          {isArchivada ? (
+                            <button onClick={(e) => { e.stopPropagation(); archivarConversacion(conv.id, false); }} className="p-1.5 text-emerald-400 hover:bg-emerald-950/50 rounded-md transition-colors" title="Restaurar a bandeja"><ArchiveRestore className="w-3.5 h-3.5" /></button>
+                          ) : (
+                            <button onClick={(e) => { e.stopPropagation(); archivarConversacion(conv.id, true); }} className="p-1.5 text-amber-400 hover:bg-amber-950/50 rounded-md transition-colors" title="Archivar"><Archive className="w-3.5 h-3.5" /></button>
+                          )}
+                          <button onClick={(e) => { e.stopPropagation(); solicitarEliminarCliente(conv); }} className="p-1.5 text-red-400 hover:bg-red-950/50 rounded-md transition-colors" title="Eliminar cliente"><Trash2 className="w-3.5 h-3.5" /></button>
                         </div>
                       </div>
                     );
@@ -2873,20 +3039,90 @@ export default function CRMApp() {
                       )}
                       {!clienteActual.es_spam && (!lunaGlobalActiva ? (
                         <button onClick={toggleLunaGlobal} className="hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-all bg-red-950/40 border-red-700 text-red-300 animate-pulse">
-                          <Power className="w-3.5 h-3.5" /><span>Luna APAGADA (Encender)</span>
+                          <Power className="w-3.5 h-3.5" /><span>Luna APAGADA</span>
                         </button>
                       ) : (
                         <button onClick={toggleAgenteIA} className={`hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-all ${selectedConv.agente_activo ? "bg-purple-950/50 border-purple-700 text-purple-300" : "bg-surfaceHover border-border text-gray-400"}`}>
-                          <Bot className="w-3.5 h-3.5" /><span>{selectedConv.agente_activo ? "Agente Luna: ON" : "Agente Pausado"}</span>
+                          <Bot className="w-3.5 h-3.5" /><span>{selectedConv.agente_activo ? "Luna: ON" : "Pausada"}</span>
                         </button>
                       ))}
-                      <button onClick={() => archivarConversacion(selectedConv.id, true)} className="p-2 text-amber-400 hover:bg-amber-950/30 rounded-lg border border-amber-900/30 transition-colors" title="Archivar"><Archive className="w-4 h-4" /></button>
+
+                      {/* Cuenta encargada activa */}
+                      {(() => {
+                        const et = getEtapa(clienteActual?.estado);
+                        const esApi = et?.cuenta_responsable === "meta_business";
+                        return (
+                          <span
+                            className={`hidden md:flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-bold border ${
+                              esApi ? "bg-indigo-950/40 border-indigo-700/50 text-indigo-300" : "bg-blue-950/40 border-blue-700/50 text-blue-300"
+                            }`}
+                            title={`Cuenta responsable de esta etapa: ${esApi ? "WhatsApp API" : "WhatsApp Personal"}`}
+                          >
+                            <span>{esApi ? "🌐 API" : "👤 Personal"}</span>
+                          </span>
+                        );
+                      })()}
+
+                      {/* Check rápido de En seguimiento */}
+                      <button
+                        type="button"
+                        onClick={() => toggleEnSeguimientoCliente(clienteActual.id)}
+                        className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium border transition-all ${
+                          clienteActual?.en_seguimiento
+                            ? "bg-cyan-950/50 border-cyan-500 text-cyan-300 shadow-sm"
+                            : "bg-surfaceHover border-border text-gray-400 hover:text-gray-200"
+                        }`}
+                        title={clienteActual?.en_seguimiento ? "En seguimiento diario activo (clic para quitar check)" : "Activar en seguimiento diario (8:00 AM)"}
+                      >
+                        <BellRing className={`w-3.5 h-3.5 ${clienteActual?.en_seguimiento ? "text-cyan-400" : ""}`} />
+                        <span className="hidden sm:inline">Seguimiento</span>
+                      </button>
+
+                      {clienteActual?.en_seguimiento && estaPendienteSeguimientoHoy(clienteActual) && (
+                        <button
+                          type="button"
+                          onClick={() => marcarSeguimientoRevisado(clienteActual.id)}
+                          className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-cyan-600 hover:bg-cyan-500 text-white shadow transition-all"
+                          title="Marcar revisado por hoy (sale de la lista de En seguimiento hasta mañana 8:00 AM)"
+                        >
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          <span className="hidden sm:inline">Revisado hoy</span>
+                        </button>
+                      )}
+
+                      {Boolean((selectedConv as any).archivada) ? (
+                        <button
+                          onClick={() => archivarConversacion(selectedConv.id, false)}
+                          className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-emerald-900/40 border border-emerald-700 text-emerald-300 hover:bg-emerald-800/50 transition-colors"
+                          title="Restaurar chat a la bandeja"
+                        >
+                          <ArchiveRestore className="w-3.5 h-3.5" />
+                          <span className="hidden sm:inline">Restaurar</span>
+                        </button>
+                      ) : (
+                        <button onClick={() => archivarConversacion(selectedConv.id, true)} className="p-2 text-amber-400 hover:bg-amber-950/30 rounded-lg border border-amber-900/30 transition-colors" title="Archivar"><Archive className="w-4 h-4" /></button>
+                      )}
+
                       <button onClick={() => solicitarEliminarCliente(selectedConv)} className="p-2 text-red-400 hover:bg-red-950/30 rounded-lg border border-red-900/30 transition-colors" title="Eliminar"><Trash2 className="w-4 h-4" /></button>
                       <button onClick={() => setShowMobileDetails(true)} className="md:hidden p-2 text-gray-400"><Info className="w-5 h-5" /></button>
                     </div>
                   </header>
 
                   <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4">
+                    {Boolean((selectedConv as any).archivada) && (
+                      <div className="bg-amber-950/20 border border-amber-900/30 rounded-xl p-3 flex items-center justify-between gap-2 text-xs text-amber-200/80 mb-2">
+                        <div className="flex items-center gap-2">
+                          <AlertTriangle className="w-4 h-4 text-amber-500 flex-shrink-0" />
+                          <span>Esta conversación está archivada. Si respondes se restaurará automáticamente, o puedes pulsar Restaurar.</span>
+                        </div>
+                        <button
+                          onClick={() => archivarConversacion(selectedConv.id, false)}
+                          className="px-2.5 py-1 rounded-lg bg-amber-900/50 border border-amber-700 text-amber-300 hover:bg-amber-800/60 font-semibold text-xs transition-colors flex-shrink-0"
+                        >
+                          Restaurar
+                        </button>
+                      </div>
+                    )}
                     {mensajes.map((msg, idxMsg) => {
                       const isMe = msg.tipo === "enviado";
                       const isAudioMsg = msg.tipo_contenido === "audio" || msg.contenido === "[audio]" || msg.contenido === "[nota_de_voz]" || (msg.url_archivo && (msg.url_archivo.startsWith("data:audio/") || /\.(ogg|opus|webm|mp3|wav|m4a|aac)($|\?)/i.test(msg.url_archivo)));
@@ -2933,7 +3169,31 @@ export default function CRMApp() {
                     <div ref={messagesEndRef} />
                   </div>
 
-                  <div className="p-3 border-t border-border bg-surface/80 backdrop-blur-md flex items-center gap-2 flex-shrink-0">
+                  <div className="border-t border-border bg-surface/80 backdrop-blur-md flex flex-col flex-shrink-0">
+                    {/* Barra informativa de cuenta que envía */}
+                    <div className="flex items-center justify-between px-4 py-1 text-[11px] bg-background/50 border-b border-border/40">
+                      {(() => {
+                        const et = getEtapa(clienteActual?.estado);
+                        const esApi = et?.cuenta_responsable === "meta_business";
+                        return (
+                          <div className="flex items-center gap-1.5 text-gray-400">
+                            <span className="text-gray-500">Responde desde:</span>
+                            <span className={`font-semibold flex items-center gap-1 ${esApi ? "text-indigo-400" : "text-blue-400"}`}>
+                              <span>{esApi ? "🌐 WhatsApp API" : "👤 WhatsApp Personal"}</span>
+                            </span>
+                            <span className="text-gray-500">• Etapa: {et?.nombre || "Nuevo Lead"}</span>
+                          </div>
+                        );
+                      })()}
+                      {clienteActual?.en_seguimiento && (
+                        <span className="text-[10px] text-cyan-400 flex items-center gap-1 font-medium">
+                          <BellRing className="w-3 h-3" />
+                          {estaPendienteSeguimientoHoy(clienteActual) ? "Pendiente hoy" : "Revisado hoy ✓"}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="p-3 flex items-center gap-2">
                     <input type="file" ref={fileInputRef} className="hidden" onChange={handleFileUpload} accept="image/*,audio/*,video/*,.pdf,.doc,.docx,.xls,.xlsx" />
                     <input type="file" ref={rrFileInputRef} className="hidden" onChange={handleRRFile} accept="audio/*,image/*" />
                     {(isRecording || isPreparingRecording) ? (
@@ -2972,6 +3232,7 @@ export default function CRMApp() {
                         {sendError && <p className="w-full text-xs text-red-400 px-2">{sendError}</p>}
                       </form>
                     )}
+                    </div>
                   </div>
                 </section>
 
@@ -3129,21 +3390,58 @@ export default function CRMApp() {
                     <div className="bg-background p-4 rounded-xl border border-border space-y-2">
                       <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider block">Etapa del Pipeline</label>
                       <select
-                        value={clienteActual.estado || (grupoActivo === "templo" ? "nuevo_lead_templo" : "nuevo_lead")}
+                        value={normalizarEstado(clienteActual.estado)}
                         onChange={(e) => actualizarEstadoCliente(clienteActual.id, e.target.value)}
                         className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-purple-500"
                       >
-                        <optgroup label={personalLabel}>
-                          {pipelineEtapas.filter(e => e.grupo === "personal" && !e.es_spam && !e.es_archivado).map((etapa) => (
-                            <option key={etapa.clave} value={etapa.clave}>{etapa.nombre}</option>
-                          ))}
-                        </optgroup>
-                        <optgroup label={temploLabel}>
-                          {pipelineEtapas.filter(e => e.grupo === "templo" && !e.es_spam && !e.es_archivado).map((etapa) => (
-                            <option key={etapa.clave} value={etapa.clave}>{etapa.nombre}</option>
-                          ))}
-                        </optgroup>
+                        {pipelineEtapas.filter(e => !e.es_spam && !e.es_archivado).sort((a, b) => (Number(a.orden) || 0) - (Number(b.orden) || 0)).map((etapa) => {
+                          const esApi = etapa.cuenta_responsable === "meta_business";
+                          return (
+                            <option key={etapa.clave} value={etapa.clave}>
+                              {etapa.nombre} ({esApi ? "WhatsApp API" : "WhatsApp Personal"})
+                            </option>
+                          );
+                        })}
                       </select>
+                    </div>
+
+                    {/* CHECK EN SEGUIMIENTO DIARIO (8:00 AM) */}
+                    <div className="bg-background p-4 rounded-xl border border-cyan-900/30 space-y-2.5">
+                      <div className="flex items-center justify-between">
+                        <label className="text-[10px] font-bold text-cyan-300 uppercase tracking-wider flex items-center gap-1.5">
+                          <BellRing className={`w-3.5 h-3.5 ${clienteActual?.en_seguimiento ? "text-cyan-400" : "text-gray-500"}`} />
+                          En seguimiento diario (8:00 AM)
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => toggleEnSeguimientoCliente(clienteActual.id)}
+                          className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                            clienteActual?.en_seguimiento ? "bg-cyan-600" : "bg-gray-700"
+                          }`}
+                        >
+                          <span
+                            className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                              clienteActual?.en_seguimiento ? "translate-x-4" : "translate-x-0"
+                            }`}
+                          />
+                        </button>
+                      </div>
+                      <p className="text-[10px] text-gray-400 leading-relaxed">
+                        {clienteActual?.en_seguimiento
+                          ? estaPendienteSeguimientoHoy(clienteActual)
+                            ? "⚠️ Pendiente para hoy. Al responder o marcar revisado saldrá de la subcategoría hasta mañana."
+                            : "✓ Ya revisado hoy. Reaparecerá automáticamente mañana a las 8:00 AM."
+                          : "Independiente de la etapa. Actívalo para que entre a tu lista de revisión cada mañana a las 8:00 AM."}
+                      </p>
+                      {clienteActual?.en_seguimiento && estaPendienteSeguimientoHoy(clienteActual) && (
+                        <button
+                          type="button"
+                          onClick={() => marcarSeguimientoRevisado(clienteActual.id)}
+                          className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-cyan-950/50 border border-cyan-700 text-cyan-300 hover:bg-cyan-900/60 text-xs font-semibold transition-colors"
+                        >
+                          <CheckCircle2 className="w-3.5 h-3.5" /> Marcar revisado hoy
+                        </button>
+                      )}
                     </div>
 
                     {(() => {
@@ -3325,247 +3623,167 @@ export default function CRMApp() {
           </>
         )}
 
-        {/* ================= ARCHIVADOS ================= */}
-        {tab === "archivados" && (
-          <>
-            <section className={`w-full md:w-96 border-r border-border bg-surface/50 flex-col ${selectedConv ? "hidden md:flex" : "flex"}`}>
-              <div className="p-4 border-b border-border flex flex-col gap-3 pt-6 md:pt-4">
-                <div className="flex items-center justify-between">
-                  <h1 className="text-lg font-bold text-gray-100 flex items-center gap-2"><Archive className="w-5 h-5 text-amber-400" /> Archivados</h1>
-                  <span className="text-xs px-2.5 py-1 rounded-full bg-amber-900/30 text-amber-300 font-medium border border-amber-800/50">{conversacionesArchivadas.length}</span>
-                </div>
-                <p className="text-[11px] text-gray-400 bg-background/50 p-2.5 rounded-lg border border-border">Personas que no volvieron a contestar. Se archivan automáticamente después de 7 días sin actividad o manualmente.</p>
-                <div className="relative">
-                  <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
-                  <input value={searchArchivados} onChange={e => setSearchArchivados(e.target.value)} placeholder="Buscar en archivados..." className="w-full bg-background border border-border rounded-lg pl-9 pr-3 py-2 text-xs text-gray-200 placeholder-gray-500 focus:outline-none focus:border-amber-600" />
-                  {searchArchivados && <button onClick={() => setSearchArchivados("")} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white"><X className="w-3.5 h-3.5" /></button>}
-                </div>
-                <div className="flex bg-background p-1 rounded-lg border border-border text-xs">
-                  {["todos", "evolution", "meta_business"].map((f) => (
-                    <button key={f} onClick={() => setFiltroArchivados(f as any)} className={`flex-1 py-1.5 rounded-md transition-all capitalize ${filtroArchivados === f ? "bg-amber-900/40 text-amber-300 font-medium" : "text-gray-500"}`}>{f === "evolution" ? "Personal" : f === "meta_business" ? "Business" : f}</button>
-                  ))}
-                </div>
-              </div>
-              <div className="flex-1 overflow-y-auto divide-y divide-border/50">
-                {conversacionesArchivadas.length === 0 ? (
-                  <div className="p-8 text-center"><Archive className="w-12 h-12 mx-auto text-gray-600 mb-3" /><p className="text-sm text-gray-400 font-medium">No hay archivados</p><p className="text-xs text-gray-500 mt-1">Las conversaciones inactivas aparecerán aquí</p></div>
-                ) : (
-                  conversacionesArchivadas.map((conv) => {
-                    const cliente = conv.clientes;
-                    const displayName = getDisplayName(cliente, conv);
-                    const diasArchivado = conv.fecha_archivado ? Math.floor((Date.now() - new Date(conv.fecha_archivado).getTime()) / (1000*60*60*24)) : Math.floor((Date.now() - new Date(conv.ultimo_mensaje_en).getTime()) / (1000*60*60*24));
-                    return (
-                      <div key={conv.id} className={`group relative w-full flex items-start gap-3 text-left hover:bg-surfaceHover transition-colors ${selectedConv?.id === conv.id ? "bg-amber-950/20 border-l-4 border-amber-600" : ""}`}>
-                        <button onClick={() => selectConversation(conv)} className="flex-1 p-4 flex items-start gap-3 text-left">
-                          <div className="relative flex-shrink-0"><div className="w-11 h-11 rounded-full bg-surface border border-amber-900/30 flex items-center justify-center text-amber-400 font-bold overflow-hidden opacity-80">{cliente?.foto_url ? <img src={cliente.foto_url} alt="" className="w-full h-full object-cover grayscale" /> : displayName.startsWith("+") ? <Phone className="w-5 h-5" /> : <span>{displayName.charAt(0) || "W"}</span>}</div><span className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-amber-900 border-2 border-surface flex items-center justify-center"><Archive className="w-2.5 h-2.5 text-amber-300" /></span></div>
-                          <div className="flex-1 min-w-0"><div className="flex justify-between mb-1"><h2 className="text-sm font-medium text-gray-300 truncate">{displayName}</h2><span className="text-[10px] text-amber-500/70">{diasArchivado}d</span></div><p className="text-xs text-gray-500 truncate">{conv.ultimo_mensaje || "Sin mensajes"}</p><p className="text-[10px] text-gray-600 mt-1">{new Date(conv.ultimo_mensaje_en).toLocaleDateString()}</p></div>
-                        </button>
-                        <div className="absolute right-2 top-2 hidden group-hover:flex items-center gap-1 bg-surface border border-border rounded-lg p-1 shadow-lg">
-                          <button onClick={(e) => { e.stopPropagation(); archivarConversacion(conv.id, false); }} className="p-1.5 text-emerald-400 hover:bg-emerald-950/50 rounded-md transition-colors" title="Restaurar"><ArchiveRestore className="w-3.5 h-3.5" /></button>
-                          <button onClick={(e) => { e.stopPropagation(); solicitarEliminarCliente(conv); }} className="p-1.5 text-red-400 hover:bg-red-950/50 rounded-md transition-colors" title="Eliminar"><Trash2 className="w-3.5 h-3.5" /></button>
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            </section>
-
-            {selectedConv && clienteActual ? (
-              <div className="flex-1 flex w-full h-full absolute inset-0 md:relative bg-background z-20">
-                <section className={`flex-1 flex flex-col h-full ${showMobileDetails ? "hidden md:flex" : "flex"}`}>
-                  <header className="h-16 px-4 md:px-6 border-b border-amber-900/30 bg-amber-950/20 backdrop-blur-md flex items-center justify-between flex-shrink-0">
-                    <div className="flex items-center gap-3">
-                      <button onClick={() => setSelectedConv(null)} className="md:hidden p-2 -ml-2 text-gray-400 hover:text-white"><ArrowLeft className="w-5 h-5" /></button>
-                      <div className="w-10 h-10 rounded-full bg-surface border border-amber-800/50 flex items-center justify-center text-amber-400 font-bold overflow-hidden">{clienteActual.foto_url ? <img src={clienteActual.foto_url} className="w-full h-full object-cover" alt="" /> : (() => { const dn = getDisplayName(clienteActual, selectedConv); return dn.startsWith("+") ? <Phone className="w-5 h-5" /> : <span>{dn.charAt(0) || "W"}</span>; })()}</div>
-                      <div className="flex flex-col"><h2 className="text-sm font-bold text-gray-100 flex items-center gap-2">{getDisplayName(clienteActual, selectedConv)}<span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-900/50 text-amber-300 border border-amber-800/50">ARCHIVADO</span></h2><span className="text-[10px] text-gray-400 flex items-center gap-1 font-mono"><Phone className="w-3 h-3" /> {getTelefonoE164(clienteActual, selectedConv) || "Sin número"}</span></div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button onClick={() => archivarConversacion(selectedConv.id, false)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-900/30 border border-emerald-800/50 text-emerald-300 hover:bg-emerald-900/50 text-xs font-medium transition-colors"><ArchiveRestore className="w-4 h-4" /> Restaurar</button>
-                      <button onClick={() => solicitarEliminarCliente(selectedConv)} className="p-2 text-red-400 hover:bg-red-950/30 rounded-lg border border-red-900/30 transition-colors"><Trash2 className="w-4 h-4" /></button>
-                      <button onClick={() => setShowMobileDetails(true)} className="md:hidden p-2 text-gray-400"><Info className="w-5 h-5" /></button>
-                    </div>
-                  </header>
-                  <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4 bg-background">
-                    <div className="bg-amber-950/20 border border-amber-900/30 rounded-xl p-3 flex items-start gap-2 text-xs text-amber-200/80"><AlertTriangle className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" /><p>Esta conversación está archivada porque no hubo respuesta en más de 7 días. Puedes restaurarla para que vuelva a la bandeja principal o enviar un mensaje y se restaurará automáticamente.</p></div>
-                    {mensajes.map((msg, idxMsg) => {
-                      const isMe = msg.tipo === "enviado";
-                      const isAudioMsg = msg.tipo_contenido === "audio" || msg.contenido === "[audio]" || msg.contenido === "[nota_de_voz]" || (msg.url_archivo && (msg.url_archivo.startsWith("data:audio/") || /\.(ogg|opus|webm|mp3|wav|m4a|aac)($|\?)/i.test(msg.url_archivo)));
-                      return (
-                        <div key={msg.id} className={`flex ${isMe ? "justify-end" : "justify-start"}`}>
-                          <div className={`max-w-[85%] md:max-w-[70%] rounded-2xl px-3 py-2 shadow-sm ${isMe ? "bg-purple-600 text-white rounded-br-none opacity-90" : "bg-surface border border-border text-gray-300 rounded-bl-none opacity-80"}`}>
-                            {(() => {
-                              if (isAudioMsg && msg.url_archivo) return <VoiceNotePlayer src={msg.url_archivo} isMe={isMe} />;
-                              if (isImageMessage(msg)) {
-                                const pieDeFoto = textoAdjuntoMultimedia(msg);
-                                return (
-                                  <div className="space-y-2">
-                                    <ChatImage src={msg.url_archivo} filename={guessImageFilename(String(msg.url_archivo), `foto-${slugFoto(getDisplayName(clienteActual, selectedConv))}-${isMe ? "enviada" : "cliente"}`)} />
-                                    {pieDeFoto && <p className="text-sm whitespace-pre-wrap leading-relaxed">{pieDeFoto}</p>}
-                                  </div>
-                                );
-                              }
-                              return <p className="text-sm whitespace-pre-wrap leading-relaxed">{msg.contenido}</p>;
-                            })()}
-                            <div className={`flex items-center gap-1.5 mt-1 ${isMe ? "justify-end" : "justify-start"}`}>
-                              <span className={`text-[9px] ${isMe ? "text-white/75" : "text-gray-500"}`}>{new Date(msg.creado_en).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
-                              {isAudioMsg && msg.url_archivo && (
-                                <button type="button" onClick={() => descargarAudioMensaje(msg, idxMsg)} disabled={descargandoAudioId === String(msg.id || idxMsg)} className={`p-0.5 rounded transition-colors disabled:opacity-50 ${isMe ? "text-white/75 hover:text-white" : "text-gray-500 hover:text-purple-300"}`} title="Descargar esta nota de voz (OGG)"><Download className={`w-3 h-3 ${descargandoAudioId === String(msg.id || idxMsg) ? "animate-pulse" : ""}`} /></button>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                    <div ref={messagesEndRef} />
-                  </div>
-                  <div className="p-3 border-t border-border bg-surface/80 backdrop-blur-md flex items-center gap-2 flex-shrink-0">
-                    <input type="file" ref={fileInputRef} className="hidden" onChange={handleFileUpload} accept="image/*,audio/*,video/*,.pdf,.doc,.docx,.xls,.xlsx" />
-                    <input type="file" ref={rrFileInputRef} className="hidden" onChange={handleRRFile} accept="audio/*,image/*" />
-                    {(isRecording || isPreparingRecording) ? (
-                      <div className="flex-1 bg-red-950/30 border border-red-900/50 rounded-full px-4 py-2 flex items-center justify-between gap-2"><div className="flex items-center gap-2 text-red-400 text-sm font-medium flex-shrink-0"><span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" /><Mic className="w-4 h-4" /> {isPreparingRecording ? "Preparando..." : formatTime(recordingTime)}</div><div className="flex items-center gap-1 flex-shrink-0"><button onClick={cancelRecording} disabled={!isRecording} className="p-1.5 text-gray-400 hover:text-white rounded-full disabled:opacity-40"><Trash2 className="w-4 h-4" /></button><button onClick={stopRecording} disabled={isPreparingRecording || !isRecording} className="p-1.5 text-white bg-red-600 hover:bg-red-500 rounded-full shadow-lg disabled:opacity-40"><Send className="w-4 h-4 ml-0.5" /></button></div></div>
-                    ) : (
-                      <form onSubmit={handleSendMessage} className="flex-1 min-w-0 flex flex-wrap items-center gap-1.5"><input type="text" value={nuevoMensaje} onChange={(e) => setNuevoMensaje(e.target.value)} placeholder="Escribe para restaurar y responder..." disabled={isSending} className="flex-1 min-w-[140px] bg-background border border-border rounded-full px-4 py-2.5 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-amber-600 disabled:opacity-50" /><button type="button" onClick={() => fileInputRef.current?.click()} disabled={isSending} className="p-2.5 text-gray-400 hover:text-purple-400 hover:bg-surfaceHover rounded-full transition-colors disabled:opacity-40 flex-shrink-0" title="Enviar archivos"><Paperclip className="w-5 h-5" /></button><div className="relative flex-shrink-0"><button type="button" onClick={() => setShowEtapaMenu((v) => !v)} disabled={isSending} className="p-2.5 text-gray-400 hover:text-purple-400 hover:bg-surfaceHover rounded-full transition-colors disabled:opacity-40" title="Cambiar etapa del cliente"><GitBranch className="w-5 h-5" /></button>{showEtapaMenu && renderMenuEtapaRapida()}</div><div className="relative flex-shrink-0"><button type="button" onClick={abrirMenuRespuestas} disabled={isSending} className="p-2.5 text-gray-400 hover:text-purple-400 hover:bg-surfaceHover rounded-full transition-colors disabled:opacity-40" title="Respuestas rápidas (textos, audios e imágenes para todas las conversaciones)"><Zap className="w-5 h-5" /></button>{showRespuestasMenu && renderMenuRespuestasRapidas()}</div>{nuevoMensaje.trim() ? (<button type="submit" disabled={isSending} className="bg-amber-700 hover:bg-amber-600 text-white p-2.5 rounded-full transition-colors disabled:opacity-50"><Send className="w-5 h-5" /></button>) : (<button type="button" onClick={startRecording} disabled={isSending || isPreparingRecording} className="bg-surface border border-border text-amber-400 hover:bg-amber-600 hover:text-white hover:border-amber-600 p-2.5 rounded-full transition-colors disabled:opacity-50"><Mic className="w-5 h-5" /></button>)} {sendError && <p className="w-full text-xs text-red-400 px-2">{sendError}</p>}</form>
-                    )}
-                  </div>
-                </section>
-                <aside className={`w-full md:w-80 lg:w-96 border-l border-border bg-surface/95 overflow-y-auto absolute inset-0 z-30 md:relative flex flex-col ${!showMobileDetails ? "hidden md:flex" : "flex"}`}>
-                  <header className="md:hidden flex items-center p-4 border-b border-border bg-background sticky top-0 z-10"><button onClick={() => setShowMobileDetails(false)} className="p-2 -ml-2 text-gray-400"><ArrowLeft className="w-5 h-5" /></button><h2 className="font-bold ml-2">Ficha Archivada</h2></header>
-                  <div className="p-5 space-y-5">
-                    <div className="text-center"><div className="w-20 h-20 mx-auto rounded-full bg-surface border-2 border-amber-700 flex items-center justify-center text-2xl font-bold text-amber-300 mb-3 overflow-hidden shadow-lg">{clienteActual.foto_url ? <img src={clienteActual.foto_url} alt="" className="w-full h-full object-cover" /> : (() => { const dn = getDisplayName(clienteActual, selectedConv); return dn.startsWith("+") ? <Phone className="w-8 h-8" /> : <span>{dn.charAt(0) || "W"}</span>; })()}</div><h3 className="text-base font-bold text-gray-100">{getDisplayName(clienteActual, selectedConv)}</h3><p className="text-xs text-gray-400 mt-0.5 font-mono flex items-center justify-center gap-1"><Phone className="w-3 h-3" /> {getTelefonoE164(clienteActual, selectedConv) || "Sin número"}</p>
-                      <button
-                        onClick={guardarContactoCliente}
-                        disabled={guardandoContacto || contactoGuardado === "nativo" || !getTelefonoE164(clienteActual, selectedConv)}
-                        className={`w-full mt-3 flex items-center justify-center gap-2 py-2 rounded-lg border text-xs font-semibold transition-all disabled:opacity-50 ${contactoGuardado ? "bg-emerald-950/40 border-emerald-800/60 text-emerald-300" : "bg-amber-950/20 border-amber-800/50 text-amber-300 hover:bg-amber-900/40 hover:border-amber-600"}`}
-                        title="Guardar en los contactos del teléfono"
-                      >
-                        <UserPlus className="w-3.5 h-3.5" />
-                        {guardandoContacto ? "Guardando contacto..." : contactoGuardado === "nativo" ? "Contacto guardado en el teléfono" : contactoGuardado === "vcf" ? "Contacto descargado (.vcf)" : "Guardar en teléfono"}
-                      </button>
-                    </div>
-                    <button onClick={() => archivarConversacion(selectedConv.id, false)} className="w-full flex justify-center items-center gap-1.5 py-2.5 rounded-lg bg-emerald-900/30 border border-emerald-800 text-emerald-300 hover:bg-emerald-900/50 text-xs font-bold transition-all"><ArchiveRestore className="w-4 h-4" /> Restaurar a bandeja</button>
-                    {/* Notas en archivados también */}
-                    {(clienteActual.notas_personales || clienteActual.detalles_caso) && (
-                      <div className="bg-background p-3 rounded-xl border border-amber-900/20 space-y-2">
-                        <h4 className="text-[10px] font-bold text-amber-400 uppercase flex items-center gap-1"><StickyNote className="w-3 h-3" /> Notas</h4>
-                        {clienteActual.detalles_caso && <p className="text-xs text-gray-300 whitespace-pre-wrap">{clienteActual.detalles_caso}</p>}
-                        {clienteActual.notas_personales && <p className="text-xs text-gray-400 whitespace-pre-wrap bg-amber-950/20 p-2 rounded border border-amber-900/20">{clienteActual.notas_personales}</p>}
-                      </div>
-                    )}
-                  </div>
-                </aside>
-              </div>
-            ) : (
-              <div className="hidden md:flex flex-1 flex-col items-center justify-center text-gray-500 bg-background"><Archive className="w-12 h-12 mb-3 text-amber-700/50" /><p className="text-sm font-medium">Selecciona un archivado</p><p className="text-xs mt-1 text-gray-600 max-w-xs text-center">Aquí van las personas que no vuelven a contestar. Puedes restaurarlas o eliminarlas.</p></div>
-            )}
-          </>
-        )}
-
-        {/* ==================== PIPELINE ==================== */}
+        {/* ==================== PIPELINE UNIFICADO ==================== */}
         {tab === "pipeline" && (
           <div className="flex-1 flex flex-col h-full overflow-hidden bg-background">
             <header className="p-4 md:p-6 border-b border-border flex flex-col md:flex-row md:items-center justify-between gap-3 bg-surface/30">
               <div>
-                <h1 className="text-xl md:text-2xl font-bold text-gray-100">Pipeline</h1>
-                <p className="text-xs md:text-sm text-gray-400">Embudo visual por grupo — las etapas tienen colores que se reflejan en el chat</p>
+                <h1 className="text-xl md:text-2xl font-bold text-gray-100">Pipeline Unificado</h1>
+                <p className="text-xs md:text-sm text-gray-400">Embudo comercial — asigna la cuenta responsable de enviar y responder en cada etapa (WhatsApp API o WhatsApp Personal)</p>
               </div>
               <div className="flex items-center gap-2">
-                {/* Selector de grupo para pipeline */}
-                <div className="flex bg-surface border border-border rounded-lg p-0.5">
-                  <button onClick={() => cambiarGrupo("personal")} className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all flex items-center gap-1 ${grupoActivo === "personal" ? "bg-blue-600 text-white" : "text-gray-400"}`}><User className="w-3 h-3" /> {personalLabel}</button>
-                  <button onClick={() => cambiarGrupo("templo")} className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all flex items-center gap-1 ${grupoActivo === "templo" ? "bg-purple-600 text-white" : "text-gray-400"}`}><Landmark className="w-3 h-3" /> {temploLabel}</button>
-                </div>
-                <button onClick={() => setIsEditingPipeline(!isEditingPipeline)} className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs md:text-sm font-medium transition-all ${isEditingPipeline ? "bg-purple-600 text-white" : "bg-surface border border-border text-gray-300 hover:bg-surfaceHover"}`}><Settings className="w-4 h-4" /> {isEditingPipeline ? "Cerrar" : "Configurar"}</button>
+                <button
+                  onClick={() => setIsEditingPipeline(!isEditingPipeline)}
+                  className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs md:text-sm font-medium transition-all ${
+                    isEditingPipeline ? "bg-purple-600 text-white" : "bg-surface border border-border text-gray-300 hover:bg-surfaceHover"
+                  }`}
+                >
+                  <Settings className="w-4 h-4" /> {isEditingPipeline ? "Cerrar configuración" : "Configurar etapas"}
+                </button>
               </div>
             </header>
             <div className="flex-1 flex overflow-x-auto p-4 md:p-6 gap-4">
               {isEditingPipeline && (
                 <div className="w-80 flex-shrink-0 bg-surface border border-border rounded-2xl p-4 flex flex-col gap-3 shadow-xl overflow-y-auto">
                   <h2 className="text-sm font-bold text-purple-300 flex items-center gap-2 border-b border-border pb-2">
-                    <Edit2 className="w-4 h-4" /> Editar subcategorías ({grupoActivo === "personal" ? personalLabel : temploLabel})
+                    <Edit2 className="w-4 h-4" /> Configurar subcategorías
                   </h2>
-                  <p className="text-[10px] text-gray-500">Cambia nombres, colores y orden. Los clientes se mueven entre etapas arrastrando en el chat.</p>
-                  <div className="space-y-2">
-                    {pipelineEtapas.filter(e => e.grupo === grupoActivo && !e.es_spam && !e.es_archivado).sort((a, b) => a.orden - b.orden).map((etapa, idx, arr) => (
-                      <div key={etapa.id} className={`bg-background p-2.5 rounded-lg border-l-4 ${etapa.color} border-r border-t border-b border-border`}>
-                        <div className="flex items-center gap-1 mb-2">
-                          <div className="flex flex-col gap-0.5">
-                            <button onClick={() => {
-                              const list = pipelineEtapas.filter(e => e.grupo === grupoActivo && !e.es_spam && !e.es_archivado).sort((a, b) => a.orden - b.orden);
-                              const i = list.findIndex(x => x.id === etapa.id);
-                              if (i > 0) moverEtapaPipeline(etapa.id, list[i - 1].id);
-                            }} className="text-gray-500 hover:text-white"><ArrowUp className="w-3 h-3" /></button>
-                            <button onClick={() => {
-                              const list = pipelineEtapas.filter(e => e.grupo === grupoActivo && !e.es_spam && !e.es_archivado).sort((a, b) => a.orden - b.orden);
-                              const i = list.findIndex(x => x.id === etapa.id);
-                              if (i < list.length - 1) moverEtapaPipeline(etapa.id, list[i + 1].id);
-                            }} className="text-gray-500 hover:text-white"><ArrowDown className="w-3 h-3" /></button>
-                          </div>
-                          <input
-                            type="text"
-                            value={etapa.clave === CATEGORIA_EN_SEGUIMIENTO ? "En seguimiento" : etapa.nombre}
-                            disabled={etapa.clave === CATEGORIA_EN_SEGUIMIENTO}
-                            onChange={(e) => actualizarNombreEtapa(etapa.id, e.target.value)}
-                            title={etapa.clave === CATEGORIA_EN_SEGUIMIENTO ? "Etapa fija: activa el aviso diario de seguimiento" : undefined}
-                            className={`flex-1 bg-transparent text-sm focus:outline-none focus:text-purple-300 ${etapa.clave === CATEGORIA_EN_SEGUIMIENTO ? "text-cyan-300 cursor-not-allowed" : ""}`}
-                          />
-                          <div className="relative">
-                            <button
-                              onClick={(e) => { e.stopPropagation(); setEditingEtapaColor(editingEtapaColor === etapa.id ? null : etapa.id); }}
-                              className={`w-5 h-5 rounded-full ${etapa.color.replace("border-", "bg-")} border border-white/20`}
-                              title="Cambiar color"
+                  <p className="text-[10px] text-gray-400">Define nombres, colores, orden y la cuenta responsable de enviar y responder en cada etapa.</p>
+                  <div className="space-y-3">
+                    {pipelineEtapas.filter(e => !e.es_spam && !e.es_archivado).sort((a, b) => (Number(a.orden) || 0) - (Number(b.orden) || 0)).map((etapa, idx, arr) => {
+                      const esApi = etapa.cuenta_responsable === "meta_business";
+                      return (
+                        <div key={etapa.id || etapa.clave} className={`bg-background p-3 rounded-xl border-l-4 ${etapa.color} border border-border space-y-2`}>
+                          <div className="flex items-center gap-1 mb-1">
+                            <div className="flex flex-col gap-0.5">
+                              <button
+                                onClick={() => {
+                                  const list = pipelineEtapas.filter(e => !e.es_spam && !e.es_archivado).sort((a, b) => (Number(a.orden) || 0) - (Number(b.orden) || 0));
+                                  const i = list.findIndex(x => x.id === etapa.id);
+                                  if (i > 0) moverEtapaPipeline(etapa.id, list[i - 1].id);
+                                }}
+                                disabled={idx === 0}
+                                className="text-gray-500 hover:text-white disabled:opacity-30"
+                              >
+                                <ArrowUp className="w-3 h-3" />
+                              </button>
+                              <button
+                                onClick={() => {
+                                  const list = pipelineEtapas.filter(e => !e.es_spam && !e.es_archivado).sort((a, b) => (Number(a.orden) || 0) - (Number(b.orden) || 0));
+                                  const i = list.findIndex(x => x.id === etapa.id);
+                                  if (i < list.length - 1) moverEtapaPipeline(etapa.id, list[i + 1].id);
+                                }}
+                                disabled={idx === arr.length - 1}
+                                className="text-gray-500 hover:text-white disabled:opacity-30"
+                              >
+                                <ArrowDown className="w-3 h-3" />
+                              </button>
+                            </div>
+                            <input
+                              type="text"
+                              value={etapa.nombre}
+                              onChange={(e) => actualizarNombreEtapa(etapa.id, e.target.value)}
+                              className="flex-1 bg-transparent text-sm font-semibold text-gray-200 focus:outline-none focus:text-purple-300"
                             />
-                            {editingEtapaColor === etapa.id && (
-                              <div className="absolute right-0 top-7 z-20 bg-surface border border-border rounded-lg p-2 grid grid-cols-5 gap-1 shadow-xl">
-                                {PALETA_COLORES.map(p => (
-                                  <button
-                                    key={p.color}
-                                    onClick={(e) => { e.stopPropagation(); actualizarColorEtapa(etapa.id, p); }}
-                                    className={`w-6 h-6 rounded-full ${p.color.replace("border-", "bg-")} border-2 border-white/20 hover:scale-125 transition-transform`}
-                                    title={p.color}
-                                  />
-                                ))}
-                              </div>
+                            <div className="relative">
+                              <button
+                                onClick={(e) => { e.stopPropagation(); setEditingEtapaColor(editingEtapaColor === etapa.id ? null : etapa.id); }}
+                                className={`w-5 h-5 rounded-full ${etapa.color.replace("border-", "bg-")} border border-white/20`}
+                                title="Cambiar color"
+                              />
+                              {editingEtapaColor === etapa.id && (
+                                <div className="absolute right-0 top-7 z-20 bg-surface border border-border rounded-lg p-2 grid grid-cols-5 gap-1 shadow-xl">
+                                  {PALETA_COLORES.map(p => (
+                                    <button
+                                      key={p.color}
+                                      onClick={(e) => { e.stopPropagation(); actualizarColorEtapa(etapa.id, p); }}
+                                      className={`w-6 h-6 rounded-full ${p.color.replace("border-", "bg-")} border-2 border-white/20 hover:scale-125 transition-transform`}
+                                      title={p.color}
+                                    />
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                            {etapa.clave !== "nuevo_lead" && (
+                              <button onClick={() => eliminarEtapa(etapa.id)} className="text-red-500/70 hover:text-red-400 p-1" title="Eliminar etapa">
+                                <Trash2 className="w-4 h-4" />
+                              </button>
                             )}
                           </div>
-                          {etapa.clave === CATEGORIA_EN_SEGUIMIENTO ? (
-                            <span title="Aviso diario activo"><BellRing className="w-4 h-4 text-cyan-500/70" /></span>
-                          ) : (
-                            <button onClick={() => eliminarEtapa(etapa.id)} className="text-red-500/70 hover:text-red-400 p-1"><Trash2 className="w-4 h-4" /></button>
-                          )}
+
+                          {/* Segmented Account Selector */}
+                          <div className="flex items-center gap-1 bg-surface p-1 rounded-lg border border-border">
+                            <span className="text-[9px] uppercase font-bold text-gray-500 px-1">Cuenta:</span>
+                            <button
+                              type="button"
+                              onClick={() => actualizarCuentaResponsableEtapa(etapa.id, "meta_business")}
+                              className={`flex-1 flex items-center justify-center gap-1 py-1 px-2 rounded-md text-[11px] font-bold transition-all ${
+                                esApi ? "bg-indigo-600 text-white shadow" : "text-gray-400 hover:text-white"
+                              }`}
+                              title="WhatsApp API (Meta Business / Templo)"
+                            >
+                              <span>🌐</span> API
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => actualizarCuentaResponsableEtapa(etapa.id, "evolution")}
+                              className={`flex-1 flex items-center justify-center gap-1 py-1 px-2 rounded-md text-[11px] font-bold transition-all ${
+                                !esApi ? "bg-blue-600 text-white shadow" : "text-gray-400 hover:text-white"
+                              }`}
+                              title="WhatsApp Personal"
+                            >
+                              <span>👤</span> Personal
+                            </button>
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
-                  <button onClick={() => agregarEtapaPipeline(grupoActivo)} className="w-full py-2 bg-surfaceHover border border-dashed border-gray-600 rounded-lg text-xs text-gray-400 hover:text-white flex items-center justify-center gap-2">
+                  <button
+                    onClick={() => agregarEtapaPipeline("meta_business")}
+                    className="w-full py-2 bg-surfaceHover border border-dashed border-gray-600 rounded-lg text-xs text-gray-400 hover:text-white flex items-center justify-center gap-2 mt-1"
+                  >
                     <Plus className="w-4 h-4" /> Agregar subcategoría
                   </button>
                 </div>
               )}
-              {pipelineEtapas.filter(e => e.grupo === grupoActivo && !e.es_spam && !e.es_archivado).sort((a, b) => a.orden - b.orden).map((col) => {
+
+              {/* Columnas Kanban de etapas unificadas */}
+              {pipelineEtapas.filter(e => !e.es_spam && !e.es_archivado).sort((a, b) => (Number(a.orden) || 0) - (Number(b.orden) || 0)).map((col) => {
                 const clientesEnCol = conversaciones.filter((c) => {
-                  const grupoCliente = c.clientes?.grupo || (c.fuente === "meta_business" ? "templo" : "personal");
-                  return (c.clientes?.estado || (grupoActivo === "templo" ? "nuevo_lead_templo" : "nuevo_lead")) === col.clave
-                    && !c.clientes?.es_spam
-                    && !(c as any).archivada
-                    && grupoCliente === grupoActivo;
+                  if (c.clientes?.es_spam || (c as any).archivada) return false;
+                  const est = normalizarEstado(c.clientes?.estado);
+                  return est === col.clave;
                 });
+                const esApi = col.cuenta_responsable === "meta_business";
                 return (
-                  <div key={col.id} className={`w-72 flex-shrink-0 rounded-2xl p-4 flex flex-col gap-3 min-h-full border ${col.color} ${col.bg_color}`}>
+                  <div key={col.id || col.clave} className={`w-72 flex-shrink-0 rounded-2xl p-4 flex flex-col gap-3 min-h-full border ${col.color} ${col.bg_color}`}>
                     <div className={`flex items-center justify-between pb-2 border-b-2 ${col.color}`}>
-                      <h2 className={`text-xs font-bold ${col.text_color}`}>{col.nombre}</h2>
+                      <div className="flex flex-col">
+                        <h2 className={`text-xs font-bold ${col.text_color}`}>{col.nombre}</h2>
+                        <span className="text-[9px] text-gray-400 flex items-center gap-1 font-medium">
+                          <span>{esApi ? "🌐 WhatsApp API" : "👤 WhatsApp Personal"}</span>
+                        </span>
+                      </div>
                       <span className="text-xs px-2 py-0.5 rounded-full bg-surface/60 text-gray-300 font-semibold">{clientesEnCol.length}</span>
                     </div>
                     <div className="space-y-2 overflow-y-auto flex-1">
                       {clientesEnCol.map((c) => (
                         <div
                           key={c.id}
-                          onClick={() => { selectConversation(c); setTab("chats"); }}
+                          onClick={() => { selectConversation(c); setChatCategoria(col.clave); setTab("chats"); }}
                           className="p-3 bg-surface/80 backdrop-blur rounded-xl border border-border/60 hover:border-white/30 cursor-pointer shadow-sm group"
                         >
-                          <h3 className={`text-xs font-bold ${col.text_color} truncate ${getDisplayName(c.clientes, c).startsWith("+") ? "font-mono" : ""}`}>
-                            {getDisplayName(c.clientes, c)}
-                          </h3>
+                          <div className="flex items-center justify-between">
+                            <h3 className={`text-xs font-bold ${col.text_color} truncate ${getDisplayName(c.clientes, c).startsWith("+") ? "font-mono" : ""}`}>
+                              {getDisplayName(c.clientes, c)}
+                            </h3>
+                            {c.clientes?.en_seguimiento && (
+                              <span title={estaPendienteSeguimientoHoy(c.clientes) ? "En seguimiento (pendiente hoy)" : "En seguimiento (revisado)"}>
+                                <BellRing className={`w-3 h-3 ${estaPendienteSeguimientoHoy(c.clientes) ? "text-cyan-400 animate-pulse" : "text-gray-500"}`} />
+                              </span>
+                            )}
+                          </div>
                           <p className="text-[10px] text-gray-500 font-mono mt-0.5 truncate">{getTelefonoE164(c.clientes, c) || "Sin número"}</p>
                           <p className="text-[11px] text-gray-400 mt-1 truncate">
                             {c.clientes?.tipo_trabajo || "Sin clasificar"}
@@ -3581,7 +3799,7 @@ export default function CRMApp() {
                 );
               })}
 
-              {/* Columna de Spam: pipeline fijo, color negro, no editable ni eliminable */}
+              {/* Columna de Spam */}
               <div className="w-64 flex-shrink-0 bg-gray-900/60 border-2 border-gray-800 rounded-2xl p-4 flex flex-col gap-3 min-h-full">
                 <div className="flex items-center justify-between pb-2 border-b-2 border-gray-700">
                   <h2 className="text-xs font-bold text-gray-300 flex items-center gap-1"><Ban className="w-3 h-3" /> Spam</h2>
@@ -3589,7 +3807,7 @@ export default function CRMApp() {
                 </div>
                 <div className="space-y-2 overflow-y-auto flex-1">
                   {conversacionesSpam.map((c) => (
-                    <div key={c.id} onClick={() => { selectConversation(c); setTab("chats"); }} className="p-3 bg-surface/70 rounded-xl border border-gray-800 cursor-pointer hover:border-gray-600">
+                    <div key={c.id} onClick={() => { selectConversation(c); setChatCategoria("spam"); setTab("chats"); }} className="p-3 bg-surface/70 rounded-xl border border-gray-800 cursor-pointer hover:border-gray-600">
                       <h3 className="text-xs font-bold text-gray-300 truncate">{getDisplayName(c.clientes, c)}</h3>
                       {c.no_leidos > 0 && <span className="mt-1 inline-flex bg-red-600 text-white text-[9px] min-w-[18px] h-[18px] px-1 rounded-full items-center justify-center font-bold">{c.no_leidos > 99 ? "99+" : c.no_leidos}</span>}
                     </div>
@@ -3606,7 +3824,7 @@ export default function CRMApp() {
                 </div>
                 <div className="space-y-2 overflow-y-auto flex-1">
                   {conversacionesArchivadas.map((c) => (
-                    <div key={c.id} onClick={() => { selectConversation(c); setTab("archivados"); }} className="p-3 bg-surface/70 rounded-xl border border-amber-900/30 cursor-pointer hover:border-amber-500/50 opacity-80">
+                    <div key={c.id} onClick={() => { selectConversation(c); setChatCategoria(CATEGORIA_ARCHIVADOS); setTab("chats"); }} className="p-3 bg-surface/70 rounded-xl border border-amber-900/30 cursor-pointer hover:border-amber-500/50 opacity-80">
                       <h3 className="text-xs font-bold text-amber-300/80 truncate">{getDisplayName(c.clientes, c)}</h3>
                     </div>
                   ))}

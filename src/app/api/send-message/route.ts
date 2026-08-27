@@ -3,6 +3,7 @@ import { supabase } from "../../../lib/supabase";
 import { remuxWebmToOgg } from "../../../lib/webm-to-ogg";
 import { sendVoiceNoteViaMeta } from "../../../lib/meta-voice-note";
 import { sendEvolutionVoiceNote } from "../../../lib/evolution-audio";
+import { buscarOCrearConversacionChatwoot } from "../../../lib/chatwoot";
 
 const cleanBase64 = (value: unknown) => {
   if (!value) return null;
@@ -26,7 +27,7 @@ const isWebmBuffer = (bytes: Buffer | null) =>
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const { conversacionId, numeroWhatsApp, texto, fileBase64, fileMime, fileName } = body;
+    const { conversacionId, clienteId, numeroWhatsApp, texto, fileBase64, fileMime, fileName, cuentaResponsable } = body;
 
     if (!numeroWhatsApp || (!texto?.trim() && !fileBase64)) {
       return NextResponse.json({ error: "Faltan parámetros requeridos" }, { status: 400 });
@@ -51,10 +52,12 @@ export async function POST(req: Request) {
 
     let fuente = "meta_business";
     let chatwootConvId: string | number | null = null;
+    let targetClienteId = clienteId || null;
+
     if (conversacionId) {
       const { data: convData, error: conversationError } = await supabase
         .from("conversaciones")
-        .select("fuente, chatwoot_conversation_id")
+        .select("cliente_id, fuente, chatwoot_conversation_id")
         .eq("id", conversacionId)
         .single();
 
@@ -63,6 +66,48 @@ export async function POST(req: Request) {
       }
       fuente = convData?.fuente || "meta_business";
       chatwootConvId = convData?.chatwoot_conversation_id || null;
+      if (!targetClienteId && convData?.cliente_id) {
+        targetClienteId = convData.cliente_id;
+      }
+    }
+
+    // Determinar la cuenta encargada según la etapa del cliente o el parámetro recibido
+    let cuentaDestino: "meta_business" | "evolution" = "meta_business";
+    if (cuentaResponsable === "evolution" || cuentaResponsable === "personal") {
+      cuentaDestino = "evolution";
+    } else if (cuentaResponsable === "meta_business" || cuentaResponsable === "templo" || cuentaResponsable === "api") {
+      cuentaDestino = "meta_business";
+    } else if (targetClienteId) {
+      // Consultar etapa del cliente y su cuenta_responsable configurada
+      try {
+        const { data: cliData } = await supabase
+          .from("clientes")
+          .select("estado")
+          .eq("id", targetClienteId)
+          .single();
+
+        if (cliData?.estado) {
+          const { data: etapaData } = await supabase
+            .from("pipeline_etapas")
+            .select("cuenta_responsable")
+            .eq("clave", cliData.estado)
+            .maybeSingle();
+
+          if (etapaData?.cuenta_responsable === "evolution") {
+            cuentaDestino = "evolution";
+          } else if (etapaData?.cuenta_responsable === "meta_business") {
+            cuentaDestino = "meta_business";
+          } else {
+            // Etapas iniciales (nuevo_lead, en_consulta) van a meta_business; avanzadas a evolution
+            cuentaDestino = ["nuevo_lead", "en_consulta"].includes(cliData.estado) ? "meta_business" : "evolution";
+          }
+        }
+      } catch (e) {
+        console.warn("No se pudo consultar cuenta de la etapa, usando fuente original:", e);
+        cuentaDestino = fuente === "evolution" ? "evolution" : "meta_business";
+      }
+    } else {
+      cuentaDestino = fuente === "evolution" ? "evolution" : "meta_business";
     }
 
     let tipoGuardado = isAudio ? "audio" : "texto";
@@ -72,9 +117,39 @@ export async function POST(req: Request) {
     let envioAudioVia: "meta_direct" | "chatwoot" | "evolution" | null = null;
     let evolutionIsPtt = false;
 
-    if (fuente === "meta_business" && chatwootConvId) {
+    if (cuentaDestino === "meta_business") {
       if (!chatwootToken) {
-        return NextResponse.json({ error: "Falta CHATWOOT_API_TOKEN para enviar por WhatsApp Business." }, { status: 500 });
+        return NextResponse.json({ error: "Falta CHATWOOT_API_TOKEN para enviar por WhatsApp API." }, { status: 500 });
+      }
+
+      // Si la conversación unificada no tenía chatwoot_conversation_id, buscarlo o crearlo en Chatwoot
+      if (!chatwootConvId) {
+        if (targetClienteId) {
+          const { data: altConv } = await supabase
+            .from("conversaciones")
+            .select("chatwoot_conversation_id")
+            .eq("cliente_id", targetClienteId)
+            .not("chatwoot_conversation_id", "is", null)
+            .limit(1)
+            .maybeSingle();
+          if (altConv?.chatwoot_conversation_id) {
+            chatwootConvId = altConv.chatwoot_conversation_id;
+          }
+        }
+
+        if (!chatwootConvId) {
+          chatwootConvId = await buscarOCrearConversacionChatwoot(cleanNumber, 5);
+          if (chatwootConvId && conversacionId) {
+            await supabase
+              .from("conversaciones")
+              .update({ chatwoot_conversation_id: String(chatwootConvId) })
+              .eq("id", conversacionId);
+          }
+        }
+      }
+
+      if (!chatwootConvId) {
+        return NextResponse.json({ error: "No se pudo vincular la conversación en WhatsApp API (Chatwoot)." }, { status: 502 });
       }
 
       const endpoint = `${chatwootUrl}/api/v1/accounts/1/conversations/${chatwootConvId}/messages`;
@@ -114,8 +189,6 @@ export async function POST(req: Request) {
           if (direct.ok) {
             envioAudioVia = "meta_direct";
           } else {
-            // No es fatal: reintentamos por el camino del adjunto de Chatwoot,
-            // que en versiones >= 4.15.0 también manda notas de voz nativas.
             const reason = (direct as { reason?: string }).reason || "sin detalle";
             console.error("[send-message] Envío directo a Meta falló, se reintenta por Chatwoot:", reason);
           }
@@ -127,7 +200,6 @@ export async function POST(req: Request) {
           form.set("message_type", "outgoing");
           form.set("private", "false");
 
-          // WhatsApp Business Cloud API requires is_voice_message = true and audio/ogg; codecs=opus
           if (isAudio) {
             form.set("is_voice_message", "true");
           }
@@ -152,10 +224,11 @@ export async function POST(req: Request) {
       if (response && !response.ok) {
         const detail = (await response.text()).slice(0, 500);
         console.error("Chatwoot rejected outgoing message:", response.status, detail);
-        return NextResponse.json({ error: `WhatsApp Business no aceptó el ${isAudio ? "audio" : "mensaje"} (${response.status}). ${detail}` }, { status: 502 });
+        return NextResponse.json({ error: `WhatsApp API no aceptó el ${isAudio ? "audio" : "mensaje"} (${response.status}). ${detail}` }, { status: 502 });
       }
       if (!envioAudioVia && isAudio && pureBase64) envioAudioVia = "chatwoot";
     } else {
+      // Envío por WhatsApp Personal (Evolution API)
       if (!evoKey) {
         return NextResponse.json({ error: "Falta EVOLUTION_API_KEY para enviar por WhatsApp Personal." }, { status: 500 });
       }
@@ -260,12 +333,24 @@ export async function POST(req: Request) {
       }).eq("id", conversacionId);
     }
 
+    // Al responder, si el cliente estaba en seguimiento, queda marcado como revisado hoy
+    if (targetClienteId) {
+      try {
+        await supabase
+          .from("clientes")
+          .update({ seguimiento_revisado_en: new Date().toISOString() })
+          .eq("id", targetClienteId);
+      } catch (e) {
+        console.warn("No se pudo actualizar seguimiento_revisado_en:", e);
+      }
+    }
+
     // `voiceNote` = sabemos con certeza que salió como nota de voz nativa
     // (envío directo a Meta o PTT de Evolution). Con el fallback de Chatwoot no
     // podemos saberlo: depende de la versión instalada (>= 4.15.0).
     const voiceNote = envioAudioVia === "meta_direct" || (envioAudioVia === "evolution" && evolutionIsPtt);
 
-    return NextResponse.json({ success: true, voiceNote, via: envioAudioVia });
+    return NextResponse.json({ success: true, voiceNote, via: envioAudioVia, cuenta: cuentaDestino });
   } catch (error: any) {
     console.error("Error en send-message:", error);
     return NextResponse.json({ error: error.message || "No se pudo enviar el mensaje." }, { status: 500 });

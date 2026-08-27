@@ -47,7 +47,7 @@ const ANDROID_CHANNELS = [
   {
     id: NOTIFICATION_CHANNELS.FOLLOW_UPS,
     name: "Seguimientos de clientes",
-    description: "Aviso diario para revisar los clientes en la etapa En seguimiento.",
+    description: "Aviso diario a las 8:00 AM para revisar los clientes con En seguimiento activado.",
     importance: 4 as const,
     visibility: 0 as const,
     vibration: true,
@@ -250,9 +250,9 @@ export async function scheduleFollowUpReminders(clientesEnSeguimiento: any[]) {
       notifications: [
         {
           id: FOLLOW_UP_NOTIFICATION_ID,
-          title: "📌 Seguimientos pendientes",
-          body: "Revisa los clientes que están en la etapa En seguimiento.",
-          summaryText: `${cantidad} cliente(s) en seguimiento al programar el aviso`,
+          title: "📌 Seguimientos pendientes (8:00 AM)",
+          body: "Revisa los clientes con seguimiento diario activado para hoy.",
+          summaryText: `${cantidad} cliente(s) en seguimiento`,
           smallIcon: "ic_stat_templo",
           channelId: NOTIFICATION_CHANNELS.FOLLOW_UPS,
           group: NOTIFICATION_CHANNELS.FOLLOW_UPS,
@@ -260,7 +260,7 @@ export async function scheduleFollowUpReminders(clientesEnSeguimiento: any[]) {
           // Un aviso diario no necesita abrir la pantalla de alarmas exactas.
           isExactNotification: false,
           schedule: {
-            on: { hour: 9, minute: 0 },
+            on: { hour: 8, minute: 0 },
             repeats: true,
             allowWhileIdle: true,
           },

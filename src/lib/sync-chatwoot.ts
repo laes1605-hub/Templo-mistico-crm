@@ -268,6 +268,7 @@ async function upsertCliente(
     telefono_display: telefonoDisplay,
     nombre: nombre || "Cliente WhatsApp",
     foto_url: fotoUrl,
+    estado: "nuevo_lead",
     ...(attrs.tipo_trabajo ? { tipo_trabajo: attrs.tipo_trabajo } : {}),
     ...(attrs.nombre_otra_persona ? { nombre_otra_persona: attrs.nombre_otra_persona } : {}),
     ...(attrs.foto_otra_persona || attrs.foto_otra_persona_url
@@ -324,7 +325,17 @@ async function upsertConversacion(
   ultimoMensajeEn: string,
   res: ResultadoSync
 ): Promise<ConvExistente | null> {
-  const existente = await buscarConversacion(convCw.id);
+  let existente = await buscarConversacion(convCw.id);
+  // Si no se encuentra por chatwoot_conversation_id, buscar si el cliente ya tiene una conversación existente en el CRM
+  if (!existente && clienteId) {
+    const porCli = await sbFetch(
+      `/conversaciones?cliente_id=eq.${encodeURIComponent(clienteId)}&select=id,ultimo_mensaje_en,no_leidos,ultimo_leido_en&order=ultimo_mensaje_en.desc&limit=1`
+    );
+    if (porCli.ok && Array.isArray(porCli.json) && porCli.json.length > 0) {
+      existente = porCli.json[0];
+    }
+  }
+
   const datos = await depurar("conversaciones", {
     cliente_id: clienteId,
     chatwoot_conversation_id: String(convCw.id),

@@ -113,6 +113,11 @@ y la publicación realtime de `mensajes`/`conversaciones`/`clientes`.
    `message_updated` y `conversation_created`; este endpoint los procesa de
    forma segura e idempotente). Con esto los mensajes aparecen en el dashboard
    al instante. Puede convivir con el webhook de n8n: no se duplican.
+   🔐 *Recomendado:* define en Vercel la variable `CHATWOOT_WEBHOOK_SECRET`
+   con un valor aleatorio y añade `?key=ESE_VALOR` a la URL del webhook; así
+   sólo Chatwoot puede escribir en el CRM (cualquier intento sin la llave
+   recibe 401). Si no defines la variable, el endpoint sigue abierto como
+   antes.
 2. **Aplicar la migración** `20260906_sincronizacion_directa_chatwoot.sql` en
    Supabase → SQL Editor (más las pendientes anteriores si aún no están).
 3. **(Opcional) Importar el workflow blindado de n8n**: pasos en el punto

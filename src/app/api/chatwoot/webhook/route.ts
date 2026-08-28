@@ -15,6 +15,19 @@ export const dynamic = "force-dynamic";
  * con n8n: la sincronización deduplica por ID de mensaje de Chatwoot.
  */
 export async function POST(req: Request) {
+  // Protección opcional: si defines CHATWOOT_WEBHOOK_SECRET en Vercel, la URL
+  // del webhook de Chatwoot debe llevarla como ?key=... (o header
+  // x-webhook-key). Sin la variable de entorno, el endpoint se comporta como
+  // antes (abierto).
+  const esperado = (process.env.CHATWOOT_WEBHOOK_SECRET || "").trim();
+  if (esperado) {
+    const url = new URL(req.url);
+    const clave = url.searchParams.get("key") || req.headers.get("x-webhook-key") || "";
+    if (clave !== esperado) {
+      return NextResponse.json({ ok: false, error: "no autorizado" }, { status: 401 });
+    }
+  }
+
   let body: any = null;
   try {
     body = await req.json();

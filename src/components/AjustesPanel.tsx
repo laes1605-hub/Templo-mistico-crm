@@ -1,7 +1,8 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { X, Moon, Sun, MonitorSmartphone, Bell, BellOff, Check, Palette } from "lucide-react";
+import { X, Moon, Sun, MonitorSmartphone, Bell, BellOff, Check, Palette, Mic, Save } from "lucide-react";
+import { supabase } from "../lib/supabase";
 import {
   ACCENTS, ThemeAccent, ThemeMode,
   getSavedAccent, getSavedMode, saveTheme,
@@ -21,6 +22,12 @@ export default function AjustesPanel({ onClose }: { onClose: () => void }) {
   const [accent, setAccent] = useState<ThemeAccent>("purple");
   const [notifs, setNotifs] = useState(false);
   const [notifError, setNotifError] = useState("");
+  // Notas de voz nativas por WhatsApp API: credenciales del canal WhatsApp Cloud.
+  const [metaToken, setMetaToken] = useState("");
+  const [metaPhoneId, setMetaPhoneId] = useState("");
+  const [metaGuardando, setMetaGuardando] = useState(false);
+  const [metaMsg, setMetaMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [metaVerToken, setMetaVerToken] = useState(false);
 
   useEffect(() => {
     setMode(getSavedMode());
@@ -28,7 +35,57 @@ export default function AjustesPanel({ onClose }: { onClose: () => void }) {
     setNotifs(getNotifPref());
     // En Android registra las categorías aunque aún no se hayan activado los avisos.
     void initializeNotificationChannels();
+    (async () => {
+      try {
+        const { data } = await supabase
+          .from("config_general")
+          .select("clave, valor")
+          .in("clave", ["meta_voice_token", "meta_voice_phone_number_id"]);
+        (data || []).forEach((row: any) => {
+          if (row.clave === "meta_voice_token") setMetaToken(String(row.valor || ""));
+          if (row.clave === "meta_voice_phone_number_id") setMetaPhoneId(String(row.valor || ""));
+        });
+      } catch {
+        /* config_general no disponible: se puede escribir igual al guardar */
+      }
+    })();
   }, []);
+
+  async function guardarCredencialesMeta() {
+    setMetaMsg(null);
+    setMetaGuardando(true);
+    try {
+      const token = metaToken.trim();
+      const phoneId = metaPhoneId.trim();
+      const filas: { clave: string; valor: string }[] = [];
+      if (token || phoneId) {
+        const { data } = await supabase
+          .from("config_general")
+          .select("clave")
+          .in("clave", ["meta_voice_token", "meta_voice_phone_number_id"]);
+        const existentes = new Set((data || []).map((r: any) => r.clave));
+        for (const [clave, valor] of [
+          ["meta_voice_token", token],
+          ["meta_voice_phone_number_id", phoneId],
+        ] as const) {
+          if (valor) filas.push({ clave, valor });
+          else if (existentes.has(clave)) {
+            // valor vacío = borrar la credencial guardada
+            filas.push({ clave, valor: "" });
+          }
+        }
+      }
+      if (filas.length) {
+        const { error } = await supabase.from("config_general").upsert(filas);
+        if (error) throw new Error(error.message);
+      }
+      setMetaMsg({ ok: true, text: "Guardado. La próxima nota de voz se intentará enviar como nativa." });
+    } catch (e: any) {
+      setMetaMsg({ ok: false, text: "No se pudo guardar: " + (e?.message || "error desconocido") });
+    } finally {
+      setMetaGuardando(false);
+    }
+  }
 
   function cambiarModo(m: ThemeMode) {
     setMode(m);
@@ -154,6 +211,68 @@ export default function AjustesPanel({ onClose }: { onClose: () => void }) {
           {isNative() ? " Funciona con la app abierta o en segundo plano. En Ajustes del teléfono podrás administrar por separado Mensajes de clientes, Recordatorios de tareas, Seguimientos de clientes y Avisos del CRM." : ""}
         </p>
         {notifError && <p className="text-[11px] text-red-400 mt-2">{notifError}</p>}
+
+        {/* NOTAS DE VOZ NATIVAS (WhatsApp API) */}
+        <p className="text-[11px] uppercase tracking-wider text-gray-500 font-bold mb-2 mt-5">
+          Notas de voz · WhatsApp API
+        </p>
+        <div className="space-y-2">
+          <div>
+            <label className="block text-[10px] text-gray-500 mb-1">Access Token del canal WhatsApp Cloud</label>
+            <div className="relative">
+              <input
+                type={metaVerToken ? "text" : "password"}
+                value={metaToken}
+                onChange={(e) => setMetaToken(e.target.value)}
+                placeholder="EAAG… (token de la cuenta WhatsApp Business)"
+                autoComplete="off"
+                className="w-full bg-background border border-border rounded-lg px-3 py-2 pr-16 text-xs text-gray-200 placeholder-gray-600 focus:outline-none focus:border-purple-500"
+              />
+              <button
+                type="button"
+                onClick={() => setMetaVerToken((v) => !v)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-semibold text-gray-500 hover:text-gray-200"
+              >
+                {metaVerToken ? "Ocultar" : "Ver"}
+              </button>
+            </div>
+          </div>
+          <div>
+            <label className="block text-[10px] text-gray-500 mb-1">Phone Number ID</label>
+            <input
+              type="text"
+              value={metaPhoneId}
+              onChange={(e) => setMetaPhoneId(e.target.value)}
+              placeholder="1234567890 (ID del número de teléfono)"
+              autoComplete="off"
+              inputMode="numeric"
+              className="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs text-gray-200 placeholder-gray-600 focus:outline-none focus:border-purple-500"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={guardarCredencialesMeta}
+            disabled={metaGuardando}
+            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white text-xs font-bold transition-colors"
+          >
+            <Save className="w-4 h-4" />
+            {metaGuardando ? "Guardando..." : "Guardar credenciales"}
+          </button>
+          <p className="text-[10px] text-gray-500 leading-relaxed">
+            Con estas credenciales la app envía las notas de voz <strong>directo a Meta</strong>{" "}
+            (<code className="text-gray-400">voice: true</code>) y llegan como burbuja de nota de voz
+            nativa, sin depender del rol del token de Chatwoot. Se consiguen en{" "}
+            <strong>Chatwoot → Inboxes → WhatsApp Cloud</strong> (el campo "API Key" es el token) y el{" "}
+            Phone Number ID en <strong>Meta Business Manager → API Setup → WhatsApp</strong>.
+            Si el token de Chatwoot es administrador, esta sección puede quedarse vacía.
+          </p>
+          {metaMsg && (
+            <p className={`text-[11px] mt-1 ${metaMsg.ok ? "text-emerald-400" : "text-red-400"}`}>
+              <Mic className="w-3 h-3 inline mr-1" />
+              {metaMsg.text}
+            </p>
+          )}
+        </div>
       </div>
     </div>
   );

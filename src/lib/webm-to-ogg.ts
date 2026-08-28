@@ -262,6 +262,15 @@ function oggCrc32(u8: Uint8Array): number {
   return crc;
 }
 
+/**
+ * Lacing values OGG (RFC 3533, sección 5) para un payload de `length` bytes:
+ * el valor de lacing es la longitud CRUDA de la porción de segmento: 255
+ * significa "sigue en el siguiente lacing" (aporta 255 bytes) y un valor
+ * L < 255 cierra el paquete "after that many additional bytes". Un paquete
+ * de exactamente 255 bytes (o múltiplo) termina con lacing 0. Verificado
+ * contra libogg y decodificadores reales (codec-parser): NO lleva el +1 que
+ * tiene el Xiph lacing de WebM (no confundir).
+ */
 const lacingValues = (length: number): number[] => {
   const values: number[] = [];
   let remaining = length;

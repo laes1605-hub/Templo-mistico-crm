@@ -41,25 +41,29 @@ import {
 // Normaliza estados antiguos o con sufijo _templo al pipeline unificado
 function normalizarEstado(estado: string | null | undefined): string {
   if (!estado) return "nuevo_lead";
-  const s = String(estado).trim();
-  if (s.endsWith("_templo")) {
-    return s.replace(/_templo$/, "");
-  }
-  if (s === "en_seguimiento") return "en_consulta";
+  let s = String(estado).trim();
   if (s === "spam_personal" || s === "spam_templo") return "spam";
   if (s === "archivado_personal" || s === "archivado_templo") return "__archivados__";
+  if (s.endsWith("_templo")) {
+    s = s.replace(/_templo$/, "");
+  }
+  if (s === "en_seguimiento") return "en_consulta";
+  // Etapas eliminadas del pipeline: se remapean a etapas vigentes
+  if (s === "pago_recibido") return "trabajo_proceso";
+  if (s === "perdido") return "nuevo_lead";
   return s;
 }
+
+// Etapas retiradas del pipeline (se remapean a etapas vigentes)
+const ETAPAS_ELIMINADAS = ["pago_recibido", "perdido"];
 
 // Etapas base del pipeline unificado con su cuenta encargada por defecto
 const ETAPAS_DEFAULT = [
   { clave: "nuevo_lead", nombre: "Nuevo Lead", orden: 1, color: "border-blue-500", bg_color: "bg-blue-500/10", text_color: "text-blue-300", cuenta_responsable: "meta_business" },
   { clave: "en_consulta", nombre: "En Consulta", orden: 2, color: "border-yellow-500", bg_color: "bg-yellow-500/10", text_color: "text-yellow-300", cuenta_responsable: "meta_business" },
   { clave: "consulta_hecha", nombre: "Consulta Hecha", orden: 3, color: "border-orange-500", bg_color: "bg-orange-500/10", text_color: "text-orange-300", cuenta_responsable: "evolution" },
-  { clave: "pago_recibido", nombre: "Pago Recibido", orden: 4, color: "border-emerald-500", bg_color: "bg-emerald-500/10", text_color: "text-emerald-300", cuenta_responsable: "evolution" },
-  { clave: "trabajo_proceso", nombre: "Trabajo en Proceso", orden: 5, color: "border-purple-500", bg_color: "bg-purple-500/10", text_color: "text-purple-300", cuenta_responsable: "evolution" },
-  { clave: "trabajo_completado", nombre: "Trabajo Completado", orden: 6, color: "border-green-500", bg_color: "bg-green-500/10", text_color: "text-green-300", cuenta_responsable: "evolution" },
-  { clave: "perdido", nombre: "Perdido", orden: 7, color: "border-red-500", bg_color: "bg-red-500/10", text_color: "text-red-300", cuenta_responsable: "evolution" },
+  { clave: "trabajo_proceso", nombre: "Trabajo en Proceso", orden: 4, color: "border-purple-500", bg_color: "bg-purple-500/10", text_color: "text-purple-300", cuenta_responsable: "evolution" },
+  { clave: "trabajo_completado", nombre: "Trabajo Completado", orden: 5, color: "border-green-500", bg_color: "bg-green-500/10", text_color: "text-green-300", cuenta_responsable: "evolution" },
 ];
 
 // Cuotas: límite y fechas por defecto (una cuota por mes desde la primera).
@@ -997,10 +1001,10 @@ export default function CRMApp() {
     fetchTodosPagos();
   }
 
-  // Eliminar de la cartera por abandono: cancela/borra los pendientes y marca perdido
+  // Eliminar de la cartera por abandono: cancela/borra los pendientes y archiva al cliente
   async function abandonarCartera(cliente: any) {
     const nombre = getDisplayName(cliente);
-    if (!confirm(`¿Eliminar a "${nombre}" de la cartera por abandono?\n\nSe eliminarán sus pagos pendientes y el cliente pasará a estado "Perdido".`)) return;
+    if (!confirm(`¿Eliminar a "${nombre}" de la cartera por abandono?\n\nSe eliminarán sus pagos pendientes y el cliente quedará archivado.`)) return;
     const pendientes = todosPagos.filter((p) => p.cliente_id === cliente.id && p.estado === "pendiente");
     let fallbackDelete = false;
     for (const p of pendientes) {
@@ -1011,10 +1015,15 @@ export default function CRMApp() {
       await supabase.from("pagos").delete().eq("cliente_id", cliente.id).eq("estado", "pendiente");
     }
     await supabase.from("clientes").update({
-      estado: "perdido",
-      notas_personales: `${cliente.notas_personales ? cliente.notas_personales + "\n" : ""}[${new Date().toLocaleDateString("es-CO")}] ⚠️ Abandonó cartera (pagos pendientes eliminados)`,
+      notas_personales: `${cliente.notas_personales ? cliente.notas_personales + "\n" : ""}[${new Date().toLocaleDateString("es-CO")}] ⚠️ Abandonó cartera (pagos pendientes eliminados, cliente archivado)`,
       actualizado_en: new Date().toISOString(),
     }).eq("id", cliente.id);
+    // Archivar sus conversaciones para sacarlo de la vista activa
+    await supabase.from("conversaciones").update({
+      archivada: true,
+      fecha_archivado: new Date().toISOString(),
+      motivo_archivado: "abandono_cartera",
+    }).eq("cliente_id", cliente.id);
     fetchTodosPagos();
     fetchTodosClientes();
     fetchConversaciones();
@@ -1139,6 +1148,8 @@ export default function CRMApp() {
 
     data.forEach((e: any) => {
       if (e.es_spam || e.es_archivado || e.clave === "en_seguimiento") return;
+      // Etapas retiradas del pipeline (por si quedaron filas viejas en la BD)
+      if (ETAPAS_ELIMINADAS.includes(String(e.clave).replace(/_templo$/, ""))) return;
       const claveNorm = normalizarEstado(e.clave);
       if (clavesVistas.has(claveNorm)) return;
       clavesVistas.add(claveNorm);
@@ -2597,7 +2608,7 @@ export default function CRMApp() {
   // "Convertidos" = de esos atendidos, cuántos pasaron a pago (estado de pago o con pago cobrado)
   const clienteIdsPagados = new Set(todosPagos.filter((p) => p.estado === "pagado").map((p) => p.cliente_id));
   const totalConvertidos = clientesNoSpam.filter((c) => c.atendido && (
-    ["pago_recibido", "trabajo_proceso", "trabajo_completado"].includes(normalizarEstado(c.estado)) ||
+    ["trabajo_proceso", "trabajo_completado"].includes(normalizarEstado(c.estado)) ||
     clienteIdsPagados.has(c.id)
   )).length;
   const efectividad = totalAtendidos > 0 ? ((totalConvertidos / totalAtendidos) * 100).toFixed(1) : "0";
@@ -2617,7 +2628,6 @@ export default function CRMApp() {
   const totalVencido = totalVencidoCOP;
 
   const leadsEnConsulta = clientesNoSpam.filter((c) => ["en_consulta", "consulta_hecha"].includes(normalizarEstado(c.estado))).length;
-  const leadsPerdidos = clientesNoSpam.filter((c) => normalizarEstado(c.estado) === "perdido").length;
   const leadsNuevos = clientesNoSpam.filter((c) => normalizarEstado(c.estado) === "nuevo_lead" || !c.estado).length;
 
   const adsSpend = campanas.reduce((sum, c) => sum + Number(c.spend || 0), 0);
@@ -4110,7 +4120,7 @@ export default function CRMApp() {
                 <div className="p-4 md:p-5 bg-surface border border-border rounded-2xl"><p className="text-2xl md:text-3xl font-extrabold text-gray-100">{totalAtendidos}</p><p className="text-[11px] text-gray-400 mt-1">Clientes atendidos</p></div>
                 <div className="p-4 md:p-5 bg-surface border border-border rounded-2xl"><p className="text-2xl md:text-3xl font-extrabold text-emerald-400">{totalConvertidos}</p><p className="text-[11px] text-gray-400 mt-1">Convertidos</p></div>
                 <div className="p-4 md:p-5 bg-surface border border-border rounded-2xl"><p className="text-2xl md:text-3xl font-extrabold text-purple-400">{efectividad}%</p><p className="text-[11px] text-gray-400 mt-1">Efectividad</p></div>
-                <div className="p-4 md:p-5 bg-surface border border-border rounded-2xl"><p className="text-2xl md:text-3xl font-extrabold text-red-400">{leadsPerdidos}</p><p className="text-[11px] text-gray-400 mt-1">Perdidos</p></div>
+                <div className="p-4 md:p-5 bg-surface border border-border rounded-2xl"><p className="text-2xl md:text-3xl font-extrabold text-blue-400">{leadsNuevos}</p><p className="text-[11px] text-gray-400 mt-1">Leads nuevos</p></div>
               </div>
             </div>
 

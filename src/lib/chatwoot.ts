@@ -96,6 +96,8 @@ const CLAVES_TEXTO = [
   "luna_etapa_crm_sync",
   "tiempo_consulta_lista",
   "fotos_pendientes",
+  "luna_pausa_motivo",
+  "luna_pausada_en",
 ];
 const CLAVES_BOOLEANAS = [
   "motivo_conocido",
@@ -103,6 +105,8 @@ const CLAVES_BOOLEANAS = [
   "foto_otra_persona",
   "foto_mano",
   "consulta_lista_enviada",
+  "lista_requisitos_enviada",
+  "luna_pausada",
 ];
 
 /** Valor "vacío" según el tipo, para que Luna lo lea como "no lo sé todavía". */

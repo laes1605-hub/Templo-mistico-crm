@@ -1704,7 +1704,10 @@ export default function CRMApp() {
       if (!response.ok || !result.success) throw new Error(result.error || "No se pudo enviar el mensaje.");
       const esNotaDeVoz = Boolean(fileBase64 && ((fileMime || "").startsWith("audio/") || String(fileName || "").toLowerCase().includes("nota_de_voz")));
       if (esNotaDeVoz && result.voiceNote === false) {
-        setSendNotice("La nota se envió, pero llegó como audio simple en vez de nota de voz nativa.");
+        const motivo = typeof result.audioReason === "string" && result.audioReason.trim()
+          ? ` Motivo: ${result.audioReason.trim()}`
+          : " Revisa la credencial del canal WhatsApp en Ajustes → Notas de voz, o la versión de Chatwoot (>= 4.15.0).";
+        setSendNotice(`La nota se envió, pero llegó como audio simple en vez de nota de voz nativa.${motivo}`);
       }
       if ((selectedConv as any).archivada) {
         archivarConversacion(selectedConv.id, false);
@@ -2759,73 +2762,98 @@ export default function CRMApp() {
                       className="flex-1 flex gap-1.5 overflow-x-auto scroll-smooth py-1 px-0.5 no-scrollbar select-none"
                       style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
                     >
-                      {/* 1. Por leer */}
-                      <button
-                        data-cat={CATEGORIA_POR_LEER}
-                        onClick={() => selectSubcat(CATEGORIA_POR_LEER)}
-                        className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all ${
-                          chatCategoria === CATEGORIA_POR_LEER
-                            ? "bg-red-600 text-white border-red-500 shadow-md shadow-red-900/30 ring-2 ring-red-500/30"
-                            : "bg-red-950/20 border-red-900/40 text-red-300 hover:text-red-200 hover:border-red-600/50 hover:bg-red-950/40"
-                        }`}
-                        title={`Chats con mensajes pendientes por leer (${conversacionesPorLeer.length})`}
-                      >
-                        <MailOpen className="w-3.5 h-3.5" />
-                        <span>Por leer</span>
-                        <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
-                          chatCategoria === CATEGORIA_POR_LEER ? "bg-white/20 text-white" : "bg-red-900/50 text-red-200"
-                        }`}>
-                          {conversacionesPorLeer.length}
-                        </span>
-                      </button>
+                      {/* Subcategorías en el MISMO ORDEN del pipeline, con las pestañas
+                          "Por leer" y "En seguimiento" fijas en la posición 2 y 3. */}
+                      {(() => {
+                        const etapasOrdenadas = pipelineEtapas
+                          .filter((e: any) => !e.es_spam && !e.es_archivado)
+                          .sort((a: any, b: any) => (Number(a.orden) || 0) - (Number(b.orden) || 0));
 
-                      {/* 2. En seguimiento diario (corte 8:00 AM) */}
-                      <button
-                        data-cat={CATEGORIA_EN_SEGUIMIENTO}
-                        onClick={() => selectSubcat(CATEGORIA_EN_SEGUIMIENTO)}
-                        className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all ${
-                          chatCategoria === CATEGORIA_EN_SEGUIMIENTO
-                            ? "bg-cyan-600 text-white border-cyan-500 shadow-md shadow-cyan-900/30 ring-2 ring-cyan-500/30"
-                            : "bg-cyan-950/20 border-cyan-900/40 text-cyan-300 hover:text-cyan-200 hover:border-cyan-600/50 hover:bg-cyan-950/40"
-                        }`}
-                        title={`Clientes en seguimiento diario pendientes para hoy (${conversacionesEnSeguimiento.length}). Se renueva cada día a las 8:00 AM.`}
-                      >
-                        <BellRing className="w-3.5 h-3.5" />
-                        <span>En seguimiento</span>
-                        <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
-                          chatCategoria === CATEGORIA_EN_SEGUIMIENTO ? "bg-white/20 text-white" : "bg-cyan-900/50 text-cyan-200"
-                        }`}>
-                          {conversacionesEnSeguimiento.length}
-                        </span>
-                      </button>
-
-                      {/* 3. Etapas del pipeline unificado */}
-                      {pipelineEtapas.filter(e => !e.es_spam && !e.es_archivado).sort((a, b) => (Number(a.orden) || 0) - (Number(b.orden) || 0)).map((etapa) => {
-                        const activa = chatCategoria === etapa.clave;
-                        const conteo = conteosPorEtapa[etapa.clave] || 0;
-                        const esApi = etapa.cuenta_responsable === "meta_business";
-                        return (
+                        const btnPorLeer = (
                           <button
-                            key={etapa.id || etapa.clave}
-                            data-cat={etapa.clave}
-                            onClick={() => selectSubcat(etapa.clave)}
+                            key="subcat-por-leer"
+                            data-cat={CATEGORIA_POR_LEER}
+                            onClick={() => selectSubcat(CATEGORIA_POR_LEER)}
                             className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all ${
-                              activa
-                                ? "bg-purple-600 text-white border-purple-500 shadow-md shadow-purple-900/30 ring-2 ring-purple-500/30"
-                                : "bg-surface border-border text-gray-400 hover:text-gray-200 hover:border-purple-500/40 hover:bg-surfaceHover"
+                              chatCategoria === CATEGORIA_POR_LEER
+                                ? "bg-red-600 text-white border-red-500 shadow-md shadow-red-900/30 ring-2 ring-red-500/30"
+                                : "bg-red-950/20 border-red-900/40 text-red-300 hover:text-red-200 hover:border-red-600/50 hover:bg-red-950/40"
                             }`}
-                            title={`Etapa "${etapa.nombre}" • Cuenta: ${esApi ? "WhatsApp API" : "WhatsApp Personal"}`}
+                            title={`Chats con mensajes pendientes por leer (${conversacionesPorLeer.length})`}
                           >
-                            <span className="text-[10px]">{esApi ? "🌐" : "👤"}</span>
-                            <span>{etapa.nombre}</span>
+                            <MailOpen className="w-3.5 h-3.5" />
+                            <span>Por leer</span>
                             <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
-                              activa ? "bg-white/20 text-white" : "bg-background text-gray-400"
+                              chatCategoria === CATEGORIA_POR_LEER ? "bg-white/20 text-white" : "bg-red-900/50 text-red-200"
                             }`}>
-                              {conteo}
+                              {conversacionesPorLeer.length}
                             </span>
                           </button>
                         );
-                      })}
+
+                        const btnSeguimiento = (
+                          <button
+                            key="subcat-en-seguimiento"
+                            data-cat={CATEGORIA_EN_SEGUIMIENTO}
+                            onClick={() => selectSubcat(CATEGORIA_EN_SEGUIMIENTO)}
+                            className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all ${
+                              chatCategoria === CATEGORIA_EN_SEGUIMIENTO
+                                ? "bg-cyan-600 text-white border-cyan-500 shadow-md shadow-cyan-900/30 ring-2 ring-cyan-500/30"
+                                : "bg-cyan-950/20 border-cyan-900/40 text-cyan-300 hover:text-cyan-200 hover:border-cyan-600/50 hover:bg-cyan-950/40"
+                            }`}
+                            title={`Clientes en seguimiento diario pendientes para hoy (${conversacionesEnSeguimiento.length}). Se renueva cada día a las 8:00 AM.`}
+                          >
+                            <BellRing className="w-3.5 h-3.5" />
+                            <span>En seguimiento</span>
+                            <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+                              chatCategoria === CATEGORIA_EN_SEGUIMIENTO ? "bg-white/20 text-white" : "bg-cyan-900/50 text-cyan-200"
+                            }`}>
+                              {conversacionesEnSeguimiento.length}
+                            </span>
+                          </button>
+                        );
+
+                        const btnEtapa = (etapa: any) => {
+                          const activa = chatCategoria === etapa.clave;
+                          const conteo = conteosPorEtapa[etapa.clave] || 0;
+                          const esApi = etapa.cuenta_responsable === "meta_business";
+                          return (
+                            <button
+                              key={etapa.id || etapa.clave}
+                              data-cat={etapa.clave}
+                              onClick={() => selectSubcat(etapa.clave)}
+                              className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all ${
+                                activa
+                                  ? "bg-purple-600 text-white border-purple-500 shadow-md shadow-purple-900/30 ring-2 ring-purple-500/30"
+                                  : "bg-surface border-border text-gray-400 hover:text-gray-200 hover:border-purple-500/40 hover:bg-surfaceHover"
+                              }`}
+                              title={`Etapa "${etapa.nombre}" • Cuenta: ${esApi ? "WhatsApp API" : "WhatsApp Personal"}`}
+                            >
+                              <span className="text-[10px]">{esApi ? "🌐" : "👤"}</span>
+                              <span>{etapa.nombre}</span>
+                              <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+                                activa ? "bg-white/20 text-white" : "bg-background text-gray-400"
+                              }`}>
+                                {conteo}
+                              </span>
+                            </button>
+                          );
+                        };
+
+                        // Orden: etapa 1, Por leer, En seguimiento, etapa 2, etapa 3, ...
+                        const items: React.ReactNode[] = [];
+                        etapasOrdenadas.forEach((etapa: any, idx: number) => {
+                          items.push(btnEtapa(etapa));
+                          if (idx === 0) {
+                            items.push(btnPorLeer);
+                            items.push(btnSeguimiento);
+                          }
+                        });
+                        if (etapasOrdenadas.length === 0) {
+                          items.push(btnPorLeer, btnSeguimiento);
+                        }
+                        return items;
+                      })()}
 
                       {/* 4. Spam */}
                       <button

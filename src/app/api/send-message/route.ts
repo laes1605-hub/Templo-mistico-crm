@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { supabase } from "../../../lib/supabase";
 import { remuxWebmToOgg } from "../../../lib/webm-to-ogg";
-import { sendVoiceNoteViaMeta } from "../../../lib/meta-voice-note";
+import { sendVoiceNoteViaMeta, obtenerCredencialesMeta } from "../../../lib/meta-voice-note";
 import { sendEvolutionVoiceNote } from "../../../lib/evolution-audio";
 import { buscarOCrearConversacionChatwoot } from "../../../lib/chatwoot";
 
@@ -116,6 +116,8 @@ export async function POST(req: Request) {
     // "evolution" = sendWhatsAppAudio (PTT nativo de Baileys).
     let envioAudioVia: "meta_direct" | "chatwoot" | "evolution" | null = null;
     let evolutionIsPtt = false;
+    // Motivo legible de por qué la nota NO salió nativa (se muestra en la app).
+    let audioReason: string | null = null;
 
     if (cuentaDestino === "meta_business") {
       if (!chatwootToken) {
@@ -185,13 +187,17 @@ export async function POST(req: Request) {
             chatwootConversationId: chatwootConvId,
             fallbackToDigits: cleanNumber,
             ogg: bytes,
+            metaCreds: await obtenerCredencialesMeta(),
           });
           if (direct.ok) {
             envioAudioVia = "meta_direct";
           } else {
             const reason = (direct as { reason?: string }).reason || "sin detalle";
+            audioReason = reason;
             console.error("[send-message] Envío directo a Meta falló, se reintenta por Chatwoot:", reason);
           }
+        } else if (isAudio) {
+          audioReason = `el archivo está en ${outgoingMime}, que WhatsApp API no acepta como nota de voz (sólo OGG/Opus)`;
         }
 
         if (!envioAudioVia) {
@@ -276,6 +282,7 @@ export async function POST(req: Request) {
         envioAudioVia = "evolution";
         evolutionIsPtt = sent.ptt;
         if (!sent.ptt) {
+          audioReason = "WhatsApp Personal aceptó el audio como archivo (sendMedia) y no como nota de voz nativa (PTT)";
           console.warn("[send-message] Evolution aceptó el audio por sendMedia (no PTT):", sent.detail);
         }
       } else if (pureBase64) {
@@ -350,7 +357,7 @@ export async function POST(req: Request) {
     // podemos saberlo: depende de la versión instalada (>= 4.15.0).
     const voiceNote = envioAudioVia === "meta_direct" || (envioAudioVia === "evolution" && evolutionIsPtt);
 
-    return NextResponse.json({ success: true, voiceNote, via: envioAudioVia, cuenta: cuentaDestino });
+    return NextResponse.json({ success: true, voiceNote, via: envioAudioVia, cuenta: cuentaDestino, audioReason: voiceNote ? null : audioReason });
   } catch (error: any) {
     console.error("Error en send-message:", error);
     return NextResponse.json({ error: error.message || "No se pudo enviar el mensaje." }, { status: 500 });

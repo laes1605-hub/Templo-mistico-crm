@@ -1,8 +1,42 @@
 # Build Info - Templo Místico CRM
 
-**Fecha:** Mon Aug 25 (rama `arena/01a036a2-templo-mistico-crm`)
+**Fecha:** Fri Aug 28 (rama `arena/01a045dd-templo-mistico-crm`)
 **Commit:** (ver git log)
-**Branch:** arena/01a036a2-templo-mistico-crm
+**Branch:** arena/01a045dd-templo-mistico-crm
+
+## Build 2026-08-28: notas de voz nativas por WhatsApp API + orden de pestañas
+
+### Notas de voz nativas (burbuja de nota de voz en vez de "audio simple")
+- El conversor WebM→OGG/Opus era válido (verificado con decodificador OGG/Opus
+  independiente, payload byte a byte idéntico). El problema era que el envío DIRECTO a
+  Meta fallaba en silencio (el motivo quedaba solo en los logs del servidor) y la nota
+  caía al adjunto de Chatwoot, que sólo reenvía el flag `voice` desde la v4.15.0.
+- `src/lib/meta-voice-note.ts` reescrito:
+  - Credenciales del canal WhatsApp Cloud, en orden: env `META_VOICE_API_TOKEN` /
+    `META_VOICE_PHONE_NUMBER_ID` → `config_general` (claves `meta_voice_token` /
+    `meta_voice_phone_number_id`) → `provider_config` del inbox de Chatwoot (éste último
+    solo si el token de Chatwoot es administrador).
+  - La consulta de la conversación de Chatwoot ya no es fatal: si el id guardado está
+    obsoleto se usa el número que ya tiene el CRM.
+  - Reintento automático si Meta responde 5xx (el FormData se reconstruye por intento).
+  - El motivo del fallo ahora viaja en la respuesta de `/api/send-message`
+    (`audioReason`) y se muestra en el aviso de la app: "La nota se envió, pero llegó
+    como audio simple… Motivo: …".
+- `src/components/AjustesPanel.tsx`: sección nueva "Notas de voz · WhatsApp API" en
+  Ajustes: Access Token del canal WhatsApp Cloud + Phone Number ID, guardados en
+  `config_general`. Con eso la app habla directa con Meta (`voice: true`) y la nota
+  llega como burbuja de nota de voz nativa, sin depender del rol del token de Chatwoot.
+- Verificación: `npm run build` ✅ · smoke test de `sendVoiceNoteViaMeta` con fetch
+  mockeado ✅ (directo por env, reintento 5xx, reasons legibles) · remuxer re-verificado
+  ✅ (páginas OGG válidas + decodificación independiente).
+
+### Orden de subcategorías en la bandeja de chats
+- Las pestañas de la bandeja ahora siguen el MISMO ORDEN del pipeline, con la única
+  diferencia de que "Por leer" y "En seguimiento" van fijas en las posiciones 2 y 3:
+  `Etapa 1 · Por leer · En seguimiento · Etapa 2 · Etapa 3 · …`
+- Spam y Archivados se quedan al final, como antes.
+
+## Build anterior — 2026-08-25 (rama `arena/01a036a2-templo-mistico-crm`)
 
 ## Build Next.js
 - Comando: npm run build
@@ -42,7 +76,7 @@
 - El n8n del Templo tiene N8N_BLOCK_ENV_ACCESS_IN_NODE: por eso el archivo importable
   lleva las llaves dentro y no usa $env
 
-## Nuevas funciones de este build
+### Nuevas funciones de ese build
 - Número de teléfono con prioridad sobre el nombre (formato +país, ej: +573054021111)
 - Nombre manual editable (✏️) que es el único nombre que se muestra
 - Pestaña "Por leer": chats de todas las categorías con mensajes sin leer

@@ -47,26 +47,76 @@ let textoLimpio = String(textoOriginal || "")
   .replace(/[<>^]/g, "")
 
   // Quitar emojis sin eliminar letras, tildes ni signos de puntuacion.
-  .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, "")
+  .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, "");
 
-  // Las lineas de la lista se oyen como oraciones breves. El texto despues
-  // del ultimo punto se conserva: ese era el dato que antes se perdia.
-  .replace(/:\s*\n+/g, ": ")
-  .replace(/\n+/g, ". ")
+// ----------------------------------------------------
+// UNION NATURAL DE RENGLONES (prosodia para la voz)
+// ----------------------------------------------------
+// La respuesta esta formateada para leerse en pantalla; al hablarla hay que
+// unirla como se habla, no como se lista:
+//   1) Un renglon que termina en dos puntos seguido de varios datos se lee
+//      como una sola enumeracion fluida, con punto y coma y una "y" antes del
+//      ultimo dato: "enviame estos datos: una foto...; tu nombre...; y la
+//      palma de tu mano derecha". Asi la voz no recita renglones sueltos.
+//   2) Los demas renglones conservan una pausa propia: punto si ya la traian
+//      o punto suave al unirse, para que la voz respire y no suene atropellada.
+//   3) El texto despues del ultimo punto se conserva siempre: ese era el dato
+//      que antes se perdia.
+// ----------------------------------------------------
+function sinPuntoFinal(texto) {
+  return String(texto || "").replace(/[.;:\s]+$/, "");
+}
+function enMinusculaInicial(texto) {
+  const limpio = String(texto || "");
+  return /^[A-ZÁÉÍÓÚÜÑ]/.test(limpio) ? limpio.charAt(0).toLowerCase() + limpio.slice(1) : limpio;
+}
+function unirConPausa(renglones) {
+  let salida = "";
+  for (const renglon of renglones) {
+    if (!salida) { salida = renglon; continue; }
+    salida += /[.!?;:,]$/.test(salida.trimEnd()) ? " " + renglon : ". " + renglon;
+  }
+  return salida;
+}
+
+const parrafos = textoLimpio.split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
+const partesVoz = [];
+for (const parrafo of parrafos) {
+  const renglones = parrafo.split(/\n/).map(r => r.trim()).filter(Boolean);
+  if (renglones.length >= 3 && /[:：]\s*$/.test(renglones[0])) {
+    // Enumeracion hablada: "intro: primera cosa; segunda; y la ultima."
+    const intro = sinPuntoFinal(renglones[0]) + ":";
+    const datos = renglones.slice(1).map(d => enMinusculaInicial(sinPuntoFinal(d))).filter(Boolean);
+    const enumeracion = datos.length === 1
+      ? datos[0]
+      : datos.slice(0, -1).join("; ") + "; y " + datos[datos.length - 1];
+    partesVoz.push(intro + " " + enumeracion + ".");
+  } else {
+    partesVoz.push(unirConPausa(renglones));
+  }
+}
+
+textoLimpio = partesVoz
+  .filter(Boolean)
+  .join(" ")
   .replace(/\.{2,}/g, ".")
   .replace(/,\s*,+/g, ",")
-  .replace(/:\s*\./g, ": ")
+  .replace(/;\s*;+/g, ";")
+  .replace(/([:;,])\s*\./g, "$1 ")
   .replace(/\s+([,.!?;:])/g, "$1")
-  .replace(/([,.!?;:])(?=[A-Za-zÁÉÍÓÚÜÑáéíóúüñ])/g, "$1 ")
+  .replace(/([,.!?;:])(?=[A-Za-zÁÉÍÓÚÜÑáéíóúüñ¿¡])/g, "$1 ")
   .replace(/\s+/g, " ")
   .trim();
 
 if (!textoLimpio) {
-  textoLimpio = "Gracias por comunicarte con el Templo Mistico.";
+  textoLimpio = "Gracias por comunicarte con el Templo Místico. En un momento te atendemos.";
 } else if (!/[.!?]$/.test(textoLimpio)) {
   textoLimpio += ".";
 }
 
+// Muestreo de voz: dentro de la banda recomendada por Fish Audio para habla
+// expresiva (temperatura 0.7-0.8), lo justo para que Luna suene variada y
+// natural sin perder estabilidad ni inventar sonidos al final.
 const body = {
   text: textoLimpio,
   reference_id: "be2d2e9342cd4201b690500c4e35d008",
@@ -75,8 +125,8 @@ const body = {
   normalize: true,
   latency: "normal",
   mp3_bitrate: 128,
-  top_p: 0.8,
-  temperature: 0.7
+  top_p: 0.85,
+  temperature: 0.75
 };
 
 return [{

@@ -13,8 +13,12 @@ cuando el lead está en las etapas **Nuevo Lead** o **Datos**.
 
 ### Si el trabajo es de pareja
 
-- Los nombres completos de las dos personas.
-- Una foto clara y de frente de cada persona **o una sola foto clara donde aparezcan las dos**.
+- Tu nombre completo y el de tu pareja (nombre y apellido de cada uno).
+- Una foto tuya y una de tu pareja, claras y de frente, **o una sola foto clara donde aparezcan los dos**.
+
+Luna siempre le habla al cliente de «tú» y nombra a la otra persona como **«tu pareja»** («tu
+nombre y el de tu pareja», «la foto tuya y de tu pareja»): nunca dice «la otra persona», para
+conectar mejor con el cliente.
 
 ### Si es una consulta personal
 
@@ -26,10 +30,26 @@ Luna pide todo lo pendiente de una sola vez, con un saludo empático, «por favo
 agradecimiento. El mensaje al cliente no usa `1.`, `2.` ni `3.`. Así también suena natural si
 se responde con una nota de voz y no dice «uno punto» o «dos punto».
 
+Además, para que Luna **hable con más fluidez y suene más natural**:
+
+- En las notas de voz la lista se convierte en una **enumeración hablada** («envíame estos
+  datos: la primera cosa; la segunda; y la última») en lugar de recitar renglones sueltos, con
+  pausas de respiración naturales entre ideas y sin recortar nunca el último dato.
+- La síntesis de Fish Audio usa muestreo expresivo (`temperature 0.75`, `top_p 0.85`), dentro de
+  la banda recomendada (0.7-0.8) para habla variada pero estable.
+- La redacción de la IA se genera con temperatura media y penalización de repetición, y el
+  prompt le pide ritmo hablado: frases de largo variado, conectores naturales y sin repetir
+  aperturas ni cierres entre mensajes.
+
+Luna **nunca toma como válido el nombre que aparece en el perfil de WhatsApp, en el teléfono o
+guardado en el contacto del celular**: solo acepta el nombre que el cliente escriba en la
+conversación. Por eso siempre lo pregunta, tanto en consultas de pareja como personales, junto
+con los demás datos de cada categoría.
+
 Un nombre de una sola palabra —por ejemplo, «Ana»— se considera **parcial**. Luna no lo marca
 como terminado: pide explícitamente el nombre y apellido. Si después recibe «Ana Pérez»,
 enriquece el dato parcial sin sobrescribir ningún nombre completo que ya estuviera guardado.
-La misma validación se aplica por separado a las dos personas en trabajos de pareja.
+La misma validación se aplica por separado al cliente y a su pareja.
 
 Si alguno de esos datos ya estaba guardado de forma completa, Luna solo muestra lo que falta.
 La foto de una pareja sirve para completar las dos fotos. En un trabajo personal, una foto de

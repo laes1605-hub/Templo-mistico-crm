@@ -313,9 +313,9 @@ if (!checklist.tipo_trabajo) {
   faltantes.push({ clave: "tipo_trabajo", etiqueta: "saber si el trabajo es personal o de pareja" });
 } else if (checklist.tipo_trabajo === "pareja") {
   if (!esNombreCompleto(checklist.nombre_cliente)) faltantes.push({ clave: "nombre_cliente", etiqueta: "el nombre completo del cliente" });
-  if (!esNombreCompleto(checklist.nombre_otra_persona)) faltantes.push({ clave: "nombre_otra_persona", etiqueta: "el nombre completo de la otra persona" });
+  if (!esNombreCompleto(checklist.nombre_otra_persona)) faltantes.push({ clave: "nombre_otra_persona", etiqueta: "el nombre completo de su pareja" });
   if (!checklist.foto_cliente) faltantes.push({ clave: "foto_cliente", etiqueta: "una foto clara y de frente del cliente" });
-  if (!checklist.foto_otra_persona) faltantes.push({ clave: "foto_otra_persona", etiqueta: "una foto clara y de frente de la otra persona o una foto clara donde aparezcan los dos" });
+  if (!checklist.foto_otra_persona) faltantes.push({ clave: "foto_otra_persona", etiqueta: "una foto clara y de frente de su pareja o una foto de los dos juntos" });
 } else {
   if (!checklist.foto_cliente) faltantes.push({ clave: "foto_cliente", etiqueta: "una foto suya, clara y de frente, con el rostro visible" });
   if (!esNombreCompleto(checklist.nombre_cliente)) faltantes.push({ clave: "nombre_cliente", etiqueta: "su nombre completo (nombre y apellido)" });
@@ -470,9 +470,9 @@ if (checklist.motivo_categoria || checklist.motivo_resumen) {
 
 if (checklist.tipo_trabajo === "pareja") {
   marcaNombre(checklist.nombre_cliente, "Nombre completo del cliente");
-  marcaNombre(checklist.nombre_otra_persona, "Nombre completo de la otra persona");
+  marcaNombre(checklist.nombre_otra_persona, "Nombre completo de la pareja del cliente");
   marca(checklist.foto_cliente, "Foto del cliente");
-  marca(checklist.foto_otra_persona, "Foto de la otra persona");
+  marca(checklist.foto_otra_persona, "Foto de la pareja del cliente");
 } else if (checklist.tipo_trabajo === "personal") {
   marca(checklist.foto_cliente, "Foto del cliente");
   marcaNombre(checklist.nombre_cliente, "Nombre completo del cliente");
@@ -484,7 +484,8 @@ contextoMemoria += "🎯 OBJETIVO UNICO DE ESTA ETAPA (no hagas nada mas): " + (
 contextoMemoria += "DATOS YA GUARDADOS EN TU ARCHIVO:\n" + (recibido.length ? recibido.join("\n") : "(ninguno todavia)") + "\n";
 contextoMemoria += "DATOS PENDIENTES:\n" + (pendiente.length ? pendiente.join("\n") : "(ninguno, ya tienes todo)") + "\n";
 if (checklist.tipo_trabajo === "pareja") contextoMemoria += "⛔ En trabajo de PAREJA esta prohibido pedir la palma de la mano.\n";
-if (checklist.tipo_trabajo === "personal") contextoMemoria += "⛔ En trabajo PERSONAL esta prohibido pedir nombres o fotos de otra persona.\n";
+if (checklist.tipo_trabajo === "personal") contextoMemoria += "⛔ En trabajo PERSONAL esta prohibido pedir nombres ni fotos de otra persona distinta del cliente.\n";
+contextoMemoria += "⛔ El nombre del perfil de WhatsApp, del telefono o del contacto guardado NO es un dato valido: solo acepta el nombre que el cliente te escriba en el chat. Si no lo ha dado, pidelo siempre junto con los demas datos.\n";
 if (fotosPendientes.length) contextoMemoria += "ℹ️ Hay " + fotosPendientes.length + " foto(s) recibidas antes de definir el tipo de trabajo; se asignaran solas cuando sepas el tipo.\n";
 
 return [{

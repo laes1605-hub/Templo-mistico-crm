@@ -37,12 +37,21 @@ queda sin créditos: el dashboard se queda ciego.
   - `?completa=1` → baja historial de todas las conversaciones (reparación).
 - **`POST /api/chatwoot/webhook`**: webhook directo de Chatwoot a Vercel.
 
-### 2. El dashboard se sincroniza solo
-- Al **abrir la app** sincroniza con Chatwoot (silencioso).
-- **Cada 20 segundos** mientras la app está visible (y al volver a ella).
-- Al **abrir un chat**, sincroniza ese chat puntual → el historial se llena
-  aunque n8n esté caído.
-- Botón **🔄 Chatwoot** junto al buscador para sincronizar a mano.
+### 2. El dashboard se sincroniza solo (v2: objetivo 1–2 segundos)
+- Al **abrir la app** sincroniza con Chatwoot (pasada completa, silenciosa).
+- **Chat abierto: cada 2,5 s** (sólo ese chat; si no hay novedades, el servidor
+  lo resuelve en 1 llamada a Chatwoot + 1 lectura a Supabase).
+- **Bandeja: cada 5 s** en modo delta (`?rapido=1`): lista Chatwoot de 100 por
+  página + un mapa único de Supabase; los chats sin cambios cuestan 0 consultas.
+- Pasada **completa de reparación** al volver a la app y cada 3 minutos.
+- El **webhook directo** (`/api/chatwoot/webhook`) es ahora el camino principal:
+  inserta el mensaje y actualiza el resumen **en paralelo**, con dedupe por
+  ventana ±150 s + id exacto (antes descargaba 400 mensajes por uno). Con el
+  webhook puesto, el mensaje está en el dashboard en **<1 s**; sin él, el
+  sondeo rápido lo trae en 2–3 s.
+- Los sondeos ya no escriben en Supabase cuando nada cambió: cero eventos
+  realtime vacíos, la lista del teléfono deja de recargarse cada 20 s.
+- Botón **🔄 Chatwoot** junto al buscador para sincronizar a mano (completa).
 - El realtime de Supabase sigue igual (notificaciones, contadores rojos):
   la sincronización inserta en las mismas tablas, así que las notificaciones
   y el "Por leer" funcionan como siempre.
@@ -97,12 +106,18 @@ y la publicación realtime de `mensajes`/`conversaciones`/`clientes`.
 
 ## 👤 Qué hacer después del merge (2 minutos, opcional pero recomendado)
 
-1. **Webhook instantáneo (recomendado):** en Chatwoot →
-   Ajustes → Integraciones → Webhooks → añadir
+1. **Webhook instantáneo (imprescindible para clavar los 1–2 s):** en
+   Chatwoot → Ajustes → Integraciones → Webhooks → añadir
    `https://templo-mistico-crm.vercel.app/api/chatwoot/webhook`
-   con el evento **message_created**. Con esto los mensajes aparecen en el
-   dashboard al instante (sin esperar los 20s del sondeo). Puede convivir con
-   el webhook de n8n: no se duplican.
+   con el evento **message_created** (y si puedes elegir más:
+   `message_updated` y `conversation_created`; este endpoint los procesa de
+   forma segura e idempotente). Con esto los mensajes aparecen en el dashboard
+   al instante. Puede convivir con el webhook de n8n: no se duplican.
+   🔐 *Recomendado:* define en Vercel la variable `CHATWOOT_WEBHOOK_SECRET`
+   con un valor aleatorio y añade `?key=ESE_VALOR` a la URL del webhook; así
+   sólo Chatwoot puede escribir en el CRM (cualquier intento sin la llave
+   recibe 401). Si no defines la variable, el endpoint sigue abierto como
+   antes.
 2. **Aplicar la migración** `20260906_sincronizacion_directa_chatwoot.sql` en
    Supabase → SQL Editor (más las pendientes anteriores si aún no están).
 3. **(Opcional) Importar el workflow blindado de n8n**: pasos en el punto
@@ -110,10 +125,21 @@ y la publicación realtime de `mensajes`/`conversaciones`/`clientes`.
 4. Nada más. Vercel despliega solo con el merge a `main` y la APK carga la web
    (`server.url`), así que **no hay que reinstalar la APK**.
 
+## 🧪 Prueba local del servidor de sincronización (sin desplegar)
+```
+node scripts/prueba-sincronizacion-rapida.mjs
+```
+Simula Chatwoot y PostgREST y verifica: pasada idle = 1 consulta a Chatwoot +
+1 a Supabase (0 escrituras), webhook = ≤6 round-trips, reintentos idempotentes,
+`message_updated` no inserta filas nuevas y la actividad nueva del cliente
+invalida la caché anti-rebombe sola.
+
 ## 🧪 Cómo probar
 1. Merge → esperar el deploy de Vercel (~1 min).
 2. Abrir el CRM. En 20s o menos deben aparecer los chats con sus últimos
    mensajes y los pendientes en "Por leer".
 3. Abrir un chat que estuviera vacío: el historial se llena desde Chatwoot.
 4. Pedirle a alguien que escriba (o escribir desde otro WhatsApp): debe
-   aparecer en ≤20s, y al instante si configuraste el webhook del punto 1.
+   aparecer en 2–3 s con el sondeo rápido, y en <1 s si configuraste el
+   webhook del punto 1. Con un chat abierto, el sondeo puntual (2,5 s) pinta
+   además el historial completo aunque n8n esté caído.

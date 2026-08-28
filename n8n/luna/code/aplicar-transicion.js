@@ -42,39 +42,84 @@ function normalizar(v) {
 }
 
 const MAPA_ETAPAS = {
-  lead_nuevo: ["nuevo_lead", "nuevo_lead_templo", "lead_nuevo", "leadnuevo", "nuevo", "nuevo_cliente"],
-  datos: ["datos", "datos_templo", "solicitar_datos", "solicitud_datos", "en_datos", "pedir_datos", "recoger_datos"]
+  lead_nuevo: ["nuevo_lead", "nuevo_lead_templo", "lead_nuevo", "leadnuevo", "nuevo", "nuevo_cliente", "nuevo_templo", "etapa_nuevo_lead", "etapa_lead_nuevo"],
+  datos: ["datos", "datos_templo", "solicitar_datos", "solicitud_datos", "en_datos", "pedir_datos", "recoger_datos", "etapa_datos"]
 };
 const NOMBRES_ETAPA = {
-  lead_nuevo: ["nuevo_lead", "lead_nuevo", "nuevo", "nuevo_cliente", "lead", "primer_contacto", "nuevo_contacto"],
-  datos: ["datos", "solicitar_datos", "pedir_datos", "en_datos", "datos_cliente", "datos_del_cliente", "recoleccion_datos", "solicitud_datos"]
+  lead_nuevo: ["nuevo_lead", "lead_nuevo", "nuevo", "nuevo_cliente", "lead", "primer_contacto", "nuevo_contacto", "nuevo lead", "lead nuevo", "nuevo cliente"],
+  datos: ["datos", "solicitar_datos", "pedir_datos", "en_datos", "datos_cliente", "datos_del_cliente", "recoleccion_datos", "solicitud_datos", "solicitar datos", "pedir datos"]
 };
 const TOKENS_NOMBRE = {
-  lead_nuevo: ["nuevo lead", "lead nuevo", "nuevo"],
+  lead_nuevo: ["nuevo lead", "lead nuevo", "nuevo", "lead"],
   datos: ["datos", "solicitar datos", "pedir datos"]
 };
 
+// Resolver clave VALIDANDO POR NOMBRE (no por clave) — robusto a grupos
 function resolverClave(canon) {
   const candidatasClave = MAPA_ETAPAS[canon] || [];
   const candidatasNombre = NOMBRES_ETAPA[canon] || [];
   const tokens = TOKENS_NOMBRE[canon] || [];
-  const delGrupo = etapasPipeline.filter(e => String(e.grupo || "") === String(grupo));
-  const universo = delGrupo.length ? delGrupo : etapasPipeline;
-  if (!universo.length) return candidatasClave[0] || null;
 
+  // Universo completo, sin filtrar por grupo al principio (validacion por nombre)
+  const todas = etapasPipeline || [];
+  if (!todas.length) return candidatasClave[0] || null;
+
+  // Helper para buscar con preferencia de grupo
+  function buscarConPreferencia(predicado) {
+    // 1) Mismo grupo
+    let e = todas.filter(x => String(x.grupo || "") === String(grupo)).find(predicado);
+    if (e) return e;
+    // 2) Grupo general / sin grupo / null / vacio
+    e = todas.filter(x => !x.grupo || ["general", ""].includes(String(x.grupo))).find(predicado);
+    if (e) return e;
+    // 3) Cualquier grupo
+    e = todas.find(predicado);
+    return e || null;
+  }
+
+  // 1) Por NOMBRE exacto (via principal — validacion por nombre)
   for (const n of candidatasNombre) {
-    const e = universo.find(x => normalizar(x.nombre) === n);
+    const norm = normalizar(n);
+    const e = buscarConPreferencia(x => normalizar(x.nombre) === norm);
     if (e) return e.clave;
   }
-  for (const c of candidatasClave) {
-    const e = universo.find(x => normalizar(x.clave) === c);
-    if (e) return e.clave;
-  }
+
+  // 2) Por NOMBRE que contiene token (ej: "Nuevo Lead" contiene "nuevo lead")
   for (const t of tokens) {
-    const e = universo.find(x => normalizar(x.nombre).indexOf(normalizar(t)) !== -1);
+    const normT = normalizar(t);
+    const e = buscarConPreferencia(x => normalizar(x.nombre).includes(normT) || String(x.nombre || "").toLowerCase().includes(t.toLowerCase()));
     if (e) return e.clave;
   }
-  return null;
+
+  // 3) Por CLAVE exacta (compatibilidad)
+  for (const c of candidatasClave) {
+    const norm = normalizar(c);
+    const e = buscarConPreferencia(x => normalizar(x.clave) === norm);
+    if (e) return e.clave;
+  }
+
+  // 4) Por CLAVE que contiene token
+  for (const t of tokens) {
+    const normT = normalizar(t);
+    const e = buscarConPreferencia(x => normalizar(x.clave).includes(normT));
+    if (e) return e.clave;
+  }
+
+  // 5) Busqueda laxa por nombre que contenga "datos" o "nuevo"/"lead"
+  if (canon === "datos") {
+    const e = buscarConPreferencia(x => normalizar(x.nombre).includes("datos") || String(x.nombre || "").toLowerCase().includes("datos"));
+    if (e) return e.clave;
+  }
+  if (canon === "lead_nuevo") {
+    const e = buscarConPreferencia(x => {
+      const nn = normalizar(x.nombre);
+      return (nn.includes("nuevo") && nn.includes("lead")) || nn === "nuevo" || nn === "lead" || nn === "nuevo_lead" || nn === "lead_nuevo";
+    });
+    if (e) return e.clave;
+  }
+
+  // Si no se encuentra, devolver la clave semilla como fallback (para que no falle el movimiento)
+  return candidatasClave[0] || null;
 }
 
 // -----------------------------------------------------
@@ -136,17 +181,33 @@ if (destino) {
 }
 
 // -----------------------------------------------------
-// 3) GUARDAR ESTADO DE LA PAUSA EN CHATWOOT
+// 3) GUARDAR ESTADO DE LA ETAPA Y PAUSA EN CHATWOOT
+//    + REACTIVAR LUNA SI ESTA EN NUEVO LEAD O DATOS (por nombre)
 // -----------------------------------------------------
 const attrs = {
   luna_etapa: destino || etapa,
   luna_etapa_crm_sync: destino ? etapaMovida : true
 };
+
+// Si estamos en lead_nuevo, Luna DEBE estar activa por nombre
+if (etapa === "lead_nuevo") {
+  attrs.luna_pausada = false;
+  attrs.lista_requisitos_enviada = false;
+  attrs.luna_pausa_motivo = "";
+  attrs.luna_reactivada_en = Math.floor(Date.now() / 1000);
+  attrs.luna_reactivada_motivo = "Reactivada por etapa Nuevo Lead (validacion por nombre)";
+}
+
 if (pausarChat) {
   attrs.luna_pausada = true;
   attrs.lista_requisitos_enviada = true;
   attrs.luna_pausa_motivo = "Lista de requisitos enviada; continuar manualmente";
   attrs.luna_pausada_en = Math.floor(Date.now() / 1000);
+} else if (destino === "datos" || etapa === "datos") {
+  // En Datos, mientras no se pause, asegurar que no quede marcada como pausada
+  if (!pausarChat) {
+    attrs.luna_pausada = false;
+  }
 }
 
 let errorAttrs = null;
@@ -161,11 +222,12 @@ try {
 } catch (e) { errorAttrs = e.message || "error attrs"; }
 
 // La bandera agente_activo es la que usa el CRM y Verificar CRM para cortar
-// el flujo desde el siguiente mensaje. Se guarda tambien el atributo anterior
-// como respaldo, por si el evento llega antes de que Supabase termine de crear
-// la conversacion.
+// el flujo desde el siguiente mensaje.
 let pausaCRM = false;
 let errorPausaCRM = null;
+let reactivacionCRM = false;
+let errorReactivacionCRM = null;
+
 if (pausarChat && conversationId) {
   try {
     await this.helpers.httpRequest({
@@ -177,6 +239,28 @@ if (pausarChat && conversationId) {
     });
     pausaCRM = true;
   } catch (e) { errorPausaCRM = e.message || "error pausando conversacion"; }
+} else if ((etapa === "lead_nuevo" || destino === "datos" || etapa === "datos") && conversationId) {
+  // Asegurar que Luna este ACTIVA en Nuevo Lead y Datos (por nombre)
+  try {
+    await this.helpers.httpRequest({
+      method: "PATCH",
+      url: SUPABASE_URL + "/rest/v1/conversaciones?chatwoot_conversation_id=eq." + encodeURIComponent(conversationId),
+      headers: sbHeaders,
+      body: { agente_activo: true },
+      json: true
+    });
+    reactivacionCRM = true;
+    // Tambien asegurar global activa
+    try {
+      await this.helpers.httpRequest({
+        method: "PATCH",
+        url: SUPABASE_URL + "/rest/v1/config_general?clave=eq.luna_global_activa",
+        headers: sbHeaders,
+        body: { valor: "true", actualizado_en: new Date().toISOString() },
+        json: true
+      });
+    } catch (e2) {}
+  } catch (e) { errorReactivacionCRM = e.message || "error reactivando conversacion"; }
 }
 
 // -----------------------------------------------------
@@ -251,7 +335,9 @@ return [{
     consultaLista: false,
     chatPausado: pausarChat,
     etapaMovida: etapaMovida,
+    reactivacionCRM: reactivacionCRM,
     etiquetas: etiquetasFinales,
+    validacionPorNombre: true,
     _debug: {
       ...(pulir._debug || {}),
       destino,
@@ -261,12 +347,17 @@ return [{
       etapaMovida,
       pausarChat,
       pausaCRM,
+      reactivacionCRM,
+      validacionPorNombre: true,
       errorEstado,
       errorAttrs,
       errorPausaCRM,
+      errorReactivacionCRM,
       errorLabels,
       notificacionEnviada: Boolean(notificacion && !errorNotif),
-      errorNotif
+      errorNotif,
+      etapasPipelineCount: (etapasPipeline || []).length,
+      grupo: grupo
     }
   }
 }];

@@ -98,8 +98,12 @@ export async function POST(req: Request) {
           } else if (etapaData?.cuenta_responsable === "meta_business") {
             cuentaDestino = "meta_business";
           } else {
-            // Etapas iniciales (nuevo_lead, en_consulta) van a meta_business; avanzadas a evolution
-            cuentaDestino = ["nuevo_lead", "en_consulta"].includes(cliData.estado) ? "meta_business" : "evolution";
+            // Etapas iniciales (nuevo_lead, datos, en_consulta) van a meta_business; avanzadas a evolution
+            // Validacion por NOMBRE: Luna trabaja en Nuevo Lead y Datos
+            const estNorm = String(cliData.estado || "").toLowerCase();
+            const esNuevoLead = estNorm.includes("nuevo") && estNorm.includes("lead") || ["nuevo_lead", "lead_nuevo", "nuevo"].includes(estNorm);
+            const esDatos = estNorm.includes("datos");
+            cuentaDestino = (esNuevoLead || esDatos || ["nuevo_lead", "datos", "en_consulta"].includes(cliData.estado)) ? "meta_business" : "evolution";
           }
         }
       } catch (e) {

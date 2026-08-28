@@ -39,6 +39,7 @@ import {
 } from "lucide-react";
 
 // Normaliza estados antiguos o con sufijo _templo al pipeline unificado
+// VALIDACION POR NOMBRE: Luna trabaja en "Nuevo Lead" y "Datos" por nombre visible
 function normalizarEstado(estado: string | null | undefined): string {
   if (!estado) return "nuevo_lead";
   let s = String(estado).trim();
@@ -51,19 +52,25 @@ function normalizarEstado(estado: string | null | undefined): string {
   // Etapas eliminadas del pipeline: se remapean a etapas vigentes
   if (s === "pago_recibido") return "trabajo_proceso";
   if (s === "perdido") return "nuevo_lead";
+  // Normalizacion por nombre para Luna: si viene "Nuevo Lead" o "Lead Nuevo" o "Datos"
+  const lower = s.toLowerCase();
+  if (lower.includes("nuevo") && lower.includes("lead") || lower === "lead nuevo" || lower === "nuevo lead") return "nuevo_lead";
+  if (lower.includes("datos") || lower === "solicitar datos" || lower === "pedir datos") return "datos";
   return s;
 }
 
-// Etapas retiradas del pipeline (se remapean a etapas vigentes)
+// Etapas retiradas del pipeline (se remapean a etapas vigentes) — datos y nuevo_lead NO se retiran
 const ETAPAS_ELIMINADAS = ["pago_recibido", "perdido"];
 
 // Etapas base del pipeline unificado con su cuenta encargada por defecto
+// Luna trabaja en "Nuevo Lead" y "Datos" validando por NOMBRE, no por clave
 const ETAPAS_DEFAULT = [
   { clave: "nuevo_lead", nombre: "Nuevo Lead", orden: 1, color: "border-blue-500", bg_color: "bg-blue-500/10", text_color: "text-blue-300", cuenta_responsable: "meta_business" },
-  { clave: "en_consulta", nombre: "En Consulta", orden: 2, color: "border-yellow-500", bg_color: "bg-yellow-500/10", text_color: "text-yellow-300", cuenta_responsable: "meta_business" },
-  { clave: "consulta_hecha", nombre: "Consulta Hecha", orden: 3, color: "border-orange-500", bg_color: "bg-orange-500/10", text_color: "text-orange-300", cuenta_responsable: "evolution" },
-  { clave: "trabajo_proceso", nombre: "Trabajo en Proceso", orden: 4, color: "border-purple-500", bg_color: "bg-purple-500/10", text_color: "text-purple-300", cuenta_responsable: "evolution" },
-  { clave: "trabajo_completado", nombre: "Trabajo Completado", orden: 5, color: "border-green-500", bg_color: "bg-green-500/10", text_color: "text-green-300", cuenta_responsable: "evolution" },
+  { clave: "datos", nombre: "Datos", orden: 2, color: "border-sky-500", bg_color: "bg-sky-500/10", text_color: "text-sky-300", cuenta_responsable: "meta_business" },
+  { clave: "en_consulta", nombre: "En Consulta", orden: 3, color: "border-yellow-500", bg_color: "bg-yellow-500/10", text_color: "text-yellow-300", cuenta_responsable: "meta_business" },
+  { clave: "consulta_hecha", nombre: "Consulta Hecha", orden: 4, color: "border-orange-500", bg_color: "bg-orange-500/10", text_color: "text-orange-300", cuenta_responsable: "evolution" },
+  { clave: "trabajo_proceso", nombre: "Trabajo en Proceso", orden: 5, color: "border-purple-500", bg_color: "bg-purple-500/10", text_color: "text-purple-300", cuenta_responsable: "evolution" },
+  { clave: "trabajo_completado", nombre: "Trabajo Completado", orden: 6, color: "border-green-500", bg_color: "bg-green-500/10", text_color: "text-green-300", cuenta_responsable: "evolution" },
 ];
 
 // Cuotas: límite y fechas por defecto (una cuota por mes desde la primera).

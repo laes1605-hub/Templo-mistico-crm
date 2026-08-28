@@ -66,11 +66,12 @@
 - supabase/migrations/20260907_llamadas_seguimiento_contactos.sql ← nueva (etapa En seguimiento + alerta diaria)
 
 ## Luna por etapas (nuevo)
-- Workflow importable: `n8n/05-luna-etapas.json` (docs en `n8n/05-README-luna-etapas.md`)
-- Luna solo responde en Lead Nuevo, Sin respuesta, Datos y Por consulta; en el resto se calla
-- Motor de etapas + archivo persistente (motivo, tipo de trabajo, nombres y fotos) para que
-  Luna no vuelva a pedir lo que ya le entregaron
-- Verificación: `npm run check:luna` (184 pruebas sobre el código real de los nodos) — ✅ 0 fallos
+- Workflow importable: `n8n/IMPORTAR-EN-N8N.json` (generado localmente; docs en `n8n/05-README-luna-etapas.md`)
+- Luna solo responde en **Lead Nuevo** y **Datos**; en el resto se queda callada
+- En Lead Nuevo saluda, se presenta, pregunta el motivo y pasa directamente a Datos
+- En Datos identifica el trabajo, envía en un solo mensaje los requisitos de pareja o consulta personal
+  y pausa completamente el chat para que continúe un operador
+- Verificación: `npm run check:luna` (48 pruebas sobre el código real de los nodos) — ✅ 0 fallos
 - Regenerar: `npm run build:luna` → `IMPORTAR-EN-N8N.json` (importar en n8n, llaves dentro,
   sin versionar) y `05-luna-etapas.github.json` (versionado, sin secretos, usa $env)
 - El n8n del Templo tiene N8N_BLOCK_ENV_ACCESS_IN_NODE: por eso el archivo importable

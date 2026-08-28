@@ -61,7 +61,8 @@ const ETAPAS_EXTRA = {
 };
 
 // Si la etapa NO se reconoce y esto esta en true, Luna responde en modo
-// retencion (confirma y retiene, no pide datos). En false se queda callada.
+// retencion. En false se queda callada. La configuracion solicitada solo
+// permite actuar en Lead Nuevo y Datos.
 const ACTUAR_EN_ETAPA_NO_RECONOCIDA = false;
 
 // Etapas posteriores a la consulta: Luna no habla ahi, pero son conocidas
@@ -76,8 +77,8 @@ const ETAPAS_TARDIAS = [
   "cliente", "cliente_activo", "atendido"
 ];
 
-const ETAPAS_LUNA = ["lead_nuevo", "sin_respuesta", "datos", "por_consulta"];
-const ORDEN_ETAPA = { lead_nuevo: 1, sin_respuesta: 2, datos: 3, por_consulta: 4 };
+const ETAPAS_LUNA = ["lead_nuevo", "datos"];
+const ORDEN_ETAPA = { lead_nuevo: 1, datos: 2 };
 
 // Reconocimiento por NOMBRE (via principal)
 function canonPorNombre(nombre) {
@@ -135,9 +136,7 @@ function canonEtapa(clave, etapas) {
 
 const NOMBRE_ETAPA = {
   lead_nuevo: "Lead Nuevo",
-  sin_respuesta: "Sin respuesta",
-  datos: "Datos",
-  por_consulta: "Por consulta"
+  datos: "Datos"
 };
 
 // -----------------------------------------------------
@@ -233,7 +232,8 @@ const etapaDetectada = usarAttr ? etapaDesdeAttr : etapaDesdeCrm;
 const etapaReconocida = etapaDetectada !== "otra";
 const etapa = (etapaDetectada === "otra" && ACTUAR_EN_ETAPA_NO_RECONOCIDA) ? "por_consulta" : etapaDetectada;
 const etapaNombre = NOMBRE_ETAPA[etapa] || (etapaClave ? String(etapaClave) : "Lead Nuevo");
-const lunaActua = ETAPAS_LUNA.indexOf(etapa) !== -1;
+const lunaPausada = attrs.luna_pausada === true || String(attrs.luna_pausada).toLowerCase() === "true";
+const lunaActua = !lunaPausada && ETAPAS_LUNA.indexOf(etapa) !== -1;
 
 // Las etapas que si existen en el CRM, para ver de un vistazo que clave agregar
 const etapasDelGrupo = etapasPipeline
@@ -242,7 +242,7 @@ const etapasDelGrupo = etapasPipeline
 
 if (!lunaActua) {
   console.log("🔕 Luna no responde. Etapa del lead: '" + etapaClave +
-    "' → " + (etapaReconocida ? "etapa fuera de las cuatro (correcto)" : "ETAPA NO RECONOCIDA") +
+    "' → " + (etapaReconocida ? "etapa fuera de Lead Nuevo/Datos (correcto)" : "ETAPA NO RECONOCIDA") +
     ". Etapas del CRM: " + (etapasDelGrupo.join(", ") || "sin pipeline_etapas"));
 }
 
@@ -262,6 +262,7 @@ return [{
     etapaNombre: etapaNombre,
     etapaReconocida: etapaReconocida,
     lunaActua: lunaActua,
+    lunaPausada: lunaPausada,
     etapasPipeline: etapasPipeline,
     etapasDelGrupo: etapasDelGrupo,
     attrs: attrs,
@@ -274,6 +275,7 @@ return [{
       usoAvanceInterno: usarAttr,
       etapaReconocida: etapaReconocida,
       lunaActua: lunaActua,
+      lunaPausada: lunaPausada,
       etapasDelGrupo: etapasDelGrupo,
       errorSupabase,
       errorChatwoot,

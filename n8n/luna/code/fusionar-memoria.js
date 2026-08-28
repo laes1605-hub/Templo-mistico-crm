@@ -25,12 +25,10 @@ const conversationId = estado.conversationId;
 const etapa = estado.etapa || "lead_nuevo";
 
 const OBJETIVOS_ETAPA = {
-  lead_nuevo: "Saludar, presentarte como Luna y PREGUNTAR EL MOTIVO DE LA CONSULTA. Nada de datos.",
-  sin_respuesta: "VALIDAR el motivo de la consulta e indagar un poco sobre su respuesta, para saber si el trabajo es PERSONAL o de PAREJA. Nada de datos.",
-  datos: "RECOGER la informacion de la consulta segun el caso: PAREJA = nombre del cliente, nombre de la persona a consultar y una foto de cada uno (o una foto de los dos); PERSONAL = nombre del cliente, una foto de el y una foto de la palma de su mano derecha. Nunca preguntar el motivo.",
-  por_consulta: "VALIDAR el sentimiento del cliente, dar PRUEBA SOCIAL y RETENERLO hasta que el Maestro lo contacte. Prohibido pedir datos, fotos o el motivo."
+  lead_nuevo: "Saludar, presentarte como Luna y PREGUNTAR EL MOTIVO DE LA CONSULTA. Al terminar, pasar inmediatamente a Datos. Nada de datos en este turno.",
+  datos: "VALIDAR el tipo de trabajo a partir de lo que cuenta el cliente y enviarle, en un solo mensaje, la lista completa de datos que necesita para ese trabajo. Despues de enviar la lista, Luna queda pausada en este chat."
 };
-const NOMBRES_ETAPA_FICHA = { lead_nuevo: "Lead Nuevo", sin_respuesta: "Sin respuesta", datos: "Datos", por_consulta: "Por consulta" };
+const NOMBRES_ETAPA_FICHA = { lead_nuevo: "Lead Nuevo", datos: "Datos" };
 
 const bool = (v) => v === true || v === "true" || v === 1 || v === "1";
 const txt = (v) => (v === null || v === undefined) ? "" : String(v).trim();
@@ -59,7 +57,9 @@ const checklist = {
   foto_cliente_url: txt(attrs.foto_cliente_url),
   foto_otra_persona_url: txt(attrs.foto_otra_persona_url),
   foto_mano_url: txt(attrs.foto_mano_url),
-  consulta_lista_enviada: bool(attrs.consulta_lista_enviada)
+  consulta_lista_enviada: bool(attrs.consulta_lista_enviada),
+  lista_requisitos_enviada: bool(attrs.lista_requisitos_enviada),
+  luna_pausada: bool(attrs.luna_pausada)
 };
 if (["pareja", "personal"].indexOf(checklist.tipo_trabajo) === -1) checklist.tipo_trabajo = "";
 
@@ -123,17 +123,17 @@ if (ia && typeof ia === "object") {
 const PALABRAS_PAREJA = [
   "pareja", "novio", "novia", "esposo", "esposa", "marido", "mujer", "concubina", "concubino",
   "exnovio", "exnovia", "ex novio", "ex novia", " ex ", "amarre", "amarres", "amarrar", "amarrado",
-  "retorno", "retornar", "recuperar", "recuperarlo", "recuperarla", "volver con", "vuelva conmigo",
+  "retorno", "retornar", "recuperar", "recuperacion", "recuperarlo", "recuperarla", "volver con", "vuelva conmigo",
   "reconquistar", "enamorar", "enamore", "dominio", "dominar", "dominante", "alejamiento", "alejar",
   "endulzamiento", "endulzar", "infiel", "infidelidad", "amante", "me dejo", "me dejo", "se fue",
-  "terminamos", "separamos", "separacion", "reconcili", "sexo", "acostar", "intimidad",
+  "terminamos", "separamos", "separacion", "reconcili", "relacion", "amor", "sexo", "acostar", "intimidad",
   "que me quiera", "que se fije", "conquistar", "controlar", "obedezca", "ligadura", "esa persona"
 ];
 const PALABRAS_PERSONAL = [
   "suerte", "prosperidad", "abundancia", "dinero", "empleo", "trabajo", "negocio", "empresa",
   "limpieza", "limpias", "amuleto", "proteccion", "brujeria", "mal de ojo", "envidia",
   "mala vibra", "energia negativa", "chance", "loteria", "casino", "apuestas", "juego", "juegos",
-  "azar", "salud", "caminos", "abrir caminos", "entierro", "salamiento", "prospero", "progresar"
+  "azar", "salud", "caminos", "abrir caminos", "entierro", "salamiento", "prospero", "progresar", "suerte"
 ];
 
 function clasificarPorPalabras(texto) {
@@ -160,6 +160,28 @@ try {
   textoParaClasificar += " " + delCliente.map(m => m.content).join(" ");
 } catch (e) {}
 const tipoPorPalabras = clasificarPorPalabras(textoParaClasificar);
+
+function categoriaPorPalabras(texto) {
+  const t = " " + String(texto || "").toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "") + " ";
+  const reglas = [
+    ["retorno", [" recuperar", " recuperacion", " vuelva", " volver", " retorno", " me dejo", " se fue"]],
+    ["amor", [" amor", " enamorar", " conquistar", " me quiera", " se fije"]],
+    ["suerte", [" suerte", " chance", " loteria", " casino", " apuestas", " azar"]],
+    ["prosperidad", [" dinero", " prosperidad", " abundancia", " negocio", " empleo", " trabajo"]],
+    ["limpieza", [" limpieza", " brujeria", " mal de ojo", " energia pesada", " mala vibra"]],
+    ["proteccion", [" proteccion", " proteger", " escudo"]],
+    ["dominio", [" dominio", " dominar", " obedezca", " controlar"]],
+    ["alejamiento", [" alejamiento", " alejar", " amante", " infidelidad"]],
+    ["endulzamiento", [" endulzamiento", " endulzar"]],
+    ["sexual", [" sexo", " intimidad", " acostar"]]
+  ];
+  for (const [categoria, palabras] of reglas) {
+    if (palabras.some(p => t.indexOf(p) !== -1)) return categoria;
+  }
+  return "";
+}
+const categoriaPorTexto = categoriaPorPalabras(textoParaClasificar);
 
 // -----------------------------------------------------
 // C) FOTO DE ESTE TURNO (asignacion determinista)
@@ -234,11 +256,11 @@ if (checklist.tipo_trabajo) {
 // -----------------------------------------------------
 const sinDatosAun = !checklist.nombre_cliente && !checklist.nombre_otra_persona &&
   !checklist.foto_cliente && !checklist.foto_otra_persona && !checklist.foto_mano;
-const etapaTemprana = ["lead_nuevo", "sin_respuesta"].indexOf(etapa) !== -1;
+const etapaTemprana = ["lead_nuevo", "datos"].indexOf(etapa) !== -1;
 const tipoPorIa = (ia && typeof ia === "object") ? txt(ia.tipo_trabajo).toLowerCase() : "";
 
 if (checklist.tipo_trabajo && sinDatosAun && etapaTemprana && tipoPorPalabras &&
-    tipoPorIa === tipoPorPalabras && tipoPorPalabras !== checklist.tipo_trabajo) {
+    (etapa === "datos" || !tipoPorIa || tipoPorIa === tipoPorPalabras) && tipoPorPalabras !== checklist.tipo_trabajo) {
   const anterior = checklist.tipo_trabajo;
   checklist.tipo_trabajo = tipoPorPalabras;
   novedades.push("tipo_trabajo_corregido:" + anterior + "→" + tipoPorPalabras);
@@ -250,6 +272,19 @@ if (!checklist.tipo_trabajo && tipoPorPalabras) {
   novedades.push("tipo_trabajo_por_palabras:" + tipoPorPalabras);
 }
 
+if (!checklist.motivo_categoria && categoriaPorTexto) {
+  checklist.motivo_categoria = categoriaPorTexto;
+  novedades.push("motivo_categoria_por_palabras:" + categoriaPorTexto);
+}
+if (!checklist.motivo_conocido && (tipoPorPalabras || categoriaPorTexto)) {
+  checklist.motivo_conocido = true;
+  novedades.push("motivo_conocido_por_palabras");
+}
+if (!checklist.motivo_resumen && categoriaPorTexto && textoParaClasificar.trim()) {
+  checklist.motivo_resumen = textoParaClasificar.trim().substring(0, 200);
+  novedades.push("motivo_resumen_por_palabras");
+}
+
 // -----------------------------------------------------
 // QUE FALTA (segun el tipo de trabajo)
 // -----------------------------------------------------
@@ -257,14 +292,14 @@ const faltantes = [];
 if (!checklist.tipo_trabajo) {
   faltantes.push({ clave: "tipo_trabajo", etiqueta: "saber si el trabajo es personal o de pareja" });
 } else if (checklist.tipo_trabajo === "pareja") {
-  if (!checklist.nombre_cliente) faltantes.push({ clave: "nombre_cliente", etiqueta: "tu nombre completo" });
-  if (!checklist.nombre_otra_persona) faltantes.push({ clave: "nombre_otra_persona", etiqueta: "el nombre completo de la persona a consultar" });
-  if (!checklist.foto_cliente) faltantes.push({ clave: "foto_cliente", etiqueta: "una foto tuya (rostro visible)" });
-  if (!checklist.foto_otra_persona) faltantes.push({ clave: "foto_otra_persona", etiqueta: "una foto de esa persona (o una foto donde salgan los dos)" });
+  if (!checklist.nombre_cliente) faltantes.push({ clave: "nombre_cliente", etiqueta: "el nombre del cliente" });
+  if (!checklist.nombre_otra_persona) faltantes.push({ clave: "nombre_otra_persona", etiqueta: "el nombre de la persona a consultar" });
+  if (!checklist.foto_cliente) faltantes.push({ clave: "foto_cliente", etiqueta: "una foto del cliente" });
+  if (!checklist.foto_otra_persona) faltantes.push({ clave: "foto_otra_persona", etiqueta: "una foto de la persona a consultar o una foto donde salgan los dos" });
 } else {
-  if (!checklist.nombre_cliente) faltantes.push({ clave: "nombre_cliente", etiqueta: "tu nombre completo" });
-  if (!checklist.foto_cliente) faltantes.push({ clave: "foto_cliente", etiqueta: "una foto tuya (rostro visible)" });
-  if (!checklist.foto_mano) faltantes.push({ clave: "foto_mano", etiqueta: "una foto de la palma de tu mano derecha" });
+  if (!checklist.foto_cliente) faltantes.push({ clave: "foto_cliente", etiqueta: "una foto suya (rostro visible)" });
+  if (!checklist.foto_mano) faltantes.push({ clave: "foto_mano", etiqueta: "una foto de la palma de su mano derecha" });
+  if (!checklist.nombre_cliente) faltantes.push({ clave: "nombre_cliente", etiqueta: "su nombre completo" });
 }
 
 const consultaCompleta = Boolean(checklist.tipo_trabajo) && faltantes.length === 0;
@@ -286,6 +321,8 @@ const attrsGuardar = {
   foto_otra_persona_url: checklist.foto_otra_persona_url,
   foto_mano_url: checklist.foto_mano_url,
   fotos_pendientes: JSON.stringify(fotosPendientes),
+  lista_requisitos_enviada: checklist.lista_requisitos_enviada,
+  luna_pausada: checklist.luna_pausada,
   luna_etapa: etapa
 };
 
@@ -444,6 +481,8 @@ return [{
     faltantes: faltantes,
     faltantesTexto: faltantes.map(f => f.etiqueta).join(", "),
     consultaCompleta: consultaCompleta,
+    listaRequisitosEnviada: checklist.lista_requisitos_enviada,
+    lunaPausada: checklist.luna_pausada,
     contextoMemoria: contextoMemoria,
     novedades: novedades,
     fotoEvento: fotoEvento,

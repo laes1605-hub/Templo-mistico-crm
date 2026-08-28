@@ -82,6 +82,11 @@ function agregarNodo(nodo) {
 // ---------------------------------------------------------------------------
 // 1) NODOS REESCRITOS
 // ---------------------------------------------------------------------------
+// El candado se mantiene en un archivo versionado para que la pausa
+// automatica de cada chat se aplique antes de gastar llamadas de IA.
+reemplazarJsCode("Verificar CRM", "verificar-crm.js");
+porNombre.get("Verificar CRM").notes = "Corta por numero/canal, kill switch global, spam y pausa automatica de Datos.";
+
 reemplazarJsCode("Preparar Imagen", "preparar-imagen.js");
 porNombre.get("Preparar Imagen").notes = "Vision v2: clasifica la foto en rostro / pareja / palma y conserva la URL.";
 
@@ -138,7 +143,7 @@ agregarNodo({
   type: "n8n-nodes-base.if",
   typeVersion: 2.3,
   position: [4912, -1536],
-  notes: "Luna solo habla en Lead Nuevo, Sin respuesta, Datos y Por consulta.",
+  notes: "Luna solo habla en Lead Nuevo y Datos; despues de enviar la lista queda pausada en el chat.",
   parameters: {
     conditions: {
       options: { caseSensitive: true, leftValue: "", typeValidation: "loose", version: 3 },
@@ -163,7 +168,7 @@ agregarNodo({
   typeVersion: 2,
   position: [4912, -1312],
   onError: "continueRegularOutput",
-  notes: "Rama falsa: explica por que Luna no respondio (etapa fuera de las cuatro o no reconocida).",
+  notes: "Rama falsa: Luna permanece en silencio fuera de Lead Nuevo y Datos, o si la etapa no se reconoce.",
   parameters: { jsCode: codigo("registrar-silencio.js") }
 });
 

@@ -1,11 +1,14 @@
 // =====================================================
-// APLICAR TRANSICION DE ETAPA
-// Unico lugar donde Luna mueve el lead en el CRM:
-//   Lead Nuevo   -> Sin respuesta   (siempre, despues de saludar)
-//   Sin respuesta-> Datos           (cuando ya sabe motivo + tipo de trabajo)
-//   Datos        -> Por consulta    (cuando el archivo dice que no falta nada)
-//   Por consulta -> se queda        (Luna solo retiene hasta que llame el Maestro)
-// Ademas: etiquetas, atributos y expediente al Maestro por WhatsApp.
+// APLICAR TRANSICION DE ETAPA Y PAUSA DE LUNA
+//
+// Flujo solicitado:
+//   Lead Nuevo -> Datos (despues del saludo y la pregunta por el motivo)
+//   Datos      -> se queda en Datos; clasifica el trabajo y envia la lista
+//                  completa de requisitos una sola vez.
+//
+// Despues de enviar esa lista Luna se pausa completamente en ese chat:
+// agente_activo=false, custom_attribute luna_pausada=true y etiqueta
+// bot-pausado. El operador puede continuar manualmente la conversacion.
 // =====================================================
 const SUPABASE_URL = "https://qrrkokfmbdtodrqbfehs.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFycmtva2ZtYmR0b2RycWJmZWhzIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NzE5NTU0NSwiZXhwIjoyMTAyNzcxNTQ1fQ.bFwt6pAidvSEEuv3UNuKeZYwkfB-d2OPgMHM8MmwcD8";
@@ -25,8 +28,8 @@ const sbHeaders = {
 };
 
 const pulir = $input.first().json || {};
-const fusion = $("Fusionar Memoria").first().json;
-const checklist = fusion.checklist || pulir.checklist || {};
+const fusion = $("Fusionar Memoria").first().json || {};
+const checklist = pulir.checklist || fusion.checklist || {};
 const etapa = pulir.etapa || fusion.etapa || "lead_nuevo";
 const conversationId = pulir.conversationId || fusion.conversationId;
 const clienteId = pulir.clienteId || fusion.clienteId || null;
@@ -40,24 +43,15 @@ function normalizar(v) {
 
 const MAPA_ETAPAS = {
   lead_nuevo: ["nuevo_lead", "nuevo_lead_templo", "lead_nuevo", "leadnuevo", "nuevo", "nuevo_cliente"],
-  sin_respuesta: ["sin_respuesta", "sin_respuesta_templo", "sinrespuesta", "no_contesta", "no_contesta_templo", "nocontesta", "no_responde"],
-  datos: ["datos", "datos_templo", "solicitar_datos", "solicitud_datos", "en_datos", "pedir_datos"],
-  por_consulta: ["por_consulta", "por_consulta_templo", "porconsulta", "en_consulta", "en_consulta_templo", "espera_consulta", "consulta_pendiente"]
+  datos: ["datos", "datos_templo", "solicitar_datos", "solicitud_datos", "en_datos", "pedir_datos", "recoger_datos"]
 };
-// NOMBRES de etapa: es la via principal porque el CRM crea las etapas con
-// clave "etapa_<grupo>_<timestamp>" y lo unico estable es el nombre.
 const NOMBRES_ETAPA = {
   lead_nuevo: ["nuevo_lead", "lead_nuevo", "nuevo", "nuevo_cliente", "lead", "primer_contacto", "nuevo_contacto"],
-  sin_respuesta: ["sin_respuesta", "no_contesta", "sin_responder", "no_responde", "sin_contacto", "no_ha_respondido"],
-  datos: ["datos", "solicitar_datos", "pedir_datos", "en_datos", "datos_cliente", "datos_del_cliente", "recoleccion_datos", "solicitud_datos"],
-  por_consulta: ["por_consulta", "en_consulta", "espera_consulta", "consulta_pendiente", "esperando_maestro", "listo_para_consulta", "por_llamar", "espera_llamada"]
+  datos: ["datos", "solicitar_datos", "pedir_datos", "en_datos", "datos_cliente", "datos_del_cliente", "recoleccion_datos", "solicitud_datos"]
 };
-
 const TOKENS_NOMBRE = {
   lead_nuevo: ["nuevo lead", "lead nuevo", "nuevo"],
-  sin_respuesta: ["sin respuesta", "no contesta", "sin responder"],
-  datos: ["datos"],
-  por_consulta: ["por consulta", "en consulta", "espera consulta", "esperando"]
+  datos: ["datos", "solicitar datos", "pedir datos"]
 };
 
 function resolverClave(canon) {
@@ -68,17 +62,14 @@ function resolverClave(canon) {
   const universo = delGrupo.length ? delGrupo : etapasPipeline;
   if (!universo.length) return candidatasClave[0] || null;
 
-  // 1) por NOMBRE exacto (las claves son timestamps, el nombre es lo estable)
   for (const n of candidatasNombre) {
     const e = universo.find(x => normalizar(x.nombre) === n);
     if (e) return e.clave;
   }
-  // 2) por clave semilla
   for (const c of candidatasClave) {
     const e = universo.find(x => normalizar(x.clave) === c);
     if (e) return e.clave;
   }
-  // 3) por nombre parcial
   for (const t of tokens) {
     const e = universo.find(x => normalizar(x.nombre).indexOf(normalizar(t)) !== -1);
     if (e) return e.clave;
@@ -87,51 +78,31 @@ function resolverClave(canon) {
 }
 
 // -----------------------------------------------------
-// 1) DECIDIR DESTINO
+// 1) DECIDIR DESTINO Y SI HAY QUE PAUSAR
 // -----------------------------------------------------
 let destino = null;
 let razon = "sin_cambio";
 let forzado = false;
-
-// Resguardo anti-atasco: si despues de varios mensajes aun no hay tipo de
-// trabajo, se asume personal para que el lead no quede congelado.
-let mensajesCliente = 0;
-try {
-  const hist = $("Historial").first().json.payload || [];
-  mensajesCliente = hist.filter(m => m.message_type === 0 || m.message_type === "incoming").length;
-} catch (e) { mensajesCliente = 0; }
+const pausarChat = etapa === "datos" && pulir.pausarChat === true;
 
 if (etapa === "lead_nuevo") {
-  destino = "sin_respuesta";
-  razon = "saludo_realizado";
-} else if (etapa === "sin_respuesta") {
-  if (pulir.motivoOk) {
-    destino = "datos";
-    razon = "motivo_y_tipo_definidos";
-  } else if (!checklist.tipo_trabajo && mensajesCliente >= 5) {
-    checklist.tipo_trabajo = "personal";
-    if (!checklist.motivo_resumen) checklist.motivo_resumen = "Motivo pendiente de detalle, se asume trabajo personal.";
-    forzado = true;
-    destino = "datos";
-    razon = "anti_atasco_tipo_personal";
-  }
-} else if (etapa === "datos") {
-  if (pulir.consultaLista) {
-    destino = "por_consulta";
-    razon = "datos_completos";
-  }
+  destino = "datos";
+  razon = "saludo_realizado_motivo_preguntado";
+}
+// En Datos no hay una tercera etapa: Luna se queda en Datos. La pausa se
+// activa unicamente cuando ya envio la lista de requisitos al cliente.
+if (etapa === "datos" && pausarChat) {
+  razon = "lista_de_requisitos_enviada_luna_pausada";
 }
 
 // -----------------------------------------------------
-// 2) MOVER LA ETAPA EN EL CRM (Supabase clientes.estado)
+// 2) MOVER Lead Nuevo -> Datos EN EL CRM
 // -----------------------------------------------------
 let nuevaClave = null;
 let etapaMovida = false;
 let errorEstado = null;
-
-// El cliente puede no existir cuando se leyo el estado (lead recien creado):
-// "Sincronizar Supabase" lo crea en paralelo, asi que se vuelve a buscar.
 let clienteIdReal = clienteId;
+
 if (destino && !clienteIdReal && conversationId) {
   try {
     const res = await this.helpers.httpRequest({
@@ -158,21 +129,27 @@ if (destino) {
       etapaMovida = true;
     } catch (e) { errorEstado = e.message || "error estado"; }
   } else {
-    errorEstado = nuevaClave ? "sin cliente en supabase" : "no existe la etapa '" + destino + "' en pipeline_etapas del grupo " + grupo;
+    errorEstado = nuevaClave
+      ? "sin cliente en supabase"
+      : "no existe la etapa '" + destino + "' en pipeline_etapas del grupo " + grupo;
   }
 }
 
 // -----------------------------------------------------
-// 3) ATRIBUTOS EN CHATWOOT
+// 3) GUARDAR ESTADO DE LA PAUSA EN CHATWOOT
 // -----------------------------------------------------
-const attrs = { luna_etapa: destino || etapa, luna_etapa_crm_sync: etapaMovida };
-let errorAttrs = null;
-if (destino === "por_consulta") {
-  attrs.consulta_lista_enviada = true;
-  attrs.tiempo_consulta_lista = Math.floor(Date.now() / 1000);
+const attrs = {
+  luna_etapa: destino || etapa,
+  luna_etapa_crm_sync: destino ? etapaMovida : true
+};
+if (pausarChat) {
+  attrs.luna_pausada = true;
+  attrs.lista_requisitos_enviada = true;
+  attrs.luna_pausa_motivo = "Lista de requisitos enviada; continuar manualmente";
+  attrs.luna_pausada_en = Math.floor(Date.now() / 1000);
 }
-if (forzado) attrs.tipo_trabajo = checklist.tipo_trabajo;
 
+let errorAttrs = null;
 try {
   await this.helpers.httpRequest({
     method: "POST",
@@ -183,17 +160,37 @@ try {
   });
 } catch (e) { errorAttrs = e.message || "error attrs"; }
 
+// La bandera agente_activo es la que usa el CRM y Verificar CRM para cortar
+// el flujo desde el siguiente mensaje. Se guarda tambien el atributo anterior
+// como respaldo, por si el evento llega antes de que Supabase termine de crear
+// la conversacion.
+let pausaCRM = false;
+let errorPausaCRM = null;
+if (pausarChat && conversationId) {
+  try {
+    await this.helpers.httpRequest({
+      method: "PATCH",
+      url: SUPABASE_URL + "/rest/v1/conversaciones?chatwoot_conversation_id=eq." + encodeURIComponent(conversationId),
+      headers: sbHeaders,
+      body: { agente_activo: false },
+      json: true
+    });
+    pausaCRM = true;
+  } catch (e) { errorPausaCRM = e.message || "error pausando conversacion"; }
+}
+
 // -----------------------------------------------------
-// 4) ETIQUETAS (conserva las que no son de etapa)
+// 4) ETIQUETA VISIBLE Y EXPEDIENTE AL MAESTRO
 // -----------------------------------------------------
 let etiquetasFinales = [];
 let errorLabels = null;
 try {
   const actuales = Array.isArray(pulir.labels) ? pulir.labels : (Array.isArray(fusion.labels) ? fusion.labels : []);
-  const conservadas = actuales.filter(l => !/^etapa-/.test(String(l)));
+  const conservadas = actuales.filter(l => !/^etapa-/.test(String(l)) && String(l) !== "bot-pausado");
   const etapaActiva = destino || etapa;
   etiquetasFinales = [...new Set(conservadas.concat(["etapa-" + etapaActiva]))];
-  if (destino === "por_consulta") etiquetasFinales = [...new Set(etiquetasFinales.concat(["consulta-pendiente"]))];
+  if (pausarChat) etiquetasFinales.push("bot-pausado");
+  etiquetasFinales = [...new Set(etiquetasFinales)];
   await this.helpers.httpRequest({
     method: "POST",
     url: CHATWOOT_URL + "/api/v1/accounts/" + ACCOUNT_ID + "/conversations/" + conversationId + "/labels",
@@ -203,13 +200,8 @@ try {
   });
 } catch (e) { errorLabels = e.message || "error labels"; }
 
-// -----------------------------------------------------
-// 5) EXPEDIENTE AL MAESTRO
-// -----------------------------------------------------
 function dossier(titulo) {
-  const lineas = [];
-  lineas.push(titulo);
-  lineas.push("");
+  const lineas = [titulo, ""];
   lineas.push("👤 *Cliente:* " + (checklist.nombre_cliente || pulir.contactName || "Cliente"));
   lineas.push("📞 *Telefono:* " + (pulir.telefono || pulir.contactPhone || "sin telefono"));
   lineas.push("🔮 *Trabajo:* " + (checklist.tipo_trabajo ? checklist.tipo_trabajo.toUpperCase() : "por definir"));
@@ -220,8 +212,11 @@ function dossier(titulo) {
   if (checklist.foto_cliente) fotos.push("cliente" + (checklist.foto_cliente_url ? ": " + checklist.foto_cliente_url : ""));
   if (checklist.foto_otra_persona) fotos.push("persona a consultar" + (checklist.foto_otra_persona_url ? ": " + checklist.foto_otra_persona_url : ""));
   if (checklist.foto_mano) fotos.push("palma" + (checklist.foto_mano_url ? ": " + checklist.foto_mano_url : ""));
-  lineas.push("📷 *Fotos:* " + (fotos.length ? fotos.join(" | ") : "sin fotos"));
-  lineas.push("🏷️ *Etapa:* " + (destino ? NOMBRES_ETAPA[destino][0] : etapa));
+  lineas.push("📷 *Fotos:* " + (fotos.length ? fotos.join(" | ") : "pendientes"));
+  if (pulir.faltantes && pulir.faltantes.length) {
+    lineas.push("📋 *Pendiente para el cliente:* " + pulir.faltantes.map(f => f.etiqueta).join(", "));
+  }
+  lineas.push("🏷️ *Etapa:* Datos");
   lineas.push("");
   lineas.push("🔗 " + (pulir.chatwootUrl || CHATWOOT_URL));
   return lineas.join("\n");
@@ -229,12 +224,8 @@ function dossier(titulo) {
 
 let notificacion = null;
 let errorNotif = null;
-const hayNovedadDeDatos = novedades.some(n => /^(foto_|nombre_|tipo_|motivo_)/.test(n));
-
-if (destino === "por_consulta") {
-  notificacion = dossier("🔔 *CONSULTA LISTA PARA LLAMAR* 🔔\nEl cliente completo todos los datos y espera tu llamada.");
-} else if (etapa === "por_consulta" && hayNovedadDeDatos) {
-  notificacion = dossier("🔄 *EXPEDIENTE ACTUALIZADO*\nEl cliente envio informacion nueva mientras espera tu llamada.");
+if (pausarChat) {
+  notificacion = dossier("🔔 *LUNA PAUSADA - DATOS IDENTIFICADOS* 🔔\nLuna envio al cliente la lista de requisitos. Continua manualmente el chat.");
 }
 
 if (notificacion) {
@@ -257,7 +248,9 @@ return [{
     etapaNuevaClave: nuevaClave,
     transicion: Boolean(destino),
     razonTransicion: razon,
-    consultaLista: pulir.consultaLista || destino === "por_consulta",
+    consultaLista: false,
+    chatPausado: pausarChat,
+    etapaMovida: etapaMovida,
     etiquetas: etiquetasFinales,
     _debug: {
       ...(pulir._debug || {}),
@@ -266,11 +259,13 @@ return [{
       forzado,
       nuevaClave,
       etapaMovida,
-      mensajesCliente,
-      notificacionEnviada: Boolean(notificacion && !errorNotif),
+      pausarChat,
+      pausaCRM,
       errorEstado,
       errorAttrs,
+      errorPausaCRM,
       errorLabels,
+      notificacionEnviada: Boolean(notificacion && !errorNotif),
       errorNotif
     }
   }

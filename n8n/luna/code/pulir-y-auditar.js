@@ -1,17 +1,18 @@
 // =====================================================
 // PULIR Y AUDITAR RESPUESTA
-// Red de seguridad determinista: Luna no puede pedir lo que ya tiene.
-//  1) Extrae el texto del modelo y los marcadores ocultos.
-//  2) Audita frase por frase: si pide algo ya guardado, algo prohibido en
-//     la etapa, o la palma en trabajo de pareja, se descarta ese mensaje
-//     y se reemplaza por uno construido desde el archivo.
-//  3) Decide las banderas de transicion (motivoOk / consultaLista).
+// Red determinista de Luna por etapas:
+//   • Lead Nuevo: saludo, presentacion y motivo. Luego pasa a Datos.
+//   • Datos: clasifica el trabajo, envia una sola lista completa y se pausa.
+//
+// La lista se construye desde el checklist persistente. Asi Luna no depende
+// de que el modelo recuerde los requisitos ni vuelve a pedir datos guardados.
 // =====================================================
 const fusion = $("Fusionar Memoria").first().json;
 const checklist = fusion.checklist || {};
 const etapa = fusion.etapa || "lead_nuevo";
 const faltantes = fusion.faltantes || [];
 const tipo = checklist.tipo_trabajo || "";
+const listaYaEnviada = checklist.lista_requisitos_enviada === true;
 
 // -----------------------------------------------------
 // 1) TEXTO DEL MODELO
@@ -26,34 +27,22 @@ try {
 
 texto = String(texto || "").trim();
 const textoOriginalMarcadores = texto;
-
-// -----------------------------------------------------
-// 2) MARCADORES
-// -----------------------------------------------------
-const marcadorMotivo = /\[?\s*MOTIVO_OK\s*\]?/i.test(texto);
 const marcadorLista = /\[?\s*CONSULTA_LISTA\s*\]?/i.test(texto);
 
 texto = texto
   .replace(/\[?\s*MOTIVO_OK\s*\]?/gi, "")
   .replace(/\[?\s*CONSULTA_LISTA\s*\]?/gi, "")
-  .replace(/\n{3,}/g, "\n\n")
-  .trim();
-
-// Limpieza de formato no apto para WhatsApp/voz
-texto = texto
   .replace(/[*_`~]/g, "")
   .replace(/^#+\s*/gm, "")
   .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, "")
-  .replace(/\s+/g, " ")
+  .replace(/[ \t]+/g, " ")
+  .replace(/\n{3,}/g, "\n\n")
   .trim();
 
 // -----------------------------------------------------
-// 3) AUDITORIA DE REPETICION
-// Detecta cualquier frase que pida algo que Luna ya tiene guardado o algo
-// prohibido en la etapa. Si encuentra una, el mensaje se reconstruye.
+// 2) AUDITORIA DE REGLAS
 // -----------------------------------------------------
 const ES_PEDIDO = /necesito|env[ií]a(me|nos)?|m[aá]nda(me|nos)?|p[aá]sa(me|nos)?|comparte|reg[aá]la(me|nos)?|escribe|cu[aá]l es|c[oó]mo te llamas|c[oó]mo se llama|por favor|me puedes|podr[ií]as|falta(n)?|adjunta|sube|manda|\?/i;
-
 const PIDE_MOTIVO = [
   /por qu[eé]\s+(?:vienes|me buscas|me escribes|quieres|deseas|necesitas|llegaste)/i,
   /cu[aá]l es (?:el motivo|tu caso|tu situaci[oó]n|tu problema|la raz[oó]n)/i,
@@ -68,21 +57,10 @@ const PIDE_NOMBRE_OTRO = /c[oó]mo se llama|nombre de (?:la|esa|tu)?\s*(?:person
 const PIDE_NOMBRE = /\bnombre|apellidos|c[oó]mo (?:te llamas|se llama)/i;
 const PIDE_FOTO = /\bfoto|fotograf|selfie|\bcara\b|\brostro\b/i;
 const PIDE_PALMA = /palma|mano derecha|foto de tu mano|lectura de mano/i;
-// Preguntar si es personal o de pareja pertenece a la etapa Sin respuesta
 const PIDE_TIPO_TRABAJO = /personal o de pareja|es para ti o para|involucra a otra persona|trabajo (?:es )?(?:personal|de pareja)|para ti o para otra/i;
-
-const fotosRequeridas = tipo === "pareja"
-  ? ["foto_cliente", "foto_otra_persona"]
-  : (tipo === "personal" ? ["foto_cliente", "foto_mano"] : []);
-const fotosCompletas = fotosRequeridas.length > 0 && fotosRequeridas.every(k => checklist[k] === true);
-
-// Bandera de motivo conocido (se usa dentro de la auditoria y despues como salida)
-const motivoOk = etapa === "sin_respuesta" && Boolean(tipo) &&
-  (/\[?\s*MOTIVO_OK\s*\]?/i.test(textoOriginalMarcadores) || checklist.motivo_conocido === true);
 
 const frases = (texto.match(/[^.!?]+[.!?]*/g) || [texto]).map(s => s.trim()).filter(Boolean);
 const violaciones = [];
-
 for (const frase of frases) {
   const pedido = ES_PEDIDO.test(frase);
   const pideMotivo = PIDE_MOTIVO.some(re => re.test(frase));
@@ -90,30 +68,17 @@ for (const frase of frases) {
   const pideFoto = PIDE_FOTO.test(frase);
   const pidePalma = PIDE_PALMA.test(frase);
 
-  // --- Motivo: se pregunta una sola vez, y nunca despues de Sin respuesta ---
-  if (pideMotivo) {
-    if (etapa === "datos" || etapa === "por_consulta") violaciones.push("pregunto_motivo_en_" + etapa);
-    else if (etapa === "sin_respuesta" && checklist.motivo_conocido === true) violaciones.push("repitio_motivo");
-  }
-
-  // --- Preguntar de nuevo algo de una etapa anterior ---
+  if (pideMotivo && etapa === "datos") violaciones.push("pregunto_motivo_en_datos");
   if (tipo && PIDE_TIPO_TRABAJO.test(frase)) violaciones.push("repitio_pregunta_de_tipo_de_trabajo");
-
-  // --- Reglas duras por etapa ---
-  if (etapa === "lead_nuevo" && pedido && (pideNombre || pideFoto)) violaciones.push("pidio_datos_en_lead_nuevo");
-  // En Sin respuesta primero se valida el motivo; pedir datos antes es saltarse la etapa
-  if (etapa === "sin_respuesta" && !motivoOk && pedido && (pideNombre || pideFoto)) {
-    violaciones.push("pidio_datos_antes_de_clasificar");
+  if (etapa === "lead_nuevo" && pedido && (pideNombre || pideFoto || pidePalma)) {
+    violaciones.push("pidio_datos_en_lead_nuevo");
   }
-  if (etapa === "por_consulta" && pedido && (pideNombre || pideFoto)) violaciones.push("pidio_datos_en_por_consulta");
-
-  // --- Reglas duras por tipo de trabajo ---
   if (tipo === "pareja" && pidePalma) violaciones.push("pidio_palma_en_pareja");
-  if (tipo === "personal" && pedido && PIDE_NOMBRE_OTRO.test(frase)) violaciones.push("pidio_datos_de_otra_persona_en_personal");
+  if (tipo === "personal" && pedido && PIDE_NOMBRE_OTRO.test(frase)) {
+    violaciones.push("pidio_datos_de_otra_persona_en_personal");
+  }
 
   if (!pedido) continue;
-
-  // --- Nombres ya guardados ---
   if (pideNombre) {
     if (checklist.nombre_cliente && checklist.nombre_otra_persona) {
       violaciones.push("pidio_nombre_ya_guardado");
@@ -125,112 +90,128 @@ for (const frase of frases) {
       violaciones.push("pidio_nombre_pareja_ya_guardado");
     }
   }
-
-  // --- Fotos ya guardadas ---
-  if (pideFoto && fotosCompletas) violaciones.push("pidio_foto_ya_guardada");
+  if (pideFoto && tipo === "pareja" && checklist.foto_cliente && checklist.foto_otra_persona) {
+    violaciones.push("pidio_fotos_ya_guardadas");
+  }
+  if (pideFoto && tipo === "personal" && checklist.foto_cliente && checklist.foto_mano) {
+    violaciones.push("pidio_fotos_ya_guardadas");
+  }
   if (pidePalma && checklist.foto_mano) violaciones.push("pidio_palma_ya_guardada");
 }
 
 // -----------------------------------------------------
-// 4) MENSAJE DETERMINISTA DE RESPALDO
+// 3) LISTA EXACTA DE REQUISITOS
 // -----------------------------------------------------
-function primerNombre(v) {
-  return String(v || "").trim().split(/\s+/)[0] || "";
+function motivoVisible() {
+  const nombres = {
+    retorno: "recuperacion o retorno",
+    amor: "amor",
+    suerte: "suerte",
+    prosperidad: "prosperidad",
+    limpieza: "limpieza",
+    proteccion: "proteccion",
+    dominio: "dominio",
+    alejamiento: "alejamiento",
+    endulzamiento: "endulzamiento",
+    sexual: "amor y atraccion",
+    conquista: "amor y conquista",
+    juegos: "suerte y juegos de azar",
+    mal_de_ojo: "limpieza y proteccion"
+  };
+  return nombres[String(checklist.motivo_categoria || "").toLowerCase()] || "tu consulta";
 }
 
-function pedirDatosTexto() {
-  const pendientes = faltantes.slice(0, 2).map(f => f.etiqueta);
-  if (!pendientes.length) return "";
-  const union = pendientes.length === 1 ? pendientes[0] : pendientes.slice(0, -1).join(", ") + " y " + pendientes[pendientes.length - 1];
-  return "Para dejar lista tu consulta con el Maestro necesito " + union + ".";
+function requisitosPareja() {
+  const lista = [];
+  if (!checklist.nombre_cliente && !checklist.nombre_otra_persona) {
+    lista.push("el nombre de cada uno");
+  } else {
+    if (!checklist.nombre_cliente) lista.push("el nombre del cliente");
+    if (!checklist.nombre_otra_persona) lista.push("el nombre de la persona a consultar");
+  }
+  if (!checklist.foto_cliente && !checklist.foto_otra_persona) {
+    lista.push("una foto de cada uno o una foto juntos");
+  } else if (!checklist.foto_cliente) {
+    lista.push("una foto del cliente o una foto juntos");
+  } else if (!checklist.foto_otra_persona) {
+    lista.push("una foto de la persona a consultar o una foto juntos");
+  }
+  return lista;
 }
 
-function mensajeDeterminista(apertura) {
-  const nombre = primerNombre(checklist.nombre_cliente);
-  const llama = nombre ? ", " + nombre : "";
-  const abre = apertura ? apertura + " " : "";
+function requisitosPersonal() {
+  const lista = [];
+  if (!checklist.foto_cliente) lista.push("una foto suya");
+  if (!checklist.foto_mano) lista.push("una foto de la palma de su mano derecha");
+  if (!checklist.nombre_cliente) lista.push("su nombre completo");
+  return lista;
+}
 
+function listaRequisitos() {
+  if (tipo === "pareja") return requisitosPareja();
+  if (tipo === "personal") return requisitosPersonal();
+  return [];
+}
+
+const requisitosPendientes = listaRequisitos();
+function mensajeDeterminista() {
   if (etapa === "lead_nuevo") {
     return "Hola, bienvenido al Templo Mistico. Soy Luna, asistente del Maestro Raul. Cuentame, en que te puedo ayudar hoy?";
   }
-  if (etapa === "sin_respuesta") {
-    if (tipo) {
-      const primero = pedirDatosTexto();
-      return (abre + "Yo me encargo de preparar tu consulta con el Maestro. " + primero).trim();
-    }
-    return (abre + "Cuentame con tus palabras que esta pasando y que te gustaria lograr, asi el Maestro prepara bien tu consulta.").trim();
-  }
   if (etapa === "datos") {
-    if (!faltantes.length) {
-      return ("Perfecto" + llama + ", ya tengo toda tu informacion. Se la estoy enviando al Maestro Raul y el te llama pronto. La consulta es gratuita y sin compromiso.").trim();
+    if (!tipo) {
+      return "Para orientarte bien, cuentame si buscas ayuda por suerte, amor, recuperar a alguien, prosperidad, limpieza, proteccion u otro motivo.";
     }
-    return (abre + pedirDatosTexto()).trim();
+    if (!requisitosPendientes.length) {
+      return "Perfecto, ya tengo la informacion necesaria para tu consulta. El Maestro Raul revisara tu caso.";
+    }
+    const lineas = requisitosPendientes.map((requisito, i) => (i + 1) + ". " + requisito);
+    return "Entiendo que necesitas ayuda por " + motivoVisible() + ". Para preparar tu consulta necesito:\n" + lineas.join("\n");
   }
-  if (etapa === "por_consulta") {
-    return ("Tranquilo" + llama + ", ya le entregue toda tu informacion al Maestro Raul. El la revisa personalmente y te llama pronto. La consulta es gratuita y sin compromiso, solo pendiente del telefono.").trim();
-  }
-  return "Gracias por escribir al Templo Mistico. El Maestro Raul te atiende personalmente muy pronto.";
+  return "Gracias por escribir al Templo Mistico.";
 }
 
-// Apertura: primera frase del modelo si no es la que incumple
-let apertura = "";
-if (frases.length > 1 && !/[?]$/.test(frases[0]) && frases[0].length <= 190) {
-  const frase0 = frases[0];
-  const limpia = !PIDE_NOMBRE.test(frase0) && !PIDE_FOTO.test(frase0) && !PIDE_PALMA.test(frase0) &&
-    !PIDE_MOTIVO.some(re => re.test(frase0));
-  if (limpia) apertura = frase0.replace(/[.!?]+$/, "").trim();
-}
-
+// -----------------------------------------------------
+// 4) DECISIONES DETERMINISTAS
+// -----------------------------------------------------
+// En Datos, la primera vez que se conoce el tipo se envia obligatoriamente la
+// lista completa. No se deja que el modelo la fragmente en varios turnos.
+const listaRequisitosEnviada = etapa === "datos" && Boolean(tipo) && !listaYaEnviada;
+const pausarChat = listaRequisitosEnviada;
 let textoFinal = texto;
 let corregido = false;
-if (violaciones.length > 0 || !textoFinal) {
-  textoFinal = mensajeDeterminista(apertura);
+
+if (listaRequisitosEnviada || (etapa === "datos" && !tipo) || violaciones.length > 0 || !textoFinal) {
+  textoFinal = mensajeDeterminista();
   corregido = true;
 }
 
-// Si el modelo olvido el saludo/presentacion en Lead Nuevo, se garantiza
 if (etapa === "lead_nuevo" && !/soy luna|mi nombre es luna|asistente del maestro/i.test(textoFinal)) {
-  textoFinal = "Hola, bienvenido al Templo Mistico. Soy Luna, asistente del Maestro Raul. " + textoFinal;
+  textoFinal = mensajeDeterminista();
   corregido = true;
 }
 
-// Tope de longitud sin cortar frases a la mitad
-if (textoFinal.length > 620) {
-  const corte = textoFinal.substring(0, 620);
-  const ultimoCierre = Math.max(corte.lastIndexOf("."), corte.lastIndexOf("!"), corte.lastIndexOf("?"));
-  textoFinal = (ultimoCierre > 220 ? corte.substring(0, ultimoCierre + 1) : corte).trim();
-}
-
-if (!textoFinal) textoFinal = mensajeDeterminista("");
-
-// -----------------------------------------------------
-// 5) BANDERAS DE TRANSICION (deterministas)
-// -----------------------------------------------------
-const datosCompletos = Boolean(tipo) && faltantes.length === 0;
-const consultaLista = datosCompletos && (etapa === "datos" || etapa === "por_consulta");
-
-// Los marcadores [MOTIVO_OK] / [CONSULTA_LISTA] NUNCA salen al cliente:
-// la transicion de etapa se dispara con las banderas motivoOk / consultaLista.
 textoFinal = textoFinal
-  .replace(/\[?\s*CONSULTA_LISTA\s*\]?/gi, "")
   .replace(/\[?\s*MOTIVO_OK\s*\]?/gi, "")
-  .replace(/\s{2,}/g, " ")
+  .replace(/\[?\s*CONSULTA_LISTA\s*\]?/gi, "")
+  .replace(/[ \t]+/g, " ")
+  .replace(/\n{3,}/g, "\n\n")
   .trim();
+if (!textoFinal) textoFinal = mensajeDeterminista();
+
+const datosCompletos = Boolean(tipo) && (fusion.consultaCompleta === true || requisitosPendientes.length === 0);
 
 return [{
   json: {
-    // Compatibilidad con los nodos existentes
     choices: [{ message: { content: textoFinal } }],
     textoRespuesta: textoFinal,
-
-    // Banderas
-    motivoOk: motivoOk,
-    consultaLista: consultaLista,
+    motivoOk: false,
+    consultaLista: false,
     datosCompletos: datosCompletos,
+    listaRequisitosEnviada: listaRequisitosEnviada,
+    pausarChat: pausarChat,
     corregido: corregido,
     violaciones: violaciones,
-
-    // Contexto
     conversationId: fusion.conversationId,
     clienteId: fusion.clienteId,
     chatwootUrl: fusion.chatwootUrl,
@@ -249,9 +230,10 @@ return [{
       textoOriginal: texto,
       corregido: corregido,
       violaciones: violaciones,
-      marcadorMotivo: marcadorMotivo,
       marcadorLista: marcadorLista,
-      aperturaUsada: apertura
+      listaRequisitosEnviada: listaRequisitosEnviada,
+      pausarChat: pausarChat,
+      requisitos: requisitosPendientes
     }
   }
 }];

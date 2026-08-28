@@ -104,46 +104,49 @@ for (const frase of frases) {
 // -----------------------------------------------------
 function motivoVisible() {
   const nombres = {
-    retorno: "recuperacion o retorno",
-    amor: "amor",
-    suerte: "suerte",
+    retorno: "una recuperación o un retorno",
+    amor: "un tema de amor",
+    suerte: "tu suerte",
     prosperidad: "prosperidad",
-    limpieza: "limpieza",
-    proteccion: "proteccion",
-    dominio: "dominio",
-    alejamiento: "alejamiento",
-    endulzamiento: "endulzamiento",
-    sexual: "amor y atraccion",
+    limpieza: "una limpieza espiritual",
+    proteccion: "protección",
+    dominio: "un trabajo de dominio",
+    alejamiento: "un alejamiento",
+    endulzamiento: "un endulzamiento",
+    sexual: "amor y atracción",
     conquista: "amor y conquista",
-    juegos: "suerte y juegos de azar",
-    mal_de_ojo: "limpieza y proteccion"
+    juegos: "suerte en los juegos de azar",
+    mal_de_ojo: "limpieza y protección"
   };
-  return nombres[String(checklist.motivo_categoria || "").toLowerCase()] || "tu consulta";
+  return nombres[String(checklist.motivo_categoria || "").toLowerCase()] || "";
 }
 
+// Cada requisito se expresa completo y en lenguaje natural. La lista no usa
+// numeros: asi se entiende igual por texto y por nota de voz, sin que el
+// sintetizador diga "uno punto" o "dos punto".
 function requisitosPareja() {
   const lista = [];
   if (!checklist.nombre_cliente && !checklist.nombre_otra_persona) {
-    lista.push("el nombre de cada uno");
+    lista.push("los nombres completos de las dos personas");
   } else {
-    if (!checklist.nombre_cliente) lista.push("el nombre del cliente");
-    if (!checklist.nombre_otra_persona) lista.push("el nombre de la persona a consultar");
+    if (!checklist.nombre_cliente) lista.push("tu nombre completo");
+    if (!checklist.nombre_otra_persona) lista.push("el nombre completo de la otra persona");
   }
   if (!checklist.foto_cliente && !checklist.foto_otra_persona) {
-    lista.push("una foto de cada uno o una foto juntos");
+    lista.push("una foto clara y de frente de cada persona, o una sola foto clara donde aparezcan las dos");
   } else if (!checklist.foto_cliente) {
-    lista.push("una foto del cliente o una foto juntos");
+    lista.push("una foto tuya, clara y de frente, o una sola foto clara donde aparezcan los dos");
   } else if (!checklist.foto_otra_persona) {
-    lista.push("una foto de la persona a consultar o una foto juntos");
+    lista.push("una foto clara y de frente de la otra persona, o una sola foto clara donde aparezcan los dos");
   }
   return lista;
 }
 
 function requisitosPersonal() {
   const lista = [];
-  if (!checklist.foto_cliente) lista.push("una foto suya");
-  if (!checklist.foto_mano) lista.push("una foto de la palma de su mano derecha");
-  if (!checklist.nombre_cliente) lista.push("su nombre completo");
+  if (!checklist.nombre_cliente) lista.push("tu nombre completo");
+  if (!checklist.foto_cliente) lista.push("una foto tuya, clara y de frente, donde se vea bien tu rostro");
+  if (!checklist.foto_mano) lista.push("una foto clara de la palma de tu mano derecha");
   return lista;
 }
 
@@ -153,22 +156,44 @@ function listaRequisitos() {
   return [];
 }
 
+function iniciarConMayuscula(texto) {
+  const limpio = String(texto || "").trim();
+  return limpio ? limpio.charAt(0).toUpperCase() + limpio.slice(1) : "";
+}
+
 const requisitosPendientes = listaRequisitos();
 function mensajeDeterminista() {
   if (etapa === "lead_nuevo") {
-    return "Hola, bienvenido al Templo Mistico. Soy Luna, asistente del Maestro Raul. Cuentame, en que te puedo ayudar hoy?";
+    return "Hola, qué gusto saludarte. Soy Luna, asistente del Maestro Raúl en el Templo Místico. Estoy aquí para orientarte con mucho respeto. Cuéntame, ¿en qué podemos ayudarte hoy?";
   }
   if (etapa === "datos") {
     if (!tipo) {
-      return "Para orientarte bien, cuentame si buscas ayuda por suerte, amor, recuperar a alguien, prosperidad, limpieza, proteccion u otro motivo.";
+      return "Gracias por contarme tu situación. Para orientarte bien y pedirte únicamente los datos necesarios, ¿podrías decirme si buscas ayuda con suerte, amor, recuperar a alguien, prosperidad, limpieza, protección u otro motivo?";
     }
     if (!requisitosPendientes.length) {
-      return "Perfecto, ya tengo la informacion necesaria para tu consulta. El Maestro Raul revisara tu caso.";
+      return "Muchas gracias por tu confianza. Ya tengo todos los datos necesarios para preparar tu consulta. Voy a dejar el caso listo para que el Maestro Raúl lo revise con atención.";
     }
-    const lineas = requisitosPendientes.map((requisito, i) => (i + 1) + ". " + requisito);
-    return "Entiendo que necesitas ayuda por " + motivoVisible() + ". Para preparar tu consulta necesito:\n" + lineas.join("\n");
+
+    const motivo = motivoVisible();
+    const apertura = motivo
+      ? "Gracias por confiarme tu situación. Entiendo que buscas ayuda con " + motivo + ", y con mucho gusto vamos a orientarte."
+      : "Gracias por confiarme tu situación. Con mucho gusto vamos a orientarte.";
+    const cantidad = requisitosPendientes.length === 1 ? "este dato" : "estos datos";
+    const lineas = requisitosPendientes.map(requisito => iniciarConMayuscula(requisito) + ".");
+    const cierre = requisitosPendientes.length === 1
+      ? "Cuando lo tengas, envíamelo por aquí, por favor. Así podremos dejar todo listo para que el Maestro Raúl revise tu caso con atención. Muchas gracias."
+      : "Cuando los tengas, envíamelos por aquí, por favor. Así podremos dejar todo listo para que el Maestro Raúl revise tu caso con atención. Muchas gracias.";
+
+    return [
+      apertura,
+      "",
+      "Para preparar bien tu consulta, por favor envíame " + cantidad + ":",
+      ...lineas,
+      "",
+      cierre
+    ].join("\n");
   }
-  return "Gracias por escribir al Templo Mistico.";
+  return "Gracias por escribir al Templo Místico.";
 }
 
 // -----------------------------------------------------

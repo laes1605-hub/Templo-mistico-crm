@@ -13,14 +13,18 @@ cuando el lead está en las etapas **Nuevo Lead** o **Datos**.
 
 ### Si el trabajo es de pareja
 
-1. El nombre de cada uno.
-2. Una foto de cada uno **o una sola foto juntos**.
+- Los nombres completos de las dos personas.
+- Una foto clara y de frente de cada persona **o una sola foto clara donde aparezcan las dos**.
 
 ### Si es una consulta personal
 
-1. Una foto suya.
-2. Una foto de la palma de su mano derecha.
-3. Su nombre completo.
+- Su nombre completo.
+- Una foto clara y de frente donde se vea bien su rostro.
+- Una foto clara de la palma de su mano derecha.
+
+Luna pide todo lo pendiente de una sola vez, con un saludo empático, «por favor» y un cierre de
+agradecimiento. El mensaje al cliente no usa `1.`, `2.` ni `3.`. Así también suena natural si
+se responde con una nota de voz y no dice «uno punto» o «dos punto».
 
 Si alguno de esos datos ya estaba guardado, Luna solo muestra lo que falta. La foto de una
 pareja sirve para completar las dos fotos. En un trabajo personal, una foto de la palma nunca
@@ -42,13 +46,16 @@ La extracción usa IA y tiene un respaldo por palabras clave para casos como:
 
 ## Cómo queda pausada Luna
 
-Cuando Luna envía la lista en la etapa Datos, `Aplicar Transicion de Etapa` guarda:
+`Aplicar Transicion de Etapa` ahora se ejecuta **después** de que Chatwoot acepta el mensaje
+de texto o la nota de voz con la solicitud completa. En ese momento guarda:
 
 - `agente_activo = false` en la conversación de Supabase;
 - `luna_pausada = true` y `lista_requisitos_enviada = true` en los atributos de Chatwoot;
 - la etiqueta `bot-pausado` en la conversación.
 
-El candado se revisa **antes** de las llamadas a IA. Por eso el siguiente mensaje del cliente
+Si Chatwoot rechaza el envío, el flujo no guarda una pausa falsa y el chat queda disponible
+para reintentar o atenderlo manualmente. Cuando el envío sí termina, el candado se revisa
+**antes** de las llamadas a IA del siguiente turno. Por eso el siguiente mensaje del cliente
 no genera otra respuesta automática ni consume llamadas de análisis. El chat aparece como
 **Pausada** en el CRM para que el operador continúe manualmente.
 
@@ -101,8 +108,10 @@ La verificación comprueba que:
 - Luna solo actúa en Lead Nuevo y Datos;
 - Lead Nuevo saluda y transfiere directamente a Datos;
 - Datos clasifica suerte, amor y recuperación, envía todos los requisitos en un solo mensaje
-  y activa la pausa;
-- pareja acepta una foto de los dos;
-- personal exige foto, palma derecha y nombre completo;
+  amable y activa la pausa después del envío;
+- pareja exige ambos nombres completos y acepta una foto de los dos;
+- personal exige nombre completo, foto de rostro y palma derecha;
+- el audio no lee «uno punto» y conserva también el último requisito;
+- un envío fallido no pausa el chat;
 - una pausa corta el flujo antes de volver a llamar a la IA;
 - las fotos se clasifican y los datos persistidos no se pisan.

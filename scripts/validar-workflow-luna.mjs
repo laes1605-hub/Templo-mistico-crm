@@ -118,6 +118,12 @@ for (const nodo of wf.nodes) {
 ok(noCompila.length === 0, "el JavaScript de todos los nodos compila", noCompila.join(" | "));
 ok(!((wf.connections?.["Notificar Maestro Lead Caliente"]?.main || []).flat()).length, "la rama lateral de clasificacion no duplica mensajes");
 
+const destinosDe = (nombre) => (wf.connections?.[nombre]?.main || []).flat().map(d => d.node);
+const destinosPulir = destinosDe("Pulir y Auditar Respuesta");
+ok(!destinosPulir.includes("Aplicar Transicion de Etapa"), "la pausa no corre en paralelo antes de enviar el mensaje");
+ok(destinosDe("Enviar Mensaje Chatwoot").includes("Aplicar Transicion de Etapa"), "el texto pausa el chat solamente despues de enviarse");
+ok(destinosDe("Enviar Audio Chatwoot").includes("Aplicar Transicion de Etapa"), "el audio pausa el chat solamente despues de enviarse");
+
 // ---------------------------------------------------------------------------
 // 2. Etapas: solo Lead Nuevo y Datos
 // ---------------------------------------------------------------------------
@@ -233,7 +239,7 @@ async function fusionar({ attrs = {}, ia = null, foto = null, etapa = "datos", t
 let f = await fusionar({ ia: null, texto: "Busco suerte y quiero ganar en el chance." });
 ok(f.salida.checklist.tipo_trabajo === "personal", "suerte/chance → trabajo PERSONAL");
 ok(f.salida.checklist.motivo_categoria === "suerte", "suerte queda como categoria del caso");
-ok(f.salida.faltantes.map(x => x.clave).join(",") === "foto_cliente,foto_mano,nombre_cliente", "personal pide foto, palma derecha y nombre completo", f.salida.faltantesTexto);
+ok(f.salida.faltantes.map(x => x.clave).join(",") === "nombre_cliente,foto_cliente,foto_mano", "personal pide nombre completo, foto de rostro y palma derecha", f.salida.faltantesTexto);
 
 f = await fusionar({ ia: null, texto: "Quiero recuperar a mi pareja, se fue y necesito que vuelva." });
 ok(f.salida.checklist.tipo_trabajo === "pareja", "recuperar a la pareja → trabajo de PAREJA");
@@ -268,43 +274,70 @@ async function pulir({ texto, checklist = {}, etapa = "datos", faltantes = [], c
 }
 
 let p = await pulir({ texto: "Hola, ¿cómo te llamas? Envíame una foto.", checklist: { tipo_trabajo: "personal" }, faltantes: [
-  { clave: "foto_cliente", etiqueta: "una foto suya (rostro visible)" },
-  { clave: "foto_mano", etiqueta: "una foto de la palma de su mano derecha" },
-  { clave: "nombre_cliente", etiqueta: "su nombre completo" }
+  { clave: "nombre_cliente", etiqueta: "su nombre completo" },
+  { clave: "foto_cliente", etiqueta: "una foto suya, clara y de frente, con el rostro visible" },
+  { clave: "foto_mano", etiqueta: "una foto clara de la palma de su mano derecha" }
 ] });
-ok(p.pausarChat === true && p.listaRequisitosEnviada === true, "Datos con tipo identificado activa la pausa");
-ok(/una foto suya/.test(p.textoRespuesta) && /palma de su mano derecha/.test(p.textoRespuesta) && /su nombre completo/.test(p.textoRespuesta), "personal envía los tres requisitos en un solo mensaje");
+const respuestaPersonal = p;
+ok(p.pausarChat === true && p.listaRequisitosEnviada === true, "Datos con tipo identificado solicita la pausa");
+ok(/tu nombre completo/i.test(p.textoRespuesta) && /foto tuya[^\n]*rostro/i.test(p.textoRespuesta) && /palma de tu mano derecha/i.test(p.textoRespuesta), "personal envía nombre completo, foto de rostro y palma derecha");
+ok(/gracias/i.test(p.textoRespuesta) && /por favor/i.test(p.textoRespuesta) && /mucho gusto/i.test(p.textoRespuesta), "la solicitud de datos es amable y agradece la confianza");
+ok(!/^\s*\d+[.)]/m.test(p.textoRespuesta), "la solicitud no usa 1., 2. ni 3.");
+
+const codeAudio = jsDe("Preparar Body Audio");
+async function prepararAudio(textoRespuesta) {
+  const { salida } = await correr(codeAudio, {
+    entrada: {},
+    refs: { "Verificar si Enviar Audio": { textoRespuesta } }
+  });
+  return salida;
+}
+
+let audio = await prepararAudio(respuestaPersonal.textoRespuesta);
+ok(/nombre completo/i.test(audio.textoLimpio) && /rostro/i.test(audio.textoLimpio) && /palma de tu mano derecha/i.test(audio.textoLimpio), "el audio conserva hasta el último dato solicitado");
+ok(!/\b[123][.)]/.test(audio.textoLimpio) && !/\b(?:uno|dos|tres) punto\b/i.test(audio.textoLimpio), "el audio no dice uno punto, dos punto ni tres punto");
+
+audio = await prepararAudio("Para preparar tu consulta necesito:\n1. una foto tuya\n2. la palma de tu mano derecha\n3. tu nombre completo");
+ok(/Primero,/i.test(audio.textoLimpio) && /Segundo,/i.test(audio.textoLimpio) && /Tercero,/i.test(audio.textoLimpio), "una lista numerada antigua se convierte en conectores naturales");
+ok(/tu nombre completo\.$/i.test(audio.textoLimpio), "la limpieza de audio nunca recorta el requisito final");
 
 p = await pulir({ texto: "Lo que sea, dime tu nombre.", checklist: { tipo_trabajo: "pareja" }, faltantes: [
-  { clave: "nombre_cliente", etiqueta: "el nombre del cliente" },
-  { clave: "nombre_otra_persona", etiqueta: "el nombre de la persona a consultar" },
-  { clave: "foto_cliente", etiqueta: "una foto del cliente" },
-  { clave: "foto_otra_persona", etiqueta: "una foto de la persona a consultar o una foto donde salgan los dos" }
+  { clave: "nombre_cliente", etiqueta: "el nombre completo del cliente" },
+  { clave: "nombre_otra_persona", etiqueta: "el nombre completo de la otra persona" },
+  { clave: "foto_cliente", etiqueta: "una foto clara y de frente del cliente" },
+  { clave: "foto_otra_persona", etiqueta: "una foto clara y de frente de la otra persona o una foto clara donde aparezcan los dos" }
 ] });
-ok(p.pausarChat === true && /nombre de cada uno/.test(p.textoRespuesta) && /foto de cada uno o una foto juntos/.test(p.textoRespuesta), "pareja envía nombres y alternativa de foto juntos");
+ok(p.pausarChat === true && /nombres completos de las dos personas/i.test(p.textoRespuesta) && /foto clara y de frente de cada persona/i.test(p.textoRespuesta) && /donde aparezcan las dos/i.test(p.textoRespuesta), "pareja envía nombres completos y todas las opciones de fotografía");
+ok(!/^\s*\d+[.)]/m.test(p.textoRespuesta), "la solicitud de pareja tampoco usa numeración robótica");
 
 p = await pulir({ texto: "Hola, dime más.", checklist: {}, faltantes: [{ clave: "tipo_trabajo", etiqueta: "tipo" }] });
 ok(p.pausarChat === false && /suerte, amor/.test(p.textoRespuesta), "si no se entiende el trabajo todavía no pausa y pide aclaracion");
 
 p = await pulir({ texto: "Hola, envíame tu nombre y una foto.", checklist: {}, etapa: "lead_nuevo", faltantes: [] });
-ok(p.pausarChat === false && /soy luna/i.test(p.textoRespuesta) && /puedo ayudar/.test(p.textoRespuesta), "Lead Nuevo solo saluda, se presenta y pregunta motivo");
+ok(p.pausarChat === false && /soy luna/i.test(p.textoRespuesta) && /podemos ayudarte/i.test(p.textoRespuesta), "Lead Nuevo saluda con amabilidad, se presenta y pregunta el motivo");
 
 p = await pulir({ texto: "Cuentame otra vez el motivo.", checklist: { tipo_trabajo: "personal", nombre_cliente: "Ana" }, faltantes: [{ clave: "foto_cliente", etiqueta: "una foto suya" }] });
-ok(p.pausarChat === true && /foto suya/.test(p.textoRespuesta) && !/motivo de/i.test(p.textoRespuesta), "Datos no vuelve a preguntar el motivo");
+ok(p.pausarChat === true && /foto tuya/i.test(p.textoRespuesta) && /palma de tu mano derecha/i.test(p.textoRespuesta) && !/cu[eé]ntame.*motivo/i.test(p.textoRespuesta), "Datos pide todos los pendientes sin volver a preguntar el motivo");
 
 // ---------------------------------------------------------------------------
 // 5. Transicion y pausa persistente
 // ---------------------------------------------------------------------------
 grupo("5. Aplicar transicion y pausar el chat");
 const codeTransicion = jsDe("Aplicar Transicion de Etapa");
-async function transicionar({ etapa, pausarChat = false, checklist = {}, faltantes = [], pipeline: pipelineDef = pipeline, clienteId = "cli-1" }) {
+async function transicionar({ etapa, pausarChat = false, checklist = {}, faltantes = [], pipeline: pipelineDef = pipeline, clienteId = "cli-1", resultadoEnvio = { id: 900, message_type: 1 } }) {
+  const respuestaAuditada = {
+    etapa, pausarChat, listaRequisitosEnviada: pausarChat, conversationId: 55, clienteId,
+    telefono: "+573001112233", contactName: "Ana", chatwootUrl: "https://crm/55",
+    novedades: [], checklist, faltantes, labels: []
+  };
   const { salida, llamadas } = await correr(codeTransicion, {
-    entrada: {
-      etapa, pausarChat, listaRequisitosEnviada: pausarChat, conversationId: 55, clienteId,
-      telefono: "+573001112233", contactName: "Ana", chatwootUrl: "https://crm/55",
-      novedades: [], checklist, faltantes, labels: []
+    // La entrada real es la respuesta del nodo de envío de Chatwoot.
+    entrada: resultadoEnvio,
+    refs: {
+      "Pulir y Auditar Respuesta": respuestaAuditada,
+      "Fusionar Memoria": { checklist, etapa, grupo: "templo", etapasPipeline: pipelineDef, labels: [], novedades: [], conversationId: 55, clienteId },
+      Historial: { payload: [] }
     },
-    refs: { "Fusionar Memoria": { checklist, etapa, grupo: "templo", etapasPipeline: pipelineDef, labels: [], novedades: [], conversationId: 55, clienteId } , Historial: { payload: [] } },
     http: async () => ({})
   });
   return { salida, llamadas };
@@ -325,6 +358,15 @@ ok(attrs && attrs.body.custom_attributes.luna_pausada === true && attrs.body.cus
 const labels = t.llamadas.find(l => l.url.includes("/labels"));
 ok(labels && labels.body.labels.includes("bot-pausado") && labels.body.labels.includes("etapa-datos"), "deja visible bot-pausado en la conversación");
 ok(t.llamadas.some(l => l.url.includes("message/sendText") && /LUNA PAUSADA/.test(l.body.text)), "avisa al Maestro para continuar manualmente");
+
+t = await transicionar({
+  etapa: "datos",
+  pausarChat: true,
+  checklist: { tipo_trabajo: "personal" },
+  resultadoEnvio: { error: "Chatwoot no acepto el mensaje", statusCode: 500 }
+});
+ok(!t.salida.chatPausado && t.salida.razonTransicion === "envio_a_chatwoot_fallido_sin_transicion_ni_pausa", "si el mensaje falla, Luna no pausa el chat");
+ok(t.llamadas.length === 0, "un envío fallido no guarda una pausa falsa en CRM ni Chatwoot");
 
 t = await transicionar({ etapa: "datos", pausarChat: false, checklist: {}, faltantes: [{ clave: "tipo_trabajo", etiqueta: "tipo" }] });
 const patchConversacionesDatosSinTipo = t.llamadas.filter(l => l.method === "PATCH" && l.url.includes("/rest/v1/conversaciones?"));
@@ -351,7 +393,7 @@ p = await pulir({ texto: "respuesta del modelo", checklist: f.salida.checklist, 
 t = await transicionar({ etapa: "datos", pausarChat: p.pausarChat, checklist: f.salida.checklist, faltantes: f.salida.faltantes, pipeline });
 agenteActivo = !t.salida.chatPausado;
 ok(t.salida.etapaNueva === "datos" && p.pausarChat && agenteActivo === false, "turno 2: lista de pareja enviada y Luna queda pausada");
-ok(/nombre de cada uno/.test(p.textoRespuesta) && /foto de cada uno o una foto juntos/.test(p.textoRespuesta), "la lista coincide con los requisitos solicitados");
+ok(/nombres completos de las dos personas/i.test(p.textoRespuesta) && /foto clara y de frente de cada persona/i.test(p.textoRespuesta), "la solicitud final contiene todos los requisitos de pareja");
 
 console.log("\n────────────────────────────────────────");
 console.log("Pruebas: " + pruebas + " | Fallos: " + fallos);

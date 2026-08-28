@@ -292,14 +292,14 @@ const faltantes = [];
 if (!checklist.tipo_trabajo) {
   faltantes.push({ clave: "tipo_trabajo", etiqueta: "saber si el trabajo es personal o de pareja" });
 } else if (checklist.tipo_trabajo === "pareja") {
-  if (!checklist.nombre_cliente) faltantes.push({ clave: "nombre_cliente", etiqueta: "el nombre del cliente" });
-  if (!checklist.nombre_otra_persona) faltantes.push({ clave: "nombre_otra_persona", etiqueta: "el nombre de la persona a consultar" });
-  if (!checklist.foto_cliente) faltantes.push({ clave: "foto_cliente", etiqueta: "una foto del cliente" });
-  if (!checklist.foto_otra_persona) faltantes.push({ clave: "foto_otra_persona", etiqueta: "una foto de la persona a consultar o una foto donde salgan los dos" });
+  if (!checklist.nombre_cliente) faltantes.push({ clave: "nombre_cliente", etiqueta: "el nombre completo del cliente" });
+  if (!checklist.nombre_otra_persona) faltantes.push({ clave: "nombre_otra_persona", etiqueta: "el nombre completo de la otra persona" });
+  if (!checklist.foto_cliente) faltantes.push({ clave: "foto_cliente", etiqueta: "una foto clara y de frente del cliente" });
+  if (!checklist.foto_otra_persona) faltantes.push({ clave: "foto_otra_persona", etiqueta: "una foto clara y de frente de la otra persona o una foto clara donde aparezcan los dos" });
 } else {
-  if (!checklist.foto_cliente) faltantes.push({ clave: "foto_cliente", etiqueta: "una foto suya (rostro visible)" });
-  if (!checklist.foto_mano) faltantes.push({ clave: "foto_mano", etiqueta: "una foto de la palma de su mano derecha" });
   if (!checklist.nombre_cliente) faltantes.push({ clave: "nombre_cliente", etiqueta: "su nombre completo" });
+  if (!checklist.foto_cliente) faltantes.push({ clave: "foto_cliente", etiqueta: "una foto suya, clara y de frente, con el rostro visible" });
+  if (!checklist.foto_mano) faltantes.push({ clave: "foto_mano", etiqueta: "una foto clara de la palma de su mano derecha" });
 }
 
 const consultaCompleta = Boolean(checklist.tipo_trabajo) && faltantes.length === 0;

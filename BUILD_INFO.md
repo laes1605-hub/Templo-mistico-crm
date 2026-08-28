@@ -69,9 +69,11 @@
 - Workflow importable: `n8n/IMPORTAR-EN-N8N.json` (generado localmente; docs en `n8n/05-README-luna-etapas.md`)
 - Luna solo responde en **Lead Nuevo** y **Datos**; en el resto se queda callada
 - En Lead Nuevo saluda, se presenta, pregunta el motivo y pasa directamente a Datos
-- En Datos identifica el trabajo, envía en un solo mensaje los requisitos de pareja o consulta personal
-  y pausa completamente el chat para que continúe un operador
-- Verificación: `npm run check:luna` (48 pruebas sobre el código real de los nodos) — ✅ 0 fallos
+- En Datos identifica el trabajo y pide en un solo mensaje amable todos los datos completos:
+  nombres completos y fotos claras según sea pareja o consulta personal
+- La solicitud no usa `1.`, `2.` ni `3.`; en audio ya no dice «uno punto» y no pierde el último dato
+- Solo después de que Chatwoot acepta ese mensaje, Luna pausa completamente el chat para que continúe un operador
+- Verificación: `npm run check:luna` (63 pruebas sobre el código real de los nodos) — ✅ 0 fallos
 - Regenerar: `npm run build:luna` → `IMPORTAR-EN-N8N.json` (importar en n8n, llaves dentro,
   sin versionar) y `05-luna-etapas.github.json` (versionado, sin secretos, usa $env)
 - El n8n del Templo tiene N8N_BLOCK_ENV_ACCESS_IN_NODE: por eso el archivo importable

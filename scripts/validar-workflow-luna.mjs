@@ -167,17 +167,48 @@ const sil = await correr(codeSilencio, {
 });
 ok(sil.salida.lunaRespondio === false && sil.llamadas.length === 0, "el silencio de una etapa conocida no agrega mensajes");
 
-// Candado anterior al gasto de IA: pausa en Chatwoot corta el evento.
+// Candado anterior al gasto de IA: pausa en Chatwoot corta el evento SOLO en Datos con lista enviada.
+// En Nuevo Lead por NOMBRE, Luna debe reactivarse (validacion por nombre, no por clave).
 const codeCandado = jsDe("Verificar CRM");
+
+// Caso 1: Datos con lista ya enviada → debe bloquearse
+const candadoDatosPausada = await correr(codeCandado, {
+  entrada: { body: { conversation: { id: 55, custom_attributes: { lista_requisitos_enviada: true }, labels: [] }, sender: { phone_number: "+573001112233" } } },
+  http: async (opts) => {
+    if (opts.url.includes("config_general")) return [{ valor: "true" }];
+    if (opts.url.includes("pipeline_etapas")) return pipeline;
+    if (opts.url.includes("/rest/v1/conversaciones")) return [{ id: "conv-1", cliente_id: "cli-1", agente_activo: true, clientes: { id: "cli-1", estado: "datos_templo", es_spam: false } }];
+    if (opts.url.includes("/api/v1/accounts/1/conversations/55")) return { custom_attributes: { luna_pausada: true, lista_requisitos_enviada: true }, labels: ["bot-pausado"] };
+    return [];
+  }
+});
+ok(candadoDatosPausada.salida.botPuedeContestar === false, "la pausa corta el flujo en Datos con lista enviada", candadoDatosPausada.salida.motivo);
+
+// Caso 2: Nuevo Lead por NOMBRE con pausa previa → debe REACTIVARSE y estar activa
+const candadoNuevoLeadPausada = await correr(codeCandado, {
+  entrada: { body: { conversation: { id: 56, custom_attributes: { luna_pausada: true, lista_requisitos_enviada: true }, labels: ["bot-pausado"] }, sender: { phone_number: "+573001112233" } } },
+  http: async (opts) => {
+    if (opts.url.includes("config_general")) return [{ valor: "true" }];
+    if (opts.url.includes("pipeline_etapas")) return pipeline;
+    if (opts.url.includes("/rest/v1/conversaciones") && opts.url.includes("chatwoot_conversation_id=eq.56")) return [{ id: "conv-2", cliente_id: "cli-2", agente_activo: false, clientes: { id: "cli-2", estado: "nuevo_lead_templo", es_spam: false } }];
+    if (opts.url.includes("/api/v1/accounts/1/conversations/56")) return { custom_attributes: { luna_pausada: true, lista_requisitos_enviada: true }, labels: ["bot-pausado"] };
+    return [];
+  }
+});
+ok(candadoNuevoLeadPausada.salida.botPuedeContestar === true && candadoNuevoLeadPausada.salida.crmAgenteActivo === true, "Nuevo Lead por NOMBRE reactiva Luna aunque estuviera pausada", candadoNuevoLeadPausada.salida.motivo);
+
+// Caso 3: Validacion por nombre — clave dinamica pero nombre "Nuevo Lead" debe activar
 const candado = await correr(codeCandado, {
   entrada: { body: { conversation: { id: 55, custom_attributes: {}, labels: [] }, sender: { phone_number: "+573001112233" } } },
   http: async (opts) => {
     if (opts.url.includes("config_general")) return [{ valor: "true" }];
-    if (opts.url.includes("/api/v1/accounts/1/conversations/55")) return { custom_attributes: { luna_pausada: true }, labels: ["bot-pausado"] };
+    if (opts.url.includes("pipeline_etapas")) return [{ clave: "etapa_123456", nombre: "Nuevo Lead", grupo: "templo" }];
+    if (opts.url.includes("/rest/v1/conversaciones")) return [{ id: "conv-1", cliente_id: "cli-1", agente_activo: true, clientes: { id: "cli-1", estado: "etapa_123456", es_spam: false } }];
+    if (opts.url.includes("/api/v1/accounts/1/conversations/55")) return { custom_attributes: {}, labels: [] };
     return [];
   }
 });
-ok(candado.salida.botPuedeContestar === false && candado.salida.motivo === "luna_pausada_en_este_chat", "la pausa corta el flujo antes de la IA", candado.salida.motivo);
+ok(candado.salida.botPuedeContestar === true && candado.salida.crmEtapaCanon === "lead_nuevo", "validacion por NOMBRE: clave dinamica con nombre 'Nuevo Lead' activa Luna", candado.salida.motivo);
 
 // ---------------------------------------------------------------------------
 // 3. Memoria y clasificacion del caso
@@ -296,7 +327,10 @@ ok(labels && labels.body.labels.includes("bot-pausado") && labels.body.labels.in
 ok(t.llamadas.some(l => l.url.includes("message/sendText") && /LUNA PAUSADA/.test(l.body.text)), "avisa al Maestro para continuar manualmente");
 
 t = await transicionar({ etapa: "datos", pausarChat: false, checklist: {}, faltantes: [{ clave: "tipo_trabajo", etiqueta: "tipo" }] });
-ok(!t.salida.chatPausado && !t.llamadas.some(l => l.method === "PATCH" && l.url.includes("/rest/v1/conversaciones?")), "Datos sin tipo no se pausa");
+const patchConversacionesDatosSinTipo = t.llamadas.filter(l => l.method === "PATCH" && l.url.includes("/rest/v1/conversaciones?"));
+const noPausa = !t.salida.chatPausado && !patchConversacionesDatosSinTipo.some(l => l.body && l.body.agente_activo === false);
+ok(noPausa, "Datos sin tipo no se pausa (puede reactivar agente_activo=true pero no pausa)");
+ok(patchConversacionesDatosSinTipo.some(l => l.body && l.body.agente_activo === true), "Datos sin tipo asegura agente_activo=true por validacion por nombre");
 
 t = await transicionar({ etapa: "sin_respuesta", pausarChat: true });
 ok(t.salida.etapaNueva === "sin_respuesta" && !t.salida.chatPausado, "una etapa antigua nunca se activa ni se pausa");

@@ -24,8 +24,11 @@ const conv = body.conversation || {};
 const conversationId = conv.id || body.conversation_id || 0;
 
 // -----------------------------------------------------
-// NORMALIZADOR DE ETAPAS (tolerante a las claves del CRM)
+// NORMALIZADOR DE ETAPAS — VALIDACION POR NOMBRE (no por clave)
 // -----------------------------------------------------
+// El usuario edita el NOMBRE visible en el CRM (ej: "Nuevo Lead", "Datos").
+// La clave puede ser "nuevo_lead", "etapa_templo_1734567890123" o cualquier
+// timestamp. Por eso la via principal es el NOMBRE, no la clave.
 function normalizar(v) {
   return String(v || "")
     .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
@@ -33,22 +36,29 @@ function normalizar(v) {
     .replace(/[\s\-]+/g, "_");
 }
 
-// Claves semilla del CRM (las etapas creadas a mano traen clave
-// "etapa_<grupo>_<timestamp>", por eso el reconocimiento real es por NOMBRE).
+// Claves semilla del CRM (compatibilidad hacia atras). No son la via principal,
+// pero se mantienen por si alguna instalacion antigua aun usa claves fijas.
 const MAPA_ETAPAS = {
-  lead_nuevo: ["nuevo_lead", "nuevo_lead_templo", "lead_nuevo", "leadnuevo", "nuevo", "nuevo_cliente", "nuevo_templo"],
+  lead_nuevo: ["nuevo_lead", "nuevo_lead_templo", "lead_nuevo", "leadnuevo", "nuevo", "nuevo_cliente", "nuevo_templo", "etapa_nuevo_lead", "etapa_lead_nuevo"],
   sin_respuesta: ["sin_respuesta", "sin_respuesta_templo", "sinrespuesta", "no_contesta", "no_contesta_templo", "nocontesta", "no_responde", "sin_contacto"],
-  datos: ["datos", "datos_templo", "solicitar_datos", "solicitud_datos", "en_datos", "pedir_datos", "recoger_datos"],
+  datos: ["datos", "datos_templo", "solicitar_datos", "solicitud_datos", "en_datos", "pedir_datos", "recoger_datos", "etapa_datos"],
   por_consulta: ["por_consulta", "por_consulta_templo", "porconsulta", "en_consulta", "en_consulta_templo", "espera_consulta", "consulta_pendiente", "esperando_maestro"]
 };
 
-// NOMBRES de etapa (lo que ves en el CRM). Esta es la via principal:
-// da igual que la clave sea "etapa_templo_1787627846123".
+// NOMBRES de etapa (lo que ves en el CRM). VIA PRINCIPAL: validacion por nombre.
 const NOMBRES_ETAPA = {
-  lead_nuevo: ["nuevo_lead", "lead_nuevo", "nuevo", "nuevo_cliente", "lead", "primer_contacto", "nuevo_contacto"],
-  sin_respuesta: ["sin_respuesta", "no_contesta", "sin_responder", "no_responde", "sin_contacto", "no_ha_respondido"],
-  datos: ["datos", "solicitar_datos", "pedir_datos", "en_datos", "datos_cliente", "datos_del_cliente", "recoleccion_datos", "solicitud_datos"],
-  por_consulta: ["por_consulta", "en_consulta", "espera_consulta", "consulta_pendiente", "esperando_maestro", "listo_para_consulta", "por_llamar", "espera_llamada"]
+  lead_nuevo: [
+    "nuevo_lead", "lead_nuevo", "nuevo", "nuevo_cliente", "lead",
+    "primer_contacto", "nuevo_contacto", "nuevo_lead_templo", "lead_nuevo_templo",
+    "nuevo_templo", "nuevo lead", "lead nuevo", "nuevo cliente", "nuevo contacto"
+  ],
+  sin_respuesta: ["sin_respuesta", "no_contesta", "sin_responder", "no_responde", "sin_contacto", "no_ha_respondido", "sin respuesta", "no contesta"],
+  datos: [
+    "datos", "solicitar_datos", "pedir_datos", "en_datos", "datos_cliente",
+    "datos_del_cliente", "recoleccion_datos", "solicitud_datos", "recoger_datos",
+    "datos_templo", "solicitar datos", "pedir datos", "recoleccion datos"
+  ],
+  por_consulta: ["por_consulta", "en_consulta", "espera_consulta", "consulta_pendiente", "esperando_maestro", "listo_para_consulta", "por_llamar", "espera_llamada", "por consulta", "en consulta"]
 };
 
 // =====================================================
@@ -58,6 +68,11 @@ const NOMBRES_ETAPA = {
 // ves en el CRM (o su clave). Minusculas, sin tildes, espacios como guion bajo.
 // Ejemplo:  "clientes_interesados": "datos",
 const ETAPAS_EXTRA = {
+  // Ejemplos por si el cliente renombra las etapas:
+  // "nuevo_lead": "lead_nuevo",
+  // "lead_nuevo": "lead_nuevo",
+  // "datos": "datos",
+  // "informacion": "datos",
 };
 
 // Si la etapa NO se reconoce y esto esta en true, Luna responde en modo
@@ -74,61 +89,105 @@ const ETAPAS_TARDIAS = [
   "trabajo_completado", "trabajo_completado_templo", "trabajo_terminado",
   "perdido", "perdido_templo", "abandono",
   "spam_personal", "spam_templo", "archivado_personal", "archivado_templo",
-  "cliente", "cliente_activo", "atendido"
+  "cliente", "cliente_activo", "atendido",
+  "en_consulta", "consulta_hecha", "trabajo_proceso", "trabajo_completado"
 ];
 
 const ETAPAS_LUNA = ["lead_nuevo", "datos"];
 const ORDEN_ETAPA = { lead_nuevo: 1, datos: 2 };
 
-// Reconocimiento por NOMBRE (via principal)
+// Reconocimiento por NOMBRE (VIA PRINCIPAL — valida por nombre, no por clave)
 function canonPorNombre(nombre) {
   const n = normalizar(nombre);
   if (!n) return null;
+  const nOriginal = String(nombre || "").toLowerCase();
+
+  // 0) Configuracion manual
   if (ETAPAS_EXTRA[n] && ETAPAS_LUNA.indexOf(ETAPAS_EXTRA[n]) !== -1) return ETAPAS_EXTRA[n];
+  if (ETAPAS_EXTRA[nOriginal] && ETAPAS_LUNA.indexOf(ETAPAS_EXTRA[nOriginal]) !== -1) return ETAPAS_EXTRA[nOriginal];
+
+  // 1) Exact matches en NOMBRES_ETAPA (normalizados)
   for (const canon of Object.keys(NOMBRES_ETAPA)) {
-    if (NOMBRES_ETAPA[canon].indexOf(n) !== -1) return canon;
+    const lista = NOMBRES_ETAPA[canon].map(normalizar);
+    if (lista.indexOf(n) !== -1) return canon;
   }
+
+  // 2) Validacion robusta por NOMBRE visible (lo que pide el usuario)
+  //    Prioridad: datos > lead_nuevo > otras
+  //    - Si el nombre contiene "datos" → datos
+  if (n.includes("datos") || nOriginal.includes("datos")) return "datos";
+
+  //    - Si contiene "nuevo" y "lead" en cualquier orden, o solo "nuevo" o "lead" como etapa inicial
+  //      Ej: "Nuevo Lead", "Lead Nuevo", "Nuevo", "Lead", "Nuevo Cliente"
+  if ((n.includes("nuevo") && n.includes("lead")) ||
+      n === "nuevo_lead" || n === "lead_nuevo" ||
+      n === "nuevo" || n === "lead" ||
+      n.includes("nuevo_cliente") || n.includes("primer_contacto") || n.includes("nuevo_contacto")) {
+    return "lead_nuevo";
+  }
+
+  // 3) Otras etapas conocidas
   if (/sin[_ ]?respuesta|no[_ ]?contesta|sin[_ ]?responder/.test(n)) return "sin_respuesta";
-  if (/(^|_)datos/.test(n) || /solicitar_datos|pedir_datos|recoger_datos/.test(n)) return "datos";
   if (/por_consulta|en_consulta|espera.*consulta|consulta_pendiente|esperando_maestro|por_llamar/.test(n)) return "por_consulta";
-  if (/nuevo|lead/.test(n)) return "lead_nuevo";
   if (/consulta_hecha|pago|trabajo|perdido|spam|archiv|cliente|atendido/.test(n)) return "tardia";
+
   return null;
 }
 
-// Reconocimiento de la etapa guardada en clientes.estado
+// Reconocimiento de la etapa guardada en clientes.estado — VALIDA POR NOMBRE
 function canonEtapa(clave, etapas) {
   const k = normalizar(clave);
-  if (!k) return "lead_nuevo";
+  if (!k) return "lead_nuevo"; // default para leads nuevos sin etapa
 
-  // 1) configuracion manual del usuario
+  const lista = Array.isArray(etapas) ? etapas : [];
+
+  // 1) Configuracion manual del usuario (por nombre o clave)
   if (ETAPAS_EXTRA[k] && ETAPAS_LUNA.indexOf(ETAPAS_EXTRA[k]) !== -1) return ETAPAS_EXTRA[k];
 
-  // 2) claves semilla del CRM
+  // 2) VIA PRINCIPAL: buscar la fila por CLAVE, pero decidir por su NOMBRE visible
+  //    Esto es lo que pide el usuario: validar por NOMBRE, no por clave.
+  const filaPorClave = lista.find(e => normalizar(e.clave) === k);
+  if (filaPorClave) {
+    const porNombre = canonPorNombre(filaPorClave.nombre);
+    if (porNombre) return porNombre;
+    // Si el nombre no se reconoce pero es una etapa tardia conocida por nombre
+    if (ETAPAS_TARDIAS.indexOf(normalizar(filaPorClave.nombre)) !== -1) return "tardia";
+    // Fallback: si la clave es conocida (compatibilidad)
+    for (const canon of Object.keys(MAPA_ETAPAS)) {
+      if (MAPA_ETAPAS[canon].indexOf(k) !== -1) return canon;
+    }
+  }
+
+  // 3) Buscar por NOMBRE exacto (por si clientes.estado guarda el nombre visible)
+  const filaPorNombreExacto = lista.find(e => normalizar(e.nombre) === k);
+  if (filaPorNombreExacto) {
+    const porNombre = canonPorNombre(filaPorNombreExacto.nombre);
+    if (porNombre) return porNombre;
+  }
+
+  // 4) Buscar por NOMBRE que contiene la clave (ej: estado = "nuevo lead" y pipeline tiene "Nuevo Lead")
+  for (const e of lista) {
+    const nombreNorm = normalizar(e.nombre);
+    if (nombreNorm && (nombreNorm === k || k.includes(nombreNorm) || nombreNorm.includes(k))) {
+      const porNombre = canonPorNombre(e.nombre);
+      if (porNombre) return porNombre;
+    }
+  }
+
+  // 5) Claves semilla conocidas (backward compat)
   for (const canon of Object.keys(MAPA_ETAPAS)) {
     if (MAPA_ETAPAS[canon].indexOf(k) !== -1) return canon;
   }
 
-  // 3) LA CLAVE ES UN TIMESTAMP: se busca la etapa en el pipeline y se
-  //    reconoce por su NOMBRE (que es lo que el usuario edita).
-  const lista = Array.isArray(etapas) ? etapas : [];
-  const fila = lista.find(e => normalizar(e.clave) === k);
-  if (fila) {
-    const porNombre = canonPorNombre(fila.nombre);
-    if (porNombre) return porNombre;
-    if (ETAPAS_TARDIAS.indexOf(normalizar(fila.nombre)) !== -1) return "tardia";
-  }
-
-  // 4) por si clientes.estado guarda el nombre en vez de la clave
+  // 6) Directo por nombre (cuando la clave es en realidad un nombre)
   const directo = canonPorNombre(k);
   if (directo) return directo;
   if (ETAPAS_TARDIAS.indexOf(k) !== -1) return "tardia";
 
-  // 5) coincidencias parciales
+  // 7) Coincidencias parciales finales
   for (const canon of Object.keys(MAPA_ETAPAS)) {
     if (k.indexOf(canon) !== -1) return canon;
   }
-  if (fila && canonPorNombre(normalizar(fila.nombre))) return canonPorNombre(fila.nombre);
   if (ETAPAS_TARDIAS.some(t => k.indexOf(t) !== -1)) return "tardia";
 
   return "otra";
@@ -232,18 +291,44 @@ const etapaDetectada = usarAttr ? etapaDesdeAttr : etapaDesdeCrm;
 const etapaReconocida = etapaDetectada !== "otra";
 const etapa = (etapaDetectada === "otra" && ACTUAR_EN_ETAPA_NO_RECONOCIDA) ? "por_consulta" : etapaDetectada;
 const etapaNombre = NOMBRE_ETAPA[etapa] || (etapaClave ? String(etapaClave) : "Lead Nuevo");
-const lunaPausada = attrs.luna_pausada === true || String(attrs.luna_pausada).toLowerCase() === "true";
-const lunaActua = !lunaPausada && ETAPAS_LUNA.indexOf(etapa) !== -1;
+
+// Luna pausada y lista enviada — se leen de Chatwoot, pero se corrigen por nombre de etapa
+const lunaPausadaRaw = attrs.luna_pausada === true || String(attrs.luna_pausada).toLowerCase() === "true";
+const listaEnviadaRaw = attrs.lista_requisitos_enviada === true || String(attrs.lista_requisitos_enviada).toLowerCase() === "true";
+
+// Regla solicitada: Luna debe estar ACTIVA en Nuevo Lead y Datos, validando por NOMBRE.
+// - En "Nuevo Lead" (lead_nuevo) Luna SIEMPRE debe estar activa: si estaba pausada, se reactiva.
+// - En "Datos" Luna esta activa hasta que envia la lista; despues se pausa.
+let lunaPausada = lunaPausadaRaw;
+let listaEnviada = listaEnviadaRaw;
+let necesitaReactivar = false;
+
+if (etapa === "lead_nuevo") {
+  // En Nuevo Lead Luna debe estar activa por nombre, no por clave
+  if (lunaPausadaRaw || listaEnviadaRaw) {
+    necesitaReactivar = true;
+    console.log("♻️ Reactivando Luna: lead en etapa 'Nuevo Lead' por nombre, limpiando pausa previa");
+  }
+  lunaPausada = false;
+  listaEnviada = false;
+}
+
+const lunaActua = (etapa === "lead_nuevo" && ETAPAS_LUNA.indexOf(etapa) !== -1) ||
+                  (etapa === "datos" && ETAPAS_LUNA.indexOf(etapa) !== -1 && !lunaPausadaRaw) ||
+                  (ETAPAS_LUNA.indexOf(etapa) !== -1 && !lunaPausada);
 
 // Las etapas que si existen en el CRM, para ver de un vistazo que clave agregar
+// Se muestran TODAS las etapas, sin filtrar por grupo, para validar por nombre
 const etapasDelGrupo = etapasPipeline
-  .filter(e => !e.grupo || String(e.grupo) === String(grupo))
-  .map(e => String(e.clave) + " (" + String(e.nombre || "") + ")");
+  .map(e => String(e.clave) + " (" + String(e.nombre || "") + ")" + (e.grupo ? " [" + e.grupo + "]" : ""));
 
 if (!lunaActua) {
   console.log("🔕 Luna no responde. Etapa del lead: '" + etapaClave +
-    "' → " + (etapaReconocida ? "etapa fuera de Lead Nuevo/Datos (correcto)" : "ETAPA NO RECONOCIDA") +
-    ". Etapas del CRM: " + (etapasDelGrupo.join(", ") || "sin pipeline_etapas"));
+    "' (canon: " + etapaDetectada + ") → " + (etapaReconocida ? "etapa fuera de Lead Nuevo/Datos (correcto)" : "ETAPA NO RECONOCIDA") +
+    ". Etapas del CRM por NOMBRE: " + (etapasDelGrupo.join(", ") || "sin pipeline_etapas") +
+    ". Validacion por NOMBRE, no por clave.");
+} else {
+  console.log("✅ Luna ACTIVA por NOMBRE en etapa: '" + etapaClave + "' → canon: " + etapa + " (" + etapaNombre + "). Pausada previa: " + lunaPausadaRaw + " Lista enviada: " + listaEnviadaRaw);
 }
 
 return [{
@@ -263,6 +348,10 @@ return [{
     etapaReconocida: etapaReconocida,
     lunaActua: lunaActua,
     lunaPausada: lunaPausada,
+    lunaPausadaRaw: lunaPausadaRaw,
+    listaRequisitosEnviada: listaEnviada,
+    listaRequisitosEnviadaRaw: listaEnviadaRaw,
+    necesitaReactivar: necesitaReactivar,
     etapasPipeline: etapasPipeline,
     etapasDelGrupo: etapasDelGrupo,
     attrs: attrs,
@@ -271,12 +360,18 @@ return [{
     _debug: {
       etapaLeidaDelCrm: estadoCliente || "(vacia)",
       etapaInterpretada: etapa,
+      etapaClaveOriginal: etapaClave,
       nombreEtapaEnCrm: (etapasPipeline.find(e => normalizar(e.clave) === normalizar(estadoCliente)) || {}).nombre || null,
+      nombreEtapaPorClave: (etapasPipeline.find(e => normalizar(e.clave) === normalizar(estadoCliente)) || {}).nombre || null,
       usoAvanceInterno: usarAttr,
       etapaReconocida: etapaReconocida,
       lunaActua: lunaActua,
       lunaPausada: lunaPausada,
+      lunaPausadaRaw: lunaPausadaRaw,
+      listaEnviadaRaw: listaEnviadaRaw,
+      necesitaReactivar: necesitaReactivar,
       etapasDelGrupo: etapasDelGrupo,
+      validacionPorNombre: true,
       errorSupabase,
       errorChatwoot,
       totalEtapas: etapasPipeline.length

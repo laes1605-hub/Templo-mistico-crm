@@ -102,6 +102,25 @@ la modalidad.
 Si tu CRM usa otro nombre, agrega el nombre normalizado en `ETAPAS_EXTRA` dentro de
 `Leer Estado del Lead`, apuntándolo únicamente a `lead_nuevo` o `datos`.
 
+## Regla de etapas: NOMBRE, nunca creación
+
+Luna reconoce las etapas **por el nombre visible** del pipeline (`pipeline_etapas`),
+nunca por la clave. Al mover un cliente (Lead Nuevo → **Datos**):
+
+- Usa **la etapa "Datos" que ya está creada** en el CRM y escribe su clave real en
+  `clientes.estado`, aunque esa clave sea dinámica (`etapa_1754…`, etc.).
+- **Nunca crea etapas.** Si no existe ninguna etapa llamada "Datos" en el pipeline,
+  **no mueve al cliente a una clave inventada y no crea nada**: deja el cliente donde
+  está, registra `luna_etapa_crm_sync = false` y avisa en `_debug` que debe usarse la
+  etapa ya creada. Luna conserva su avance interno (`luna_etapa`) y no repite la
+  conversación.
+
+Si tu pipeline llegó a tener varias etapas llamadas "Datos" (duplicados de
+migraciones anteriores), ejecuta la migración
+`supabase/migrations/20260912_deduplicar_etapas_luna_por_nombre.sql`: consolida los
+duplicados por nombre conservando la etapa que ya estaba creada, re-apunta los clientes
+a su clave real y no crea ninguna etapa nueva.
+
 ## Verificación
 
 ```bash
@@ -110,6 +129,10 @@ npm run check:luna
 
 La verificación comprueba que:
 
+- Luna resuelve "Datos" **por nombre** y escribe la clave real de la etapa ya creada
+  (aunque sea `etapa_<ts>`);
+- si el pipeline no tiene etapa "Datos", **no escribe un estado inventado ni crea
+  ninguna etapa** y conserva el avance interno;
 - Luna solo actúa en Lead Nuevo y Datos;
 - Lead Nuevo saluda y transfiere directamente a Datos;
 - Datos clasifica suerte, amor y recuperación, envía todos los requisitos en un solo mensaje

@@ -74,7 +74,12 @@ const TOKENS_NOMBRE = {
   datos: ["datos", "solicitar datos", "pedir datos"]
 };
 
-// Resolver clave VALIDANDO POR NOMBRE (no por clave) — robusto a grupos
+// Resolver clave VALIDANDO POR NOMBRE (no por clave) — robusto a grupos.
+// REGLA EXPLICITA DEL USUARIO: solo se usa una etapa que YA EXISTA en
+// pipeline_etapas (la que esta creada en el CRM). Nunca se inventa una clave
+// ni se crea ninguna etapa: si no hay una etapa con el NOMBRE buscado, se
+// devuelve null y el cliente NO se mueve (Luna conserva su avance interno
+// con luna_etapa para no repetir la conversacion).
 function resolverClave(canon) {
   const candidatasClave = MAPA_ETAPAS[canon] || [];
   const candidatasNombre = NOMBRES_ETAPA[canon] || [];
@@ -82,7 +87,7 @@ function resolverClave(canon) {
 
   // Universo completo, sin filtrar por grupo al principio (validacion por nombre)
   const todas = etapasPipeline || [];
-  if (!todas.length) return candidatasClave[0] || null;
+  if (!todas.length) return null;
 
   // Helper para buscar con preferencia de grupo
   function buscarConPreferencia(predicado) {
@@ -97,7 +102,7 @@ function resolverClave(canon) {
     return e || null;
   }
 
-  // 1) Por NOMBRE exacto (via principal — validacion por nombre)
+  // 1) Por NOMBRE exacto (via principal — validacion por nombre, no por clave)
   for (const n of candidatasNombre) {
     const norm = normalizar(n);
     const e = buscarConPreferencia(x => normalizar(x.nombre) === norm);
@@ -111,21 +116,8 @@ function resolverClave(canon) {
     if (e) return e.clave;
   }
 
-  // 3) Por CLAVE exacta (compatibilidad)
-  for (const c of candidatasClave) {
-    const norm = normalizar(c);
-    const e = buscarConPreferencia(x => normalizar(x.clave) === norm);
-    if (e) return e.clave;
-  }
-
-  // 4) Por CLAVE que contiene token
-  for (const t of tokens) {
-    const normT = normalizar(t);
-    const e = buscarConPreferencia(x => normalizar(x.clave).includes(normT));
-    if (e) return e.clave;
-  }
-
-  // 5) Busqueda laxa por nombre que contenga "datos" o "nuevo"/"lead"
+  // 3) Busqueda laxa por NOMBRE visible: cualquier etapa cuyo nombre
+  //    contenga "datos", o "nuevo" + "lead" en cualquier orden
   if (canon === "datos") {
     const e = buscarConPreferencia(x => normalizar(x.nombre).includes("datos") || String(x.nombre || "").toLowerCase().includes("datos"));
     if (e) return e.clave;
@@ -138,8 +130,24 @@ function resolverClave(canon) {
     if (e) return e.clave;
   }
 
-  // Si no se encuentra, devolver la clave semilla como fallback (para que no falle el movimiento)
-  return candidatasClave[0] || null;
+  // 4) Por CLAVE exacta — SOLO si esa fila ya existe en el pipeline
+  //    (compatibilidad; la via principal sigue siendo el nombre)
+  for (const c of candidatasClave) {
+    const norm = normalizar(c);
+    const e = buscarConPreferencia(x => normalizar(x.clave) === norm);
+    if (e) return e.clave;
+  }
+
+  // 5) Por CLAVE que contiene token — solo contra filas existentes
+  for (const t of tokens) {
+    const normT = normalizar(t);
+    const e = buscarConPreferencia(x => normalizar(x.clave).includes(normT));
+    if (e) return e.clave;
+  }
+
+  // No existe ninguna etapa con ese NOMBRE en el pipeline: NO se inventa una
+  // clave semilla ni se crea una etapa. Null = no mover al cliente.
+  return null;
 }
 
 // -----------------------------------------------------
@@ -206,6 +214,8 @@ if (destino && !clienteIdReal && conversationId) {
   } catch (e) {}
 }
 
+const NOMBRE_DESTINO = { datos: "Datos", lead_nuevo: "Nuevo Lead" };
+
 if (destino) {
   nuevaClave = resolverClave(destino);
   if (clienteIdReal && nuevaClave) {
@@ -219,10 +229,15 @@ if (destino) {
       });
       etapaMovida = true;
     } catch (e) { errorEstado = e.message || "error estado"; }
+  } else if (!nuevaClave) {
+    // La etapa con ese NOMBRE no existe en el pipeline: NO se mueve al cliente
+    // a una clave inventada y NO se crea ninguna etapa. Luna conserva su
+    // avance interno (luna_etapa) y el operador solo tiene que usar la etapa
+    // que ya esta creada en el CRM.
+    errorEstado = "no existe ninguna etapa llamada '" + (NOMBRE_DESTINO[destino] || destino) +
+      "' en pipeline_etapas (busqueda por NOMBRE). No se movio al cliente y no se creo ninguna etapa: utiliza la etapa que ya esta creada en el CRM.";
   } else {
-    errorEstado = nuevaClave
-      ? "sin cliente en supabase"
-      : "no existe la etapa '" + destino + "' en pipeline_etapas del grupo " + grupo;
+    errorEstado = "sin cliente en supabase";
   }
 }
 
@@ -391,6 +406,8 @@ return [{
       forzado,
       nuevaClave,
       etapaMovida,
+      etapaResueltaPorNombre: Boolean(nuevaClave),
+      sinEtapaEnPipeline: Boolean(destino && !nuevaClave),
       envioFallido,
       pausaSolicitada,
       pausarChat,

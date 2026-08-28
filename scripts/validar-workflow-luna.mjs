@@ -372,6 +372,29 @@ let patch = t.llamadas.find(l => l.method === "PATCH" && l.url.includes("/rest/v
 ok(patch && patch.body.estado === "datos_templo", "escribe la clave real de Datos");
 ok(!t.salida.chatPausado, "el saludo no pausa el chat");
 
+// Validacion por NOMBRE con clave dinamica: usa la etapa "Datos" que YA esta
+// creada en el CRM (clave etapa_<ts>), nunca una clave semilla inventada.
+t = await transicionar({ etapa: "lead_nuevo", pipeline: [
+  { clave: "etapa_1754000000001", nombre: "Nuevo Lead", grupo: "templo" },
+  { clave: "etapa_1754000000002", nombre: "Datos", grupo: "templo" },
+  { clave: "sin_respuesta_templo", nombre: "Sin respuesta", grupo: "templo" }
+] });
+patch = t.llamadas.find(l => l.method === "PATCH" && l.url.includes("/rest/v1/clientes"));
+ok(patch && patch.body.estado === "etapa_1754000000002", "resuelve 'Datos' por NOMBRE y escribe la clave de la etapa ya creada");
+ok(t.salida._debug.etapaResueltaPorNombre === true, "la etapa se resuelve por nombre, no por clave semilla");
+
+// Si en el pipeline NO existe la etapa "Datos": no se mueve el cliente a una
+// clave inventada y no se crea ninguna etapa. Luna conserva su avance interno.
+t = await transicionar({ etapa: "lead_nuevo", pipeline: [
+  { clave: "nuevo_lead", nombre: "Nuevo Lead", grupo: "templo" },
+  { clave: "en_consulta", nombre: "En Consulta", grupo: "templo" }
+] });
+ok(!t.llamadas.some(l => l.method === "PATCH" && l.url.includes("/rest/v1/clientes")), "sin etapa 'Datos' en el pipeline no escribe un estado inventado");
+ok(t.salida._debug.sinEtapaEnPipeline === true && /no se creo ninguna etapa/.test(t.salida._debug.errorEstado || ""), "avisa que no se creo ninguna etapa y que debe usarse la ya creada");
+const attrsSinDatos = t.llamadas.find(l => l.url.includes("/custom_attributes"));
+ok(attrsSinDatos && attrsSinDatos.body.custom_attributes.luna_etapa_crm_sync === false, "sin etapa, Luna conserva su avance interno (no repite la conversacion)");
+ok(t.salida.etapaNueva === "datos", "el avance interno sigue siendo Datos aunque el CRM no se mueva");
+
 t = await transicionar({ etapa: "datos", pausarChat: true, checklist: { tipo_trabajo: "personal" }, faltantes: [{ clave: "foto_cliente", etiqueta: "una foto suya" }] });
 ok(t.salida.etapaNueva === "datos" && t.salida.transicion === false && t.salida.chatPausado === true, "Datos no cambia de etapa y activa la pausa");
 const pausa = t.llamadas.find(l => l.method === "PATCH" && l.url.includes("/rest/v1/conversaciones?chatwoot_conversation_id="));

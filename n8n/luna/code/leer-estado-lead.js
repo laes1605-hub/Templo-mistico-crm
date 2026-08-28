@@ -363,6 +363,10 @@ return [{
       etapaClaveOriginal: etapaClave,
       nombreEtapaEnCrm: (etapasPipeline.find(e => normalizar(e.clave) === normalizar(estadoCliente)) || {}).nombre || null,
       nombreEtapaPorClave: (etapasPipeline.find(e => normalizar(e.clave) === normalizar(estadoCliente)) || {}).nombre || null,
+      // Diagnostico: la clave guardada en clientes.estado debe existir en el
+      // pipeline. Si no existe, la etapa se interpreto por NOMBRE y el
+      // operador debe usar la etapa que ya esta creada (no crear otra).
+      estadoExisteEnPipeline: Boolean(estadoCliente && etapasPipeline.some(e => normalizar(e.clave) === normalizar(estadoCliente))),
       usoAvanceInterno: usarAttr,
       etapaReconocida: etapaReconocida,
       lunaActua: lunaActua,

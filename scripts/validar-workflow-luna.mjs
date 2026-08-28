@@ -253,6 +253,17 @@ f = await fusionar({ attrs: { tipo_trabajo: "personal", nombre_cliente: "Ana", f
 ok(f.salida.nombreClienteCompleto === false && f.salida.faltantes.map(x => x.clave).join(",") === "nombre_cliente", "un solo nombre sigue pendiente y Luna pide nombre completo");
 ok(/nombre parcial: Ana/i.test(f.salida.contextoMemoria), "la memoria distingue un nombre parcial de uno completo");
 
+// El contacto del mock se llama "Ana" (nombreContacto): Luna jamas debe
+// tomarlo. Solo cuentan los nombres que el cliente escribe en el chat.
+f = await fusionar({ ia: null, texto: "Necesito suerte en mi vida." });
+ok(!f.salida.checklist.nombre_cliente && f.salida.faltantes.some(x => x.clave === "nombre_cliente"),
+  "el nombre del perfil, del telefono o del contacto nunca llena el expediente: Luna siempre pregunta el nombre en trabajos personales");
+f = await fusionar({ ia: null, texto: "Quiero enamorar a alguien que me gusta." });
+ok(f.salida.checklist.tipo_trabajo === "pareja" && !f.salida.checklist.nombre_cliente && !f.salida.checklist.nombre_otra_persona &&
+  f.salida.faltantes.some(x => x.clave === "nombre_cliente") && f.salida.faltantes.some(x => x.clave === "nombre_otra_persona"),
+  "en trabajos de pareja tampoco toma nombres del perfil: pregunta siempre el tuyo y el de tu pareja");
+ok(/perfil de WhatsApp|contacto guardado/i.test(f.salida.contextoMemoria), "la memoria le recuerda a Luna que el nombre del perfil no cuenta");
+
 f = await fusionar({
   attrs: { tipo_trabajo: "pareja", nombre_cliente: "Ana", nombre_otra_persona: "Luis" },
   ia: { tipo_trabajo: "pareja", nombre_cliente: "Ana Perez", nombre_otra_persona: "Luis Gomez" }
@@ -318,11 +329,12 @@ ok(/tu nombre completo\.$/i.test(audio.textoLimpio), "la limpieza de audio nunca
 
 p = await pulir({ texto: "Lo que sea, dime tu nombre.", checklist: { tipo_trabajo: "pareja" }, faltantes: [
   { clave: "nombre_cliente", etiqueta: "el nombre completo del cliente" },
-  { clave: "nombre_otra_persona", etiqueta: "el nombre completo de la otra persona" },
+  { clave: "nombre_otra_persona", etiqueta: "el nombre completo de su pareja" },
   { clave: "foto_cliente", etiqueta: "una foto clara y de frente del cliente" },
-  { clave: "foto_otra_persona", etiqueta: "una foto clara y de frente de la otra persona o una foto clara donde aparezcan los dos" }
+  { clave: "foto_otra_persona", etiqueta: "una foto clara y de frente de su pareja o una foto de los dos juntos" }
 ] });
-ok(p.pausarChat === true && /nombres completos de las dos personas[^\n]*nombre y apellido/i.test(p.textoRespuesta) && /foto clara y de frente de cada persona/i.test(p.textoRespuesta) && /donde aparezcan las dos/i.test(p.textoRespuesta), "pareja pide nombre y apellido de ambos, y fotos separadas o juntos");
+ok(p.pausarChat === true && /tu nombre completo y el de tu pareja[^\n]*nombre y apellido/i.test(p.textoRespuesta) && /una foto tuya y una de tu pareja/i.test(p.textoRespuesta) && /donde aparezcan los dos/i.test(p.textoRespuesta), "pareja pide tu nombre y el de tu pareja, y las fotos tuya y de tu pareja (separadas o juntos)");
+ok(!/la otra persona/i.test(p.textoRespuesta), "Luna nunca dice 'la otra persona': conecta diciendo tu pareja");
 ok(!/^\s*\d+[.)]/m.test(p.textoRespuesta), "la solicitud de pareja tampoco usa numeración robótica");
 
 p = await pulir({ texto: "Hola, dime más.", checklist: {}, faltantes: [{ clave: "tipo_trabajo", etiqueta: "tipo" }] });
@@ -340,7 +352,7 @@ p = await pulir({
   checklist: { tipo_trabajo: "pareja", nombre_cliente: "Ana", nombre_otra_persona: "Luis" },
   faltantes: [{ clave: "nombre_cliente" }, { clave: "nombre_otra_persona" }]
 });
-ok(/nombres completos de las dos personas[^\n]*nombre y apellido/i.test(p.textoRespuesta), "pareja vuelve a pedir ambos nombres cuando solo tiene nombres de pila");
+ok(/tu nombre completo y el de tu pareja[^\n]*nombre y apellido/i.test(p.textoRespuesta), "pareja vuelve a pedir ambos nombres cuando solo tiene nombres de pila");
 
 // ---------------------------------------------------------------------------
 // 5. Transicion y pausa persistente
@@ -439,7 +451,7 @@ p = await pulir({ texto: "respuesta del modelo", checklist: f.salida.checklist, 
 t = await transicionar({ etapa: "datos", pausarChat: p.pausarChat, checklist: f.salida.checklist, faltantes: f.salida.faltantes, pipeline });
 agenteActivo = !t.salida.chatPausado;
 ok(t.salida.etapaNueva === "datos" && p.pausarChat && agenteActivo === false, "turno 2: lista de pareja enviada y Luna queda pausada");
-ok(/nombres completos de las dos personas/i.test(p.textoRespuesta) && /foto clara y de frente de cada persona/i.test(p.textoRespuesta), "la solicitud final contiene todos los requisitos de pareja");
+ok(/tu nombre completo y el de tu pareja/i.test(p.textoRespuesta) && /una foto tuya y una de tu pareja/i.test(p.textoRespuesta), "la solicitud final contiene todos los requisitos de pareja en lenguaje cercano");
 
 console.log("\n────────────────────────────────────────");
 console.log("Pruebas: " + pruebas + " | Fallos: " + fallos);

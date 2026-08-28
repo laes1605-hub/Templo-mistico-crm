@@ -4,6 +4,50 @@
 **Commit:** (ver git log)
 **Branch:** arena/01a045dd-templo-mistico-crm
 
+## Build 2026-08-28 (2): latencia de sincronización 1–2 s + barra de cuenta a una línea
+
+### Latencia Chatwoot → dashboard (objetivo: 1–2 s)
+- `/api/chatwoot/webhook` es ahora el camino PRINCIPAL y va por la vía rápida:
+  si la conversación ya existe, hace 1 búsqueda y luego **inserta el mensaje y
+  actualiza el resumen en paralelo** (antes eran ~6–10 consultas en serie y
+  descargaba 400 mensajes para deduplicar uno solo). Dedupe por ventana
+  temporal (±150 s, la que usa la huella) + verificación exacta por id.
+  Acepta también `message_updated` (pies de foto al instante; nunca inserta
+  filas nuevas con ese evento). Idempotente ante reintentos de Chatwoot.
+- Sondeo del dashboard adaptativo (antes: una pesada cada 20 s):
+  - chat abierto: delta cada **2.5 s** (lock propio);
+  - bandeja: delta cada **5 s**;
+  - reparación completa: al abrir la app, al volver de estar oculta y cada 3 min;
+  - cada tipo de sondeo tiene su candado (antes el sondeo del chat y el de la
+    bandeja se bloqueaban entre sí).
+- Modo `?rapido=1` en `/api/chatwoot/sync`: 1 listado de Chatwoot (100/página,
+  antes 5×25 en serie) + **1 solo mapa** de Supabase para decidir qué chats
+  cambiaron. Los chats sin novedades cuestan 0 consultas (antes: 4 por chat,
+  incluyendo un `PATCH clientes` inútil en cada pasada que disparaba el
+  realtime y hacía recargar la lista del teléfono cada 20 s).
+- Caché anti-rebombe en el servidor: un chat ya revisado que no cambió no se
+  re-descarga durante 45 s (se invalida sola cuando Chatwoot reporta nueva
+  actividad; la reparación completa la ignora).
+- `upsertCliente`/`upsertConversacion` ya no escriben cuando nada cambió
+  (menos eventos realtime vacíos = lista más estable y más barata).
+- El webhook de Chatwoot sigue siendo **recomendadísimo**: con él el mensaje
+  entra al CRM en <1 s empujado por Chatwoot; el sondeo rápido es la red de
+  seguridad (2–3 s) si el webhook no está o falla.
+- Pruebas: `node scripts/prueba-sincronizacion-rapida.mjs` (16 checks con
+  Chatwoot+PostgREST simulados: idle=2 consultas, webhook≤6 round-trips,
+  idempotencia, message_updated seguro). `npm run build` ✅ · `tsc --noEmit` ✅
+
+### Barra de cuenta sobre el compositor (móvil)
+- El campo "Responde desde: … • Etapa: …" + aviso 🔔 "En seguimiento" ahora es
+  **siempre una sola línea**: trunca con "…" (el detalle completo va en el
+  `title`), etiquetas cortas en móvil ("Desde: 👤 Personal · Hoy ✓") y el área
+  de mensajes puede encogerse (`min-h-0`). Antes, con etapas largas + la
+  campana, hacía wrap a 2–3 líneas, empujaba el área de escritura y el botón
+  de envío de audio quedaba tapado tras la barra de navegación.
+- Compositor: input encoge antes de que los iconos salten de línea; botón de
+  mic/audio con `aria-label`; cabecera del chat con nombre/teléfono truncables
+  para que los botones nunca queden fuera de pantalla.
+
 ## Build 2026-08-28: notas de voz nativas por WhatsApp API + orden de pestañas
 
 ### Notas de voz nativas (burbuja de nota de voz en vez de "audio simple")

@@ -347,12 +347,26 @@ export default function CRMApp() {
     // de n8n (mensajes nuevos, chats nuevos, contactos nuevos).
     sincronizarConChatwoot({ silencioso: true });
 
-    const convSub = supabase.channel("r-conv").on("postgres_changes", { event: "*", schema: "public", table: "conversaciones" }, () => fetchConversaciones(false)).subscribe();
-    const cliSub = supabase.channel("r-cli").on("postgres_changes", { event: "*", schema: "public", table: "clientes" }, () => { fetchConversaciones(false); fetchTodosClientes(); }).subscribe();
+    // Refrescos de lista con mini-debounce: una ráfaga de eventos (mensaje +
+    // resumen de conversación + cliente) produce UN solo refetch ~250 ms
+    // después, no tres seguidos. El mensaje en sí no espera: lo pinta el
+    // realtime de `mensajes` o el refetch directo del sondeo del chat abierto.
+    let refrescoTimer: ReturnType<typeof setTimeout> | null = null;
+    const refrescarLista = () => {
+      if (refrescoTimer) clearTimeout(refrescoTimer);
+      refrescoTimer = setTimeout(() => {
+        refrescoTimer = null;
+        fetchConversaciones(false);
+      }, 250);
+    };
+
+    const convSub = supabase.channel("r-conv").on("postgres_changes", { event: "*", schema: "public", table: "conversaciones" }, () => refrescarLista()).subscribe();
+    const cliSub = supabase.channel("r-cli").on("postgres_changes", { event: "*", schema: "public", table: "clientes" }, () => { refrescarLista(); fetchTodosClientes(); }).subscribe();
     const pagSub = supabase.channel("r-pag").on("postgres_changes", { event: "*", schema: "public", table: "pagos" }, fetchTodosPagos).subscribe();
     const tarSub = supabase.channel("r-tar").on("postgres_changes", { event: "*", schema: "public", table: "tareas" }, fetchTodasTareas).subscribe();
 
     return () => {
+      if (refrescoTimer) clearTimeout(refrescoTimer);
       supabase.removeChannel(convSub);
       supabase.removeChannel(cliSub);
       supabase.removeChannel(pagSub);
@@ -1052,21 +1066,34 @@ export default function CRMApp() {
   // ===================== SINCRONIZACIÓN DIRECTA CON CHATWOOT =====================
   // El dashboard ya no depende del workflow de n8n para enterarse de los
   // mensajes: pregunta directamente a Chatwoot (la fuente de la verdad) vía
-  // /api/chatwoot/sync y repara Supabase. Se ejecuta al abrir la app, cada 20s
-  // mientras la app está visible, al abrir un chat y con el botón 🔄.
+  // /api/chatwoot/sync y repara Supabase. Se ejecuta al abrir la app (completa),
+  // en modo RÁPIDO cada pocos segundos (bandeja 5 s, chat abierto 2.5 s), al
+  // abrir un chat y con el botón 🔄. Con el webhook directo de Chatwoot
+  // configurado, el mensaje llega empujado por el propio Chatwoot en <1 s y
+  // Supabase Realtime lo refleja en el dashboard al instante.
   const [sincronizandoCW, setSincronizandoCW] = useState(false);
-  const sincronizandoCWRef = useRef(false);
+  const sincronizandoCWRef = useRef(false);      // pasadas completas / manuales
+  const sincronizandoRapidoRef = useRef(false);  // delta de bandeja (5 s)
+  const sincronizandoChatRef = useRef(false);    // chat abierto (2.5 s), lock propio
 
   async function sincronizarConChatwoot(
-    opciones: { conversacionId?: string | number; completa?: boolean; silencioso?: boolean } = {}
+    opciones: { conversacionId?: string | number; completa?: boolean; silencioso?: boolean; rapido?: boolean } = {}
   ) {
-    if (sincronizandoCWRef.current) return;
-    sincronizandoCWRef.current = true;
+    // Cada tipo de sondeo tiene su propio candado: un sondeo del chat abierto
+    // no bloquea el de la bandeja ni viceversa (antes se pisaban entre sí).
+    const lock = opciones.conversacionId
+      ? sincronizandoChatRef
+      : opciones.rapido
+        ? sincronizandoRapidoRef
+        : sincronizandoCWRef;
+    if (lock.current) return;
+    lock.current = true;
     if (!opciones.silencioso) setSincronizandoCW(true);
     try {
       const params = new URLSearchParams();
       if (opciones.conversacionId) params.set("conversacionId", String(opciones.conversacionId));
       if (opciones.completa) params.set("completa", "1");
+      if (opciones.rapido) params.set("rapido", "1");
       const res = await fetch(`/api/chatwoot/sync?${params.toString()}`, { method: "POST" });
       const data = await res.json().catch(() => null);
       if (data && (data.mensajes_nuevos > 0 || data.mensajes_actualizados > 0 || data.conversaciones_nuevas > 0 || !opciones.silencioso)) {
@@ -1081,23 +1108,54 @@ export default function CRMApp() {
     } catch (e) {
       console.warn("Sincronización con Chatwoot falló (se reintentará):", e);
     } finally {
-      sincronizandoCWRef.current = false;
+      lock.current = false;
       setSincronizandoCW(false);
     }
   }
 
-  // Sondeo cada 20 s con la app visible (la APK/web no siempre reciben el
-  // realtime de Supabase; con esto los mensajes aparecen igual).
+  // Sondeos adaptativos con la app visible (la APK/web no siempre recibe el
+  // realtime de Supabase; con esto los mensajes aparecen igual, en ~2-3 s sin
+  // webhook y en <1 s con él). Con la app oculta se pausa todo.
   useEffect(() => {
-    const tic = () => {
-      if (typeof document === "undefined" || document.visibilityState !== "visible") return;
+    const visible = () => typeof document === "undefined" || document.visibilityState === "visible";
+    const enLinea = () => typeof navigator === "undefined" || navigator.onLine !== false;
+    const ticBandeja = () => {
+      if (!visible() || !enLinea()) return;
+      // Delta: si ningún chat cambió cuesta 1 llamada a Chatwoot + 1 mapa de
+      // Supabase, así que se puede pedir cada pocos segundos sin castigo.
+      void sincronizarConChatwoot({ silencioso: true, rapido: true });
+    };
+    const ticChatAbierto = () => {
+      if (!visible() || !enLinea()) return;
+      const conv = selectedConvRef.current;
+      if (!conv?.chatwoot_conversation_id) return;
+      void sincronizarConChatwoot({
+        conversacionId: conv.chatwoot_conversation_id,
+        silencioso: true,
+        rapido: true,
+      });
+    };
+    const t1 = setInterval(ticBandeja, 5_000);
+    const t2 = setInterval(ticChatAbierto, 2_500);
+    // Respaldo: una pasada completa ocasional (atrapa chats que bajaron de las
+    // primeras páginas del listado y repara pies de foto/adjuntos).
+    const t3 = setInterval(() => {
+      if (visible() && enLinea()) void sincronizarConChatwoot({ silencioso: true });
+    }, 180_000);
+    const onVis = () => {
+      if (!visible()) return;
+      // Al volver: sincronización inmediata (delta + chat) y una completa para
+      // reparar lo que pasó mientras la app estaba cerrada.
+      ticBandeja();
+      ticChatAbierto();
       void sincronizarConChatwoot({ silencioso: true });
     };
-    const intervalo = setInterval(tic, 20_000);
-    document.addEventListener("visibilitychange", tic);
+    document.addEventListener("visibilitychange", onVis);
     return () => {
-      clearInterval(intervalo);
-      document.removeEventListener("visibilitychange", tic);
+      clearInterval(t1);
+      clearInterval(t2);
+      clearInterval(t3);
+      document.removeEventListener("visibilitychange", onVis);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -3037,28 +3095,28 @@ export default function CRMApp() {
 
             {selectedConv && clienteActual ? (
               <div className="flex-1 flex w-full h-full absolute inset-0 md:relative bg-background z-20">
-                <section className={`flex-1 flex flex-col h-full ${showMobileDetails ? "hidden md:flex" : "flex"}`}>
-                  <header className="h-16 px-4 md:px-6 border-b border-border bg-surface/80 backdrop-blur-md flex items-center justify-between flex-shrink-0">
-                    <div className="flex items-center gap-3">
-                      <button onClick={() => setSelectedConv(null)} className="md:hidden p-2 -ml-2 text-gray-400 hover:text-white"><ArrowLeft className="w-5 h-5" /></button>
-                      <div className="w-10 h-10 rounded-full bg-surface border border-border flex items-center justify-center text-purple-400 font-bold overflow-hidden">
+                <section className={`flex-1 flex flex-col h-full min-h-0 overflow-hidden ${showMobileDetails ? "hidden md:flex" : "flex"}`}>
+                  <header className="h-16 px-3 md:px-6 border-b border-border bg-surface/80 backdrop-blur-md flex items-center justify-between gap-2 flex-shrink-0">
+                    <div className="flex items-center gap-3 min-w-0 flex-1 md:flex-none">
+                      <button onClick={() => setSelectedConv(null)} className="md:hidden p-2 -ml-2 text-gray-400 hover:text-white flex-shrink-0"><ArrowLeft className="w-5 h-5" /></button>
+                      <div className="w-10 h-10 rounded-full bg-surface border border-border flex items-center justify-center text-purple-400 font-bold overflow-hidden flex-shrink-0">
                         {clienteActual.foto_url
                           ? <img src={clienteActual.foto_url} className="w-full h-full object-cover" alt="" />
                           : getNombreManual(clienteActual)
                             ? <span>{getNombreManual(clienteActual).charAt(0).toUpperCase()}</span>
                             : <Phone className="w-4 h-4 text-purple-400" />}
                       </div>
-                      <div className="flex flex-col cursor-pointer" onClick={() => setShowMobileDetails(true)}>
-                        <h2 className={`text-sm font-bold text-gray-100 flex items-center gap-1 ${getDisplayName(clienteActual, selectedConv).startsWith("+") ? "font-mono" : ""}`}>
-                          {getDisplayName(clienteActual, selectedConv)}
-                          {clienteActual.notas_personales && <StickyNote className="w-3 h-3 text-amber-400" />}
+                      <div className="flex flex-col cursor-pointer min-w-0" onClick={() => setShowMobileDetails(true)}>
+                        <h2 className={`text-sm font-bold text-gray-100 flex items-center gap-1 min-w-0 ${getDisplayName(clienteActual, selectedConv).startsWith("+") ? "font-mono" : ""}`}>
+                          <span className="truncate" title={getDisplayName(clienteActual, selectedConv)}>{getDisplayName(clienteActual, selectedConv)}</span>
+                          {clienteActual.notas_personales && <StickyNote className="w-3 h-3 text-amber-400 flex-shrink-0" />}
                         </h2>
-                        <span className="text-[10px] text-gray-400 flex items-center gap-1 font-mono">
-                          <Phone className="w-3 h-3" /> {getTelefonoE164(clienteActual, selectedConv) || "Sin número"}
+                        <span className="text-[10px] text-gray-400 flex items-center gap-1 font-mono min-w-0">
+                          <Phone className="w-3 h-3 flex-shrink-0" /><span className="truncate">{getTelefonoE164(clienteActual, selectedConv) || "Sin número"}</span>
                         </span>
                       </div>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1.5 md:gap-2 flex-shrink-0">
                       {!clienteActual.es_spam && esConversacionWhatsAppPersonal(selectedConv) && (
                         <button
                           onClick={llamarPorWhatsAppPersonal}
@@ -3153,7 +3211,7 @@ export default function CRMApp() {
                     </div>
                   </header>
 
-                  <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4">
+                  <div className="flex-1 min-h-0 overflow-y-auto p-4 md:p-6 space-y-4">
                     {Boolean((selectedConv as any).archivada) && (
                       <div className="bg-amber-950/20 border border-amber-900/30 rounded-xl p-3 flex items-center justify-between gap-2 text-xs text-amber-200/80 mb-2">
                         <div className="flex items-center gap-2">
@@ -3215,30 +3273,62 @@ export default function CRMApp() {
                   </div>
 
                   <div className="border-t border-border bg-surface/80 backdrop-blur-md flex flex-col flex-shrink-0">
-                    {/* Barra informativa de cuenta que envía */}
-                    <div className="flex items-center justify-between px-4 py-1 text-[11px] bg-background/50 border-b border-border/40">
+                    {/* Barra informativa de cuenta que envía.
+                        REGLA DE DISEÑO: siempre UNA sola línea. Antes, con
+                        etapas largas + el aviso de "En seguimiento", el texto
+                        hacía wrap a 2-3 líneas y empujaba el compositor (con
+                        el botón de audio) fuera de la pantalla en el teléfono.
+                        Ahora cada segmento trunca con "…" y el aviso va
+                        compacto; el detalle completo está en el title. */}
+                    <div className="flex items-center gap-2 px-3 md:px-4 py-0.5 text-[11px] bg-background/50 border-b border-border/40 whitespace-nowrap min-w-0">
                       {(() => {
                         const et = getEtapa(clienteActual?.estado);
                         const esApi = et?.cuenta_responsable === "meta_business";
+                        const cuentaTexto = esApi ? "WhatsApp API" : "WhatsApp Personal";
+                        const etapaNombre = et?.nombre || "Nuevo Lead";
                         return (
-                          <div className="flex items-center gap-1.5 text-gray-400">
-                            <span className="text-gray-500">Responde desde:</span>
-                            <span className={`font-semibold flex items-center gap-1 ${esApi ? "text-indigo-400" : "text-blue-400"}`}>
-                              <span>{esApi ? "🌐 WhatsApp API" : "👤 WhatsApp Personal"}</span>
+                          <div
+                            className="flex items-center gap-1.5 text-gray-400 min-w-0 flex-1"
+                            title={`Responde desde: ${cuentaTexto} • Etapa: ${etapaNombre}`}
+                          >
+                            <span className="text-gray-500 flex-shrink-0">
+                              <span className="hidden sm:inline">Responde desde:</span>
+                              <span className="sm:hidden">Desde:</span>
                             </span>
-                            <span className="text-gray-500">• Etapa: {et?.nombre || "Nuevo Lead"}</span>
+                            <span className={`font-semibold flex items-center gap-1 flex-shrink-0 ${esApi ? "text-indigo-400" : "text-blue-400"}`}>
+                              <span>{esApi ? "🌐" : "👤"}</span>
+                              <span className="hidden sm:inline">{cuentaTexto}</span>
+                              <span className="sm:hidden">{esApi ? "API" : "Personal"}</span>
+                            </span>
+                            <span className="text-gray-500 min-w-0 truncate">
+                              <span className="hidden sm:inline">• Etapa: </span>
+                              <span className="sm:hidden">• </span>
+                              {etapaNombre}
+                            </span>
                           </div>
                         );
                       })()}
                       {clienteActual?.en_seguimiento && (
-                        <span className="text-[10px] text-cyan-400 flex items-center gap-1 font-medium">
+                        <span
+                          className="flex-shrink-0 flex items-center gap-1 text-cyan-400 font-medium"
+                          title={
+                            estaPendienteSeguimientoHoy(clienteActual)
+                              ? "En seguimiento: pendiente para hoy"
+                              : "En seguimiento: ya revisado hoy"
+                          }
+                        >
                           <BellRing className="w-3 h-3" />
-                          {estaPendienteSeguimientoHoy(clienteActual) ? "Pendiente hoy" : "Revisado hoy ✓"}
+                          <span className="hidden sm:inline">
+                            {estaPendienteSeguimientoHoy(clienteActual) ? "Pendiente hoy" : "Revisado hoy ✓"}
+                          </span>
+                          <span className="sm:hidden">
+                            {estaPendienteSeguimientoHoy(clienteActual) ? "Hoy" : "Hoy ✓"}
+                          </span>
                         </span>
                       )}
                     </div>
 
-                    <div className="p-3 flex items-center gap-2">
+                    <div className="p-2 md:p-3 flex items-center gap-1.5 md:gap-2">
                     <input type="file" ref={fileInputRef} className="hidden" onChange={handleFileUpload} accept="image/*,audio/*,video/*,.pdf,.doc,.docx,.xls,.xlsx" />
                     <input type="file" ref={rrFileInputRef} className="hidden" onChange={handleRRFile} accept="audio/*,image/*" />
                     {(isRecording || isPreparingRecording) ? (
@@ -3257,21 +3347,21 @@ export default function CRMApp() {
                         </div>
                       </div>
                     ) : (
-                      <form onSubmit={handleSendMessage} className="flex-1 min-w-0 flex flex-wrap items-center gap-1.5">
-                        <input type="text" value={nuevoMensaje} onChange={(e) => setNuevoMensaje(e.target.value)} placeholder="Escribe un mensaje..." disabled={clienteActual.es_spam || isSending} className="flex-1 min-w-[140px] bg-background border border-border rounded-full px-4 py-2.5 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-purple-500 disabled:opacity-50" />
-                        <button type="button" onClick={() => fileInputRef.current?.click()} disabled={clienteActual.es_spam || isSending} className="p-2.5 text-gray-400 hover:text-purple-400 hover:bg-surfaceHover rounded-full transition-colors disabled:opacity-40 flex-shrink-0" title="Enviar archivos"><Paperclip className="w-5 h-5" /></button>
+                      <form onSubmit={handleSendMessage} className="flex-1 min-w-0 flex flex-wrap items-center gap-1 md:gap-1.5">
+                        <input type="text" value={nuevoMensaje} onChange={(e) => setNuevoMensaje(e.target.value)} placeholder="Escribe un mensaje..." disabled={clienteActual.es_spam || isSending} className="flex-1 min-w-0 bg-background border border-border rounded-full px-3 md:px-4 py-2 md:py-2.5 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-purple-500 disabled:opacity-50" />
+                        <button type="button" onClick={() => fileInputRef.current?.click()} disabled={clienteActual.es_spam || isSending} className="p-2 md:p-2.5 text-gray-400 hover:text-purple-400 hover:bg-surfaceHover rounded-full transition-colors disabled:opacity-40 flex-shrink-0" title="Enviar archivos"><Paperclip className="w-5 h-5" /></button>
                         <div className="relative flex-shrink-0">
-                          <button type="button" onClick={() => setShowEtapaMenu((v) => !v)} disabled={isSending} className="p-2.5 text-gray-400 hover:text-purple-400 hover:bg-surfaceHover rounded-full transition-colors disabled:opacity-40" title="Cambiar etapa del cliente"><GitBranch className="w-5 h-5" /></button>
+                          <button type="button" onClick={() => setShowEtapaMenu((v) => !v)} disabled={isSending} className="p-2 md:p-2.5 text-gray-400 hover:text-purple-400 hover:bg-surfaceHover rounded-full transition-colors disabled:opacity-40" title="Cambiar etapa del cliente"><GitBranch className="w-5 h-5" /></button>
                           {showEtapaMenu && renderMenuEtapaRapida()}
                         </div>
                         <div className="relative flex-shrink-0">
-                          <button type="button" onClick={abrirMenuRespuestas} disabled={isSending} className="p-2.5 text-gray-400 hover:text-purple-400 hover:bg-surfaceHover rounded-full transition-colors disabled:opacity-40" title="Respuestas rápidas (textos, audios e imágenes para todas las conversaciones)"><Zap className="w-5 h-5" /></button>
+                          <button type="button" onClick={abrirMenuRespuestas} disabled={isSending} className="p-2 md:p-2.5 text-gray-400 hover:text-purple-400 hover:bg-surfaceHover rounded-full transition-colors disabled:opacity-40" title="Respuestas rápidas (textos, audios e imágenes para todas las conversaciones)"><Zap className="w-5 h-5" /></button>
                           {showRespuestasMenu && renderMenuRespuestasRapidas()}
                         </div>
                         {nuevoMensaje.trim() ? (
-                          <button type="submit" disabled={isSending} className="bg-purple-600 hover:bg-purple-700 text-white p-2.5 rounded-full transition-colors disabled:opacity-50"><Send className="w-5 h-5" /></button>
+                          <button type="submit" disabled={isSending} className="bg-purple-600 hover:bg-purple-700 text-white p-2 md:p-2.5 rounded-full transition-colors disabled:opacity-50 flex-shrink-0"><Send className="w-5 h-5" /></button>
                         ) : (
-                          <button type="button" onClick={startRecording} disabled={clienteActual.es_spam || isSending || isPreparingRecording} className="bg-surface border border-border text-purple-400 hover:bg-purple-600 hover:text-white hover:border-purple-600 p-2.5 rounded-full transition-colors disabled:opacity-50"><Mic className="w-5 h-5" /></button>
+                          <button type="button" onClick={startRecording} disabled={clienteActual.es_spam || isSending || isPreparingRecording} className="bg-surface border border-border text-purple-400 hover:bg-purple-600 hover:text-white hover:border-purple-600 p-2 md:p-2.5 rounded-full transition-colors disabled:opacity-50 flex-shrink-0" aria-label="Grabar nota de voz"><Mic className="w-5 h-5" /></button>
                         )}
                         {sendNotice && <p className="w-full text-xs text-amber-400 px-2">{sendNotice}</p>}
                         {sendError && <p className="w-full text-xs text-red-400 px-2">{sendError}</p>}

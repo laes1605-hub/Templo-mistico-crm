@@ -61,7 +61,7 @@ type SbResp = { status: number; ok: boolean; json: any; texto: string };
 async function sbFetch(
   ruta: string,
   init: RequestInit = {},
-  timeoutMs = 25000
+  timeoutMs = 15000
 ): Promise<SbResp> {
   const controlador = new AbortController();
   const temporizador = setTimeout(() => controlador.abort(), timeoutMs);
@@ -232,20 +232,29 @@ async function upsertCliente(
   nombre: string | null,
   fotoUrl: string | null,
   attrs: Record<string, any>,
-  res: ResultadoSync
+  res: ResultadoSync,
+  existente?: { id: string; nombre?: string | null; foto_url?: string | null } | null
 ): Promise<string | null> {
-  const busqueda = await sbFetch(
-    `/clientes?telefono=eq.${encodeURIComponent(telefono)}&select=id`,
-    { headers: { Prefer: "count=exact" } }
-  );
-  let clienteId: string | null = null;
-  const encontrados = Array.isArray(busqueda.json) ? busqueda.json : [];
-  if (busqueda.ok && encontrados.length > 0) {
-    clienteId = encontrados[0].id;
+  let clienteId: string | null = existente?.id ?? null;
+  let fila: any = existente;
+  if (!clienteId) {
+    const busqueda = await sbFetch(
+      `/clientes?telefono=eq.${encodeURIComponent(telefono)}&select=id,nombre,foto_url`,
+      { headers: { Prefer: "count=exact" } }
+    );
+    const encontrados = Array.isArray(busqueda.json) ? busqueda.json : [];
+    if (busqueda.ok && encontrados.length > 0) {
+      clienteId = encontrados[0].id;
+      fila = encontrados[0];
+    }
+  }
+  if (clienteId) {
     // Sólo valores presentes: nunca borrar datos del CRM con vacíos.
-    const cambios: Record<string, any> = { actualizado_en: new Date().toISOString() };
-    if (nombre) cambios.nombre = nombre;
-    if (fotoUrl) cambios.foto_url = fotoUrl;
+    // Sin cambios reales NO se hace PATCH: un write inútil dispara el
+    // realtime de `clientes` y obliga al dashboard a recargar toda la lista.
+    const cambios: Record<string, any> = {};
+    if (nombre && nombre !== fila?.nombre) cambios.nombre = nombre;
+    if (fotoUrl && fotoUrl !== fila?.foto_url) cambios.foto_url = fotoUrl;
     if (attrs.tipo_trabajo) cambios.tipo_trabajo = attrs.tipo_trabajo;
     if (attrs.nombre_otra_persona) cambios.nombre_otra_persona = attrs.nombre_otra_persona;
     // Luna guardó las fotos con dos nombres distintos según la versión del
@@ -255,11 +264,14 @@ async function upsertCliente(
     if (fotoOtra) cambios.foto_otra_persona = fotoOtra;
     if (fotoMano) cambios.foto_mano = fotoMano;
     if (telefonoDisplay && telefonoDisplay !== "Sin teléfono") cambios.telefono_display = telefonoDisplay;
-    await sbFetch(`/clientes?id=eq.${clienteId}`, {
-      method: "PATCH",
-      headers: { Prefer: "return=minimal" },
-      body: JSON.stringify(await depurar("clientes", cambios)),
-    });
+    if (Object.keys(cambios).length > 0) {
+      cambios.actualizado_en = new Date().toISOString();
+      await sbFetch(`/clientes?id=eq.${clienteId}`, {
+        method: "PATCH",
+        headers: { Prefer: "return=minimal" },
+        body: JSON.stringify(await depurar("clientes", cambios)),
+      });
+    }
     return clienteId;
   }
 
@@ -303,18 +315,50 @@ type ConvExistente = {
   ultimo_mensaje_en: string | null;
   no_leidos: number | null;
   ultimo_leido_en: string | null;
+  cliente_id?: string | null;
+  ultimo_mensaje?: string | null;
+  numero_whatsapp?: string | null;
+  fuente?: string | null;
 };
 
+const SELECT_CONV =
+  "id,chatwoot_conversation_id,ultimo_mensaje_en,no_leidos,ultimo_leido_en,cliente_id,ultimo_mensaje,numero_whatsapp,fuente";
+
+async function fetchConversacionesSb(rutaBase: string): Promise<any[] | null> {
+  const r = await sbFetch(rutaBase);
+  if (r.ok && Array.isArray(r.json)) return r.json;
+  // Columna ausente (migración pendiente): reintentar con las mínimas.
+  const r2 = await sbFetch(
+    `${rutaBase.split("&select=")[0]}&select=id,ultimo_mensaje_en,no_leidos,ultimo_leido_en`
+  );
+  return r2.ok && Array.isArray(r2.json) ? r2.json : null;
+}
+
 async function buscarConversacion(chatwootConvId: string | number): Promise<ConvExistente | null> {
-  const r = await sbFetch(
+  const encontrados = await fetchConversacionesSb(
     `/conversaciones?chatwoot_conversation_id=eq.${encodeURIComponent(
       String(chatwootConvId)
-    )}&select=id,ultimo_mensaje_en,no_leidos,ultimo_leido_en`
+    )}&select=${SELECT_CONV}`
   );
-  if (r.ok && Array.isArray(r.json) && r.json.length > 0) {
-    return r.json[0];
+  return encontrados && encontrados.length > 0 ? encontrados[0] : null;
+}
+
+/**
+ * Mapa de TODAS las conversaciones conocidas por id de Chatwoot en UNA sola
+ * consulta. El sondeo rápido lo usa para decidir qué chats cambiaron sin
+ * preguntar por cada conversación por separado.
+ */
+async function mapaDeConversaciones(): Promise<Map<string, ConvExistente>> {
+  const rows = await fetchConversacionesSb(
+    `/conversaciones?select=${SELECT_CONV}&order=ultimo_mensaje_en.desc.nullslast&limit=2000`
+  );
+  const mapa = new Map<string, ConvExistente>();
+  if (rows) {
+    for (const row of rows) {
+      if (row?.chatwoot_conversation_id) mapa.set(String(row.chatwoot_conversation_id), row);
+    }
   }
-  return null;
+  return mapa;
 }
 
 async function upsertConversacion(
@@ -323,39 +367,71 @@ async function upsertConversacion(
   telefono: string,
   ultimoMensaje: string,
   ultimoMensajeEn: string,
-  res: ResultadoSync
+  res: ResultadoSync,
+  existentePrevio?: ConvExistente | null
 ): Promise<ConvExistente | null> {
-  let existente = await buscarConversacion(convCw.id);
+  // El sondeo ya buscó la conversación; se reusa para no repetir la consulta.
+  let existente = existentePrevio !== undefined ? existentePrevio : await buscarConversacion(convCw.id);
   // Si no se encuentra por chatwoot_conversation_id, buscar si el cliente ya tiene una conversación existente en el CRM
   if (!existente && clienteId) {
     const porCli = await sbFetch(
-      `/conversaciones?cliente_id=eq.${encodeURIComponent(clienteId)}&select=id,ultimo_mensaje_en,no_leidos,ultimo_leido_en&order=ultimo_mensaje_en.desc&limit=1`
+      `/conversaciones?cliente_id=eq.${encodeURIComponent(clienteId)}&select=${SELECT_CONV}&order=ultimo_mensaje_en.desc&limit=1`
     );
     if (porCli.ok && Array.isArray(porCli.json) && porCli.json.length > 0) {
       existente = porCli.json[0];
     }
   }
 
-  const datos = await depurar("conversaciones", {
-    cliente_id: clienteId,
-    chatwoot_conversation_id: String(convCw.id),
-    numero_whatsapp: telefono,
-    fuente: convCw.inbox_id === 5 ? "meta_business" : "evolution",
-    ultimo_mensaje: ultimoMensaje,
-    ultimo_mensaje_en: ultimoMensajeEn,
-    actualizado_en: new Date().toISOString(),
-  });
+  // Datos que el payload de un webhook puede no traer: nunca pisar un valor
+  // bueno de Supabase con un placeholder ("revisar_...") o con la fuente por
+  // defecto. Se conserva el valor existente en esos casos.
+  const telefonoFinal =
+    !pareceTelefonoReal(telefono) && existente?.numero_whatsapp
+      ? existente.numero_whatsapp
+      : telefono;
+  const fuente =
+    convCw.inbox_id != null
+      ? convCw.inbox_id === 5
+        ? "meta_business"
+        : "evolution"
+      : existente?.fuente || "evolution";
 
   if (existente) {
     // No se tocan archivada / no_leidos / ultimo_leido_en / agente_activo:
     // eso lo maneja el operador desde el dashboard.
+    // Si el último mensaje ya está igual, no se escribe: así el sondeo
+    // silencioso no inunda el realtime con eventos vacíos.
+    const sinCambios =
+      existente.ultimo_mensaje === ultimoMensaje &&
+      existente.ultimo_mensaje_en === ultimoMensajeEn &&
+      existente.numero_whatsapp === telefonoFinal &&
+      existente.fuente === fuente;
+    if (sinCambios) return existente;
+
+    const cambios = await depurar("conversaciones", {
+      ultimo_mensaje: ultimoMensaje,
+      ultimo_mensaje_en: ultimoMensajeEn,
+      numero_whatsapp: telefonoFinal,
+      fuente,
+      actualizado_en: new Date().toISOString(),
+    });
     await sbFetch(`/conversaciones?id=eq.${existente.id}`, {
       method: "PATCH",
       headers: { Prefer: "return=minimal" },
-      body: JSON.stringify(datos),
+      body: JSON.stringify(cambios),
     });
-    return { ...existente, ultimo_mensaje_en: ultimoMensajeEn };
+    return { ...existente, ultimo_mensaje_en: ultimoMensajeEn, ultimo_mensaje: ultimoMensaje };
   }
+
+  const datos = await depurar("conversaciones", {
+    cliente_id: clienteId,
+    chatwoot_conversation_id: String(convCw.id),
+    numero_whatsapp: telefono,
+    fuente,
+    ultimo_mensaje: ultimoMensaje,
+    ultimo_mensaje_en: ultimoMensajeEn,
+    actualizado_en: new Date().toISOString(),
+  });
 
   const creacion = await sbFetch("/conversaciones", {
     method: "POST",
@@ -497,11 +573,18 @@ function mismaHuella(a: MensajeMapeado, b: MensajeExistente, ventanaMs = 150_000
  * Inserta en `mensajes` lo que falte de una conversación.
  * Devuelve {nuevos, vinculados, entrantes: timestamps de mensajes entrantes};
  * además incrementa mensajes_actualizados cuando completa un adjunto existente.
+ *
+ * `ventana=true` (caminos rápidos: webhook y sondeo): en vez de descargar los
+ * últimos 400 mensajes para deduplicar, se consultan sólo los cercanos en el
+ * tiempo (la huella anti-duplicados usa una ventana de ±150 s, así que nada
+ * más lejos puede colisionar) y una verificación exacta por id de Chatwoot.
+ * Son 2 consultas indexadas en paralelo en lugar de una pesada.
  */
 async function sincronizarMensajes(
   convSupabaseId: string,
   mensajesCw: any[],
-  res: ResultadoSync
+  res: ResultadoSync,
+  opciones: { ventana?: boolean; soloExistentes?: boolean } = {}
 ): Promise<{ nuevos: number; vinculados: number; entrantes: string[] }> {
   const mapeados = mensajesCw
     .map(mapMensajeCw)
@@ -509,12 +592,42 @@ async function sincronizarMensajes(
     .sort((a, b) => Date.parse(a.creado_en) - Date.parse(b.creado_en));
   if (mapeados.length === 0) return { nuevos: 0, vinculados: 0, entrantes: [] };
 
-  const existentesResp = await sbFetch(
-    `/mensajes?conversacion_id=eq.${convSupabaseId}&select=id,chatwoot_message_id,tipo,tipo_contenido,contenido,url_archivo,creado_en&order=creado_en.desc&limit=400`
-  );
-  const existentes: MensajeExistente[] = Array.isArray(existentesResp.json)
-    ? existentesResp.json
-    : [];
+  let existentes: MensajeExistente[] = [];
+  const SEL_MSG = "id,chatwoot_message_id,tipo,tipo_contenido,contenido,url_archivo,creado_en";
+  if (opciones.ventana) {
+    const tMin = Math.min(...mapeados.map((m) => Date.parse(m.creado_en)));
+    const desde = new Date((Number.isFinite(tMin) ? tMin : Date.now()) - 5 * 60_000).toISOString();
+    const ids = mapeados.map((m) => m.chatwoot_message_id);
+    const tieneId = (await columnasDe("mensajes"))?.has("chatwoot_message_id");
+    const [porVentana, porId] = await Promise.all([
+      sbFetch(
+        `/mensajes?conversacion_id=eq.${convSupabaseId}&creado_en=gte.${encodeURIComponent(
+          desde
+        )}&select=${SEL_MSG}&order=creado_en.asc&limit=300`
+      ),
+      ids.length > 0 && tieneId !== false
+        ? sbFetch(
+            `/mensajes?conversacion_id=eq.${convSupabaseId}&chatwoot_message_id=in.(${ids
+              .map((x) => encodeURIComponent(String(x)))
+              .join(",")})&select=${SEL_MSG}`
+          )
+        : Promise.resolve(null as SbResp | null),
+    ]);
+    const vistos = new Set<string>();
+    for (const lista of [porVentana.json, porId?.json]) {
+      for (const row of Array.isArray(lista) ? lista : []) {
+        if (!vistos.has(row.id)) {
+          vistos.add(row.id);
+          existentes.push(row);
+        }
+      }
+    }
+  } else {
+    const existentesResp = await sbFetch(
+      `/mensajes?conversacion_id=eq.${convSupabaseId}&select=${SEL_MSG}&order=creado_en.desc&limit=400`
+    );
+    existentes = Array.isArray(existentesResp.json) ? existentesResp.json : [];
+  }
 
   const porInsertar: MensajeMapeado[] = [];
   let vinculados = 0;
@@ -554,6 +667,9 @@ async function sincronizarMensajes(
       if (actualizacion.actualizado) res.mensajes_actualizados += 1;
       continue;
     }
+    // Eventos message_updated (p. ej. el tick de "leído" de un mensaje
+    // enviado): no se insertan filas nuevas, sólo se completan las existentes.
+    if (opciones.soloExistentes) continue;
     porInsertar.push(msg);
   }
 
@@ -673,122 +789,241 @@ export type OpcionesSync = {
   chatwootConversationId?: string | number;
   /** Máximo de conversaciones por pasada (por defecto 100). */
   maxConversaciones?: number;
+  /**
+   * Modo delta para sondeos frecuentes (cada pocos segundos):
+   *   · una sola pasada de listado de Chatwoot (100 por página),
+   *   · un solo mapa de Supabase para saber qué chats tienen novedades,
+   *   · los chats sin cambios cuestan 2 consultas en total, no 4 por chat,
+   *   · sólo se repara lo que cambió (máx. 8 conversaciones por pasada).
+   */
+  rapido?: boolean;
 };
+
+type TocadoNoLeidos = {
+  convId: string;
+  no_leidos: number | null;
+  ultimo_leido_en: string | null;
+  entrantes: string[];
+};
+
+/**
+ * Repara una conversación concreta de Chatwoot en Supabase: cliente (si
+ * hace falta), historial reciente, resumen del último mensaje y mensajes
+ * nuevos. Reusa `existente` para no volver a buscarla. Devuelve si tocó algo.
+ */
+async function sincronizarConversacionCw(
+  convCw: any,
+  res: ResultadoSync,
+  tocadas: TocadoNoLeidos[],
+  opts: {
+    existente?: ConvExistente | null;
+    ventanaDedupe: boolean;
+    perPageMensajes: number;
+    /** Modo reparación: refresca nombre/foto/attrs del cliente aunque exista. */
+    refrescarCliente?: boolean;
+  }
+): Promise<{ ok: boolean; nuevos: number; actualizados: number }> {
+  const antesNuevos = res.mensajes_nuevos;
+  const antesAct = res.mensajes_actualizados;
+  const sender = convCw?.meta?.sender || {};
+  const attrs = convCw?.custom_attributes || sender?.custom_attributes || {};
+  const { telefono, display } = telefonoDe(sender, convCw);
+  const existente =
+    opts.existente !== undefined ? opts.existente : await buscarConversacion(convCw.id);
+
+  // Si la conversación existe en Supabase, su cliente existe también (FK):
+  // se reusa sin tocar `clientes` → el sondeo no dispara realtime vacío.
+  let clienteId: string | null = opts.refrescarCliente ? null : existente?.cliente_id || null;
+  if (!clienteId) {
+    clienteId = await upsertCliente(
+      telefono,
+      display,
+      sender?.name || null,
+      sender?.avatar_url || null,
+      attrs,
+      res
+    );
+    if (!clienteId) return { ok: false, nuevos: 0, actualizados: 0 };
+  }
+
+  const mensajesResp = await cwGet(
+    `/conversations/${convCw.id}/messages?per_page=${opts.perPageMensajes}`,
+    15000
+  );
+  const mensajesCw: any[] = Array.isArray(mensajesResp.json?.payload)
+    ? mensajesResp.json.payload
+    : [];
+  if (!mensajesResp.ok) {
+    res.errores.push(
+      `historial ${convCw.id}: (${mensajesResp.status}) ${mensajesResp.texto.slice(0, 120)}`
+    );
+  }
+
+  const ultimo = resumenUltimoMensaje(mensajesCw);
+  const ultimoEn = ultimo
+    ? ultimo.en
+    : convCw.last_non_activity_message_at
+      ? fechaISO(convCw.last_non_activity_message_at)
+      : new Date().toISOString();
+  const ultimoTexto = ultimo
+    ? ultimo.contenido
+    : String(
+        Array.isArray(convCw?.messages) && convCw.messages.length > 0
+          ? convCw.messages[convCw.messages.length - 1]?.content || ""
+          : ""
+      );
+
+  const convRow = await upsertConversacion(
+    convCw,
+    clienteId,
+    telefono,
+    ultimoTexto,
+    ultimoEn,
+    res,
+    existente
+  );
+  if (!convRow) return { ok: false, nuevos: 0, actualizados: 0 };
+
+  if (mensajesCw.length > 0) {
+    const sync = await sincronizarMensajes(convRow.id, mensajesCw, res, {
+      ventana: opts.ventanaDedupe,
+    });
+    if (sync.nuevos > 0) {
+      tocadas.push({
+        convId: convRow.id,
+        no_leidos: convRow.no_leidos,
+        ultimo_leido_en: convRow.ultimo_leido_en,
+        entrantes: sync.entrantes,
+      });
+    }
+  }
+  return {
+    ok: true,
+    nuevos: res.mensajes_nuevos - antesNuevos,
+    actualizados: res.mensajes_actualizados - antesAct,
+  };
+}
+
+function actividadCwMs(convCw: any): number {
+  return (convCw.last_non_activity_message_at || convCw.last_activity_at || 0) * 1000;
+}
+
+/** ¿El CRM ya tiene esa actividad (o más nueva)? Entonces no hay nada que bajar. */
+function sinNovedades(convCw: any, existente: ConvExistente | null): boolean {
+  if (!existente || !existente.ultimo_mensaje_en) return false;
+  const ultMs = Date.parse(existente.ultimo_mensaje_en) || 0;
+  return actividadCwMs(convCw) <= ultMs - 3000;
+}
+
+// El solape de ±3 s para tolerar reloj hace que un chat "empatado" parezca
+// siempre novedad. Para que los sondeos cada pocos segundos no descarguen el
+// historial de esos chats una y otra vez, se recuerda brevemente que ya se
+// miró y no había nada (se invalida sola cuando Chatwoot reporta otra
+// actividad, y a los 45 s como mucho). La reparación profunda del botón 🔄 y
+// de la app al abrir ignora esta caché.
+const cacheSinNovedades = new Map<string, { actMs: number; en: number }>();
+const CACHE_MS = 45_000;
+
+function sePuedeOmitir(convCw: any): boolean {
+  const hit = cacheSinNovedades.get(String(convCw.id));
+  return Boolean(hit && hit.actMs === actividadCwMs(convCw) && Date.now() - hit.en < CACHE_MS);
+}
+
+function marcarSinNovedades(convCw: any): void {
+  if (cacheSinNovedades.size > 500) cacheSinNovedades.clear();
+  cacheSinNovedades.set(String(convCw.id), { actMs: actividadCwMs(convCw), en: Date.now() });
+}
 
 export async function sincronizarTodo(opciones: OpcionesSync = {}): Promise<ResultadoSync> {
   const res = nuevoResultado();
   const inicio = Date.now();
   const maxConversaciones = opciones.maxConversaciones || 100;
+  const tocadas: TocadoNoLeidos[] = [];
 
   try {
-    // 1) Listar conversaciones de Chatwoot (abiertas; las resueltas se reabren
-    //    solas cuando el cliente vuelve a escribir).
-    let conversacionesCw: any[] = [];
+    // ------------------------------------------------------------------
+    // 1) Conversación única (abrir el chat + sondeo de 2.5 s del chat abierto)
+    // ------------------------------------------------------------------
     if (opciones.chatwootConversationId) {
-      const detalle = await cwGet(`/conversations/${opciones.chatwootConversationId}`);
+      const detalle = await cwGet(`/conversations/${opciones.chatwootConversationId}`, 15000);
       if (detalle.ok && detalle.json) {
-        conversacionesCw = [detalle.json];
+        res.conversaciones_recorridas = 1;
+        const existente = await buscarConversacion(opciones.chatwootConversationId);
+        if (!opciones.completa && (sinNovedades(detalle.json, existente) || sePuedeOmitir(detalle.json))) {
+          // Nada nuevo: el sondeo rápido del chat abierto son 2 consultas y ya.
+          res.tardo_ms = Date.now() - inicio;
+          return res;
+        }
+        const hec = await sincronizarConversacionCw(detalle.json, res, tocadas, {
+          existente,
+          ventanaDedupe: !opciones.completa,
+          perPageMensajes: opciones.completa ? 100 : 40,
+        });
+        if (!opciones.completa && hec.ok && hec.nuevos === 0 && hec.actualizados === 0) {
+          marcarSinNovedades(detalle.json);
+        }
       } else if (detalle.status === 404) {
         res.errores.push("la conversación no existe en Chatwoot (¿se borró?)");
-        res.tardo_ms = Date.now() - inicio;
-        return res;
       }
-    } else {
-      for (let pagina = 1; pagina <= 5; pagina += 1) {
-        const listado = await cwGet(
-          `/conversations?status=open&per_page=25&page=${pagina}`
-        );
-        if (!listado.ok && pagina === 1) {
-          res.errores.push(
-            `Chatwoot no respondió el listado (${listado.status}): ${listado.texto.slice(0, 160)}`
-          );
-          break;
-        }
-        const lote = listado.json?.data?.payload || listado.json?.payload || [];
-        conversacionesCw = conversacionesCw.concat(lote);
-        if (!listado.ok || lote.length < 25) break;
-        if (conversacionesCw.length >= maxConversaciones) break;
-      }
-      // Ordenar por actividad más reciente primero (prioriza lo urgente).
-      conversacionesCw.sort(
-        (a, b) => (b.last_non_activity_message_at || b.last_activity_at || 0) -
-          (a.last_non_activity_message_at || a.last_activity_at || 0)
-      );
-      conversacionesCw = conversacionesCw.slice(0, maxConversaciones);
+      if (tocadas.length > 0) await recalcularNoLeidos(tocadas);
+      res.tardo_ms = Date.now() - inicio;
+      res.ok = res.ok && res.errores.length === 0;
+      return res;
     }
 
-    res.conversaciones_recorridas = conversacionesCw.length;
-    const tocadas: Array<{
-      convId: string; no_leidos: number | null; ultimo_leido_en: string | null; entrantes: string[];
-    }> = [];
-
-    for (const convCw of conversacionesCw) {
-      const sender = convCw?.meta?.sender || {};
-      const attrs = convCw?.custom_attributes || sender?.custom_attributes || {};
-      const { telefono, display } = telefonoDe(sender, convCw);
-
-      const clienteId = await upsertCliente(
-        telefono,
-        display,
-        sender?.name || null,
-        sender?.avatar_url || null,
-        attrs,
-        res
+    // ------------------------------------------------------------------
+    // 2) Bandeja. Listar conversaciones abiertas de Chatwoot (100/página).
+    // ------------------------------------------------------------------
+    let conversacionesCw: any[] = [];
+    const perPage = 100;
+    const maxPaginas = opciones.rapido ? 2 : 5;
+    for (let pagina = 1; pagina <= maxPaginas; pagina += 1) {
+      const listado = await cwGet(
+        `/conversations?status=open&per_page=${perPage}&page=${pagina}`,
+        15000
       );
-      if (!clienteId) continue;
-
-      const existente = await buscarConversacion(convCw.id);
-      const ultimaActividadCwMs =
-        (convCw.last_non_activity_message_at || convCw.last_activity_at || 0) * 1000;
-      const ultimoEnMs = existente?.ultimo_mensaje_en
-        ? Date.parse(existente.ultimo_mensaje_en)
-        : 0;
-
-      // ¿Vale la pena bajar los mensajes? Sólo si hay novedades (o modo completo).
-      const hayNovedades =
-        opciones.completa ||
-        opciones.chatwootConversationId ||
-        !existente ||
-        ultimaActividadCwMs > ultimoEnMs - 3000;
-
-      if (!hayNovedades) continue;
-
-      const mensajesResp = await cwGet(
-        `/conversations/${convCw.id}/messages?per_page=100`,
-        25000
-      );
-      const mensajesCw: any[] = mensajesResp.json?.payload || [];
-      if (!mensajesResp.ok) {
+      if (!listado.ok && pagina === 1) {
         res.errores.push(
-          `historial ${convCw.id}: (${mensajesResp.status}) ${mensajesResp.texto.slice(0, 120)}`
+          `Chatwoot no respondió el listado (${listado.status}): ${listado.texto.slice(0, 160)}`
         );
+        break;
       }
+      const lote = listado.json?.data?.payload || listado.json?.payload || [];
+      conversacionesCw = conversacionesCw.concat(lote);
+      if (!listado.ok || lote.length < perPage) break;
+      if (conversacionesCw.length >= maxConversaciones) break;
+    }
+    // Ordenar por actividad más reciente primero (prioriza lo urgente).
+    conversacionesCw.sort((a, b) => actividadCwMs(b) - actividadCwMs(a));
+    conversacionesCw = conversacionesCw.slice(0, maxConversaciones);
+    res.conversaciones_recorridas = conversacionesCw.length;
 
-      const ultimo = resumenUltimoMensaje(mensajesCw);
-      const ultimoEn = ultimo
-        ? ultimo.en
-        : convCw.last_non_activity_message_at
-          ? fechaISO(convCw.last_non_activity_message_at)
-          : new Date().toISOString();
-      const ultimoTexto = ultimo
-        ? ultimo.contenido
-        : String(
-            Array.isArray(convCw?.messages) && convCw.messages.length > 0
-              ? convCw.messages[convCw.messages.length - 1]?.content || ""
-              : ""
-          );
+    // ------------------------------------------------------------------
+    // 3) Modo rápido: un solo mapa de Supabase decide qué chats cambiaron.
+    //    Los que no cambiaron cuestan 0 consultas (antes: 4 por chat).
+    // ------------------------------------------------------------------
+    // El mapa de Supabase (1 consulta) decide qué chats tienen novedades en
+    // CUALQUIER modo sondeo; en `completa` se repara todo igualmente.
+    const mapaSb = await mapaDeConversaciones();
+    let aProcesar: Array<{ convCw: any; existente: ConvExistente | null }> = [];
+    for (const convCw of conversacionesCw) {
+      const existente = mapaSb.get(String(convCw.id)) || null;
+      if (!opciones.completa && (sinNovedades(convCw, existente) || sePuedeOmitir(convCw))) continue;
+      aProcesar.push({ convCw, existente });
+      // En modo rápido, poco y a menudo: máx. 8 chats por pasada (los más
+      // recientes van primero; el resto se cubre en el siguiente tic).
+      if (opciones.rapido && aProcesar.length >= 8) break;
+    }
 
-      const convRow = await upsertConversacion(convCw, clienteId, telefono, ultimoTexto, ultimoEn, res);
-      if (!convRow) continue;
-
-      if (mensajesCw.length > 0) {
-        const sync = await sincronizarMensajes(convRow.id, mensajesCw, res);
-        tocadas.push({
-          convId: convRow.id,
-          no_leidos: convRow.no_leidos,
-          ultimo_leido_en: convRow.ultimo_leido_en,
-          entrantes: sync.entrantes,
-        });
+    for (const { convCw, existente } of aProcesar) {
+      const hec = await sincronizarConversacionCw(convCw, res, tocadas, {
+        existente,
+        ventanaDedupe: !opciones.completa,
+        perPageMensajes: opciones.completa ? 100 : 40,
+        refrescarCliente: opciones.completa,
+      });
+      if (!opciones.completa && hec.ok && hec.nuevos === 0 && hec.actualizados === 0) {
+        marcarSinNovedades(convCw);
       }
     }
 
@@ -808,8 +1043,17 @@ export async function sincronizarTodo(opciones: OpcionesSync = {}): Promise<Resu
 // ---------------------------------------------------------------------------
 // Webhook directo de Chatwoot (evento único, estilo "Sincronizar Supabase")
 // ---------------------------------------------------------------------------
+//
+// Camino rápido (el 99 % de los eventos): la conversación ya existe en
+// Supabase → 1 búsqueda + inserción del mensaje y PATCH del resumen EN
+// PARALELO + recuento de no leídos. Nada de tocar `clientes`, nada de
+// descargar 400 mensajes para deduplicar. Con esto el mensaje está visible
+// en el dashboard ~1 s después de entrar a Chatwoot (Realtime lo empuja).
 
-export async function procesarEventoWebhook(body: any): Promise<ResultadoSync> {
+export async function procesarEventoWebhook(
+  body: any,
+  opciones: { soloActualizarExistentes?: boolean } = {}
+): Promise<ResultadoSync> {
   const res = nuevoResultado();
   const inicio = Date.now();
   try {
@@ -823,6 +1067,70 @@ export async function procesarEventoWebhook(body: any): Promise<ResultadoSync> {
     const attrs = conv?.custom_attributes || {};
     const { telefono, display } = telefonoDe(sender, conv);
 
+    const cwMsg = {
+      id: body.id,
+      content: body.content,
+      message_type: body.message_type,
+      attachments: body.attachments,
+      private: body.private,
+      created_at: body.created_at || Date.now() / 1000,
+    };
+    const mensaje = mapMensajeCw(cwMsg);
+
+    // --- Camino rápido: conversación ya conocida por el CRM ----------------
+    if (conv?.id) {
+      const existente = await buscarConversacion(conv.id);
+      if (existente?.cliente_id) {
+        if (!mensaje) {
+          // Actividad/nota privada de un chat ya guardado: nada que hacer.
+          res.tardo_ms = Date.now() - inicio;
+          return res;
+        }
+        const ultimoTexto =
+          mensaje.tipo_contenido === "audio"
+            ? "[audio]"
+            : mensaje.tipo_contenido === "imagen"
+              ? esMarcadorMultimedia(mensaje.contenido)
+                ? "[imagen]"
+                : `📷 ${mensaje.contenido}`
+              : mensaje.contenido;
+        const esMasNuevo =
+          !existente.ultimo_mensaje_en ||
+          Date.parse(mensaje.creado_en) >= Date.parse(existente.ultimo_mensaje_en) - 3000;
+        const [sync] = await Promise.all([
+          sincronizarMensajes(existente.id, [cwMsg], res, {
+            ventana: true,
+            soloExistentes: opciones.soloActualizarExistentes,
+          }),
+          esMasNuevo
+            ? upsertConversacion(
+                conv,
+                existente.cliente_id,
+                telefono,
+                ultimoTexto,
+                mensaje.creado_en,
+                res,
+                existente
+              )
+            : Promise.resolve(null),
+        ]);
+        if (sync.nuevos > 0) {
+          await recalcularNoLeidos([
+            {
+              convId: existente.id,
+              no_leidos: existente.no_leidos,
+              ultimo_leido_en: existente.ultimo_leido_en,
+              entrantes: sync.entrantes,
+            },
+          ]);
+        }
+        res.tardo_ms = Date.now() - inicio;
+        res.ok = res.ok && res.errores.length === 0;
+        return res;
+      }
+    }
+
+    // --- Primera vez (o conversación nueva): crear cliente + conversación --
     const clienteId = await upsertCliente(
       telefono,
       display,
@@ -832,15 +1140,6 @@ export async function procesarEventoWebhook(body: any): Promise<ResultadoSync> {
       res
     );
     if (!clienteId) throw new Error("no se pudo garantizar el cliente");
-
-    const mensaje = mapMensajeCw({
-      id: body.id,
-      content: body.content,
-      message_type: body.message_type,
-      attachments: body.attachments,
-      private: body.private,
-      created_at: body.created_at || Date.now() / 1000,
-    });
 
     const ultimoTexto = mensaje
       ? mensaje.tipo_contenido === "audio"
@@ -855,23 +1154,20 @@ export async function procesarEventoWebhook(body: any): Promise<ResultadoSync> {
     if (!convRow) throw new Error("no se pudo garantizar la conversación");
 
     if (mensaje) {
-      const cwMsg = {
-        id: body.id,
-        content: body.content,
-        message_type: body.message_type,
-        attachments: body.attachments,
-        private: body.private,
-        created_at: body.created_at || Date.now() / 1000,
-      };
-      const sync = await sincronizarMensajes(convRow.id, [cwMsg], res);
-      await recalcularNoLeidos([
-        {
-          convId: convRow.id,
-          no_leidos: convRow.no_leidos,
-          ultimo_leido_en: convRow.ultimo_leido_en,
-          entrantes: sync.entrantes,
-        },
-      ]);
+      const sync = await sincronizarMensajes(convRow.id, [cwMsg], res, {
+        ventana: true,
+        soloExistentes: opciones.soloActualizarExistentes,
+      });
+      if (sync.nuevos > 0) {
+        await recalcularNoLeidos([
+          {
+            convId: convRow.id,
+            no_leidos: convRow.no_leidos,
+            ultimo_leido_en: convRow.ultimo_leido_en,
+            entrantes: sync.entrantes,
+          },
+        ]);
+      }
     }
   } catch (e: any) {
     res.ok = false;

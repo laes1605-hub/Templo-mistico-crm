@@ -25,8 +25,19 @@ export async function POST(req: Request) {
   const evento = String(body?.event || "");
 
   try {
-    if (evento === "message_created" || evento === "conversation_created") {
-      const resultado = await procesarEventoWebhook(body);
+    // message_updated también se procesa: llega el pie de foto/caption de una
+    // imagen al instante en vez de esperar el siguiente sondeo. La deduplicación
+    // por id de mensaje hace que sea idempotente.
+    if (
+      evento === "message_created" ||
+      evento === "conversation_created" ||
+      evento === "message_updated"
+    ) {
+      const resultado = await procesarEventoWebhook(body, {
+        // message_updated nunca debe crear filas nuevas (ev. "leído"): sólo
+        // completar pie de foto / URL del adjunto en las existentes.
+        soloActualizarExistentes: evento === "message_updated",
+      });
       if (!resultado.ok && resultado.errores.length > 0) {
         console.error("[chatwoot-webhook]", evento, resultado.errores.join(" | "));
       }

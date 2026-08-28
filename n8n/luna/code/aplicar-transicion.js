@@ -27,7 +27,27 @@ const sbHeaders = {
   Prefer: "return=minimal"
 };
 
-const pulir = $input.first().json || {};
+// Este nodo se ejecuta DESPUES de Enviar Mensaje Chatwoot o Enviar Audio
+// Chatwoot. La entrada sirve para comprobar que el envio no fallo; los datos
+// de la respuesta se recuperan del nodo de auditoria para que no se pierdan al
+// atravesar el nodo HTTP de Chatwoot.
+const resultadoEnvio = $input.first().json || {};
+let pulir = resultadoEnvio;
+try {
+  const respuestaAuditada = $("Pulir y Auditar Respuesta").first().json || {};
+  if (typeof respuestaAuditada.pausarChat === "boolean") pulir = respuestaAuditada;
+} catch (e) {}
+
+function envioTieneError(valor) {
+  const data = valor || {};
+  const status = Number(data.statusCode || data.status_code || data.httpCode || 0);
+  return Boolean(
+    data.error || data.errorMessage || data.error_message || data.success === false ||
+    (Number.isFinite(status) && status >= 400)
+  );
+}
+const envioFallido = envioTieneError(resultadoEnvio);
+
 const fusion = $("Fusionar Memoria").first().json || {};
 const checklist = pulir.checklist || fusion.checklist || {};
 const etapa = pulir.etapa || fusion.etapa || "lead_nuevo";
@@ -128,16 +148,42 @@ function resolverClave(canon) {
 let destino = null;
 let razon = "sin_cambio";
 let forzado = false;
-const pausarChat = etapa === "datos" && pulir.pausarChat === true;
+const pausaSolicitada = etapa === "datos" && pulir.pausarChat === true;
+const pausarChat = pausaSolicitada && !envioFallido;
 
-if (etapa === "lead_nuevo") {
+if (envioFallido) {
+  razon = "envio_a_chatwoot_fallido_sin_transicion_ni_pausa";
+} else if (etapa === "lead_nuevo") {
   destino = "datos";
-  razon = "saludo_realizado_motivo_preguntado";
+  razon = "saludo_enviado_motivo_preguntado";
 }
 // En Datos no hay una tercera etapa: Luna se queda en Datos. La pausa se
-// activa unicamente cuando ya envio la lista de requisitos al cliente.
+// activa unicamente DESPUES de que Chatwoot acepta la lista de requisitos.
 if (etapa === "datos" && pausarChat) {
   razon = "lista_de_requisitos_enviada_luna_pausada";
+}
+
+// Si Chatwoot rechazo el mensaje, no marcamos la lista como enviada y no
+// pausamos el chat. Asi un operador o un reintento todavia puede responder.
+if (envioFallido) {
+  return [{
+    json: {
+      ...pulir,
+      etapaAnterior: etapa,
+      etapaNueva: etapa,
+      etapaNuevaClave: null,
+      transicion: false,
+      razonTransicion: razon,
+      chatPausado: false,
+      etapaMovida: false,
+      _debug: {
+        ...(pulir._debug || {}),
+        envioFallido: true,
+        pausaSolicitada: pausaSolicitada,
+        pausarChat: false
+      }
+    }
+  }];
 }
 
 // -----------------------------------------------------
@@ -345,6 +391,8 @@ return [{
       forzado,
       nuevaClave,
       etapaMovida,
+      envioFallido,
+      pausaSolicitada,
       pausarChat,
       pausaCRM,
       reactivacionCRM,

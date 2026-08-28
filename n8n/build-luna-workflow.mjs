@@ -92,6 +92,10 @@ porNombre.get("Preparar Imagen").notes = "Vision v2: clasifica la foto en rostro
 
 reemplazarJsCode("Inyectar Analisis", "inyectar-analisis.js");
 
+reemplazarJsCode("Preparar Body Audio", "preparar-body-audio.js");
+porNombre.get("Preparar Body Audio").notes =
+  "Adapta la respuesta para voz sin leer numeros como 'uno punto' y sin perder el ultimo requisito.";
+
 // "Analizar y Actualizar Checklist" (regex) -> "Fusionar Memoria" (archivo persistente)
 renombrarNodo("Analizar y Actualizar Checklist", "Fusionar Memoria");
 reemplazarJsCode("Fusionar Memoria", "fusionar-memoria.js");
@@ -226,7 +230,7 @@ agregarNodo({
   typeVersion: 2,
   position: [7824, -1728],
   onError: "continueRegularOutput",
-  notes: "Mueve el lead en el CRM, etiqueta y envia el expediente al Maestro.",
+  notes: "Se ejecuta despues del envio: mueve el lead, pausa el chat, etiqueta y envia el expediente al Maestro.",
   parameters: { jsCode: codigo("aplicar-transicion.js") }
 });
 
@@ -318,7 +322,7 @@ wf.connections = {
   "Preparar Body Backup": { main: [[c("OpenAI Backup")]] },
   "OpenAI Backup": { main: [[c("Pulir y Auditar Respuesta")]] },
   "Pulir y Auditar Respuesta": {
-    main: [[c("Aplicar Transicion de Etapa"), c("Preparar Body Clasificacion"), c("Verificar si Enviar Audio")]]
+    main: [[c("Preparar Body Clasificacion"), c("Verificar si Enviar Audio")]]
   },
   "Aplicar Transicion de Etapa": { main: [[]] },
 
@@ -338,10 +342,11 @@ wf.connections = {
   "Preparar Body Audio": { main: [[c("Generar Audio Luna")]] },
   "Generar Audio Luna": { main: [[c("Preparar OGG para WhatsApp")]] },
   "Preparar OGG para WhatsApp": { main: [[c("Enviar Audio Chatwoot")]] },
+  "Enviar Audio Chatwoot": { main: [[c("Aplicar Transicion de Etapa")]] },
   "Calcular Delay": { main: [[c("Enviar Escribiendo")]] },
   "Enviar Escribiendo": { main: [[c("Wait")]] },
   Wait: { main: [[c("Enviar Mensaje Chatwoot")]] },
-  "Enviar Mensaje Chatwoot": { main: [[]] }
+  "Enviar Mensaje Chatwoot": { main: [[c("Aplicar Transicion de Etapa")]] }
 };
 
 const base = JSON.stringify(wf, null, 2) + "\n";

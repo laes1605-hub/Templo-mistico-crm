@@ -178,27 +178,30 @@ function iniciarConMayuscula(texto) {
 }
 
 const requisitosPendientes = listaRequisitos();
+// Los mensajes de reserva siguen siendo deterministas, pero se redactan como
+// hablaria una persona: ritmo variado, conectores naturales y cero formulas
+// rigidas. Deben conservar intactas las frases de cada requisito.
 function mensajeDeterminista() {
   if (etapa === "lead_nuevo") {
-    return "Hola, qué gusto saludarte. Soy Luna, asistente del Maestro Raúl en el Templo Místico. Estoy aquí para orientarte con mucho respeto. Cuéntame, ¿en qué podemos ayudarte hoy?";
+    return "Hola, qué alegría saludarte. Soy Luna, la asistente del Maestro Raúl en el Templo Místico. Este es un espacio de total confianza, así que puedes hablarme con toda tranquilidad. Cuéntame, ¿en qué podemos ayudarte hoy?";
   }
   if (etapa === "datos") {
     if (!tipo) {
-      return "Gracias por contarme tu situación. Para orientarte bien y pedirte únicamente los datos necesarios, ¿podrías decirme si buscas ayuda con suerte, amor, recuperar a alguien, prosperidad, limpieza, protección u otro motivo?";
+      return "Gracias por contarme tu situación, de verdad te escucho con atención. Para orientarte mejor y pedirte solo lo necesario, cuéntame por favor si buscas ayuda con suerte, amor, recuperar a alguien, prosperidad, limpieza, protección, o si es otro motivo distinto.";
     }
     if (!requisitosPendientes.length) {
-      return "Muchas gracias por tu confianza. Ya tengo todos los datos necesarios para preparar tu consulta. Voy a dejar el caso listo para que el Maestro Raúl lo revise con atención.";
+      return "Perfecto, muchas gracias por tu confianza. Ya tengo todo lo que necesito para tu consulta, así que voy a dejar tu caso listo para que el Maestro Raúl lo revise con mucha atención.";
     }
 
     const motivo = motivoVisible();
     const apertura = motivo
-      ? "Gracias por confiarme tu situación. Entiendo que buscas ayuda con " + motivo + ", y con mucho gusto vamos a orientarte."
-      : "Gracias por confiarme tu situación. Con mucho gusto vamos a orientarte.";
+      ? "Gracias por contarme tu situación con tanta confianza, sé lo importante que esto es para ti. Con mucho gusto vamos a orientarte con " + motivo + "."
+      : "Gracias por contarme tu situación con tanta confianza. Con mucho gusto vamos a orientarte.";
     const cantidad = requisitosPendientes.length === 1 ? "este dato" : "estos datos";
     const lineas = requisitosPendientes.map(requisito => iniciarConMayuscula(requisito) + ".");
     const cierre = requisitosPendientes.length === 1
-      ? "Cuando lo tengas, envíamelo por aquí, por favor. Así podremos dejar todo listo para que el Maestro Raúl revise tu caso con atención. Muchas gracias."
-      : "Cuando los tengas, envíamelos por aquí, por favor. Así podremos dejar todo listo para que el Maestro Raúl revise tu caso con atención. Muchas gracias.";
+      ? "En cuanto lo tengas, me lo envías por aquí y dejamos todo listo para que el Maestro Raúl revise tu caso con mucha atención. Muchas gracias por tu confianza."
+      : "En cuanto los tengas, me los envías por aquí y dejamos todo listo para que el Maestro Raúl revise tu caso con mucha atención. Muchas gracias por tu confianza.";
 
     return [
       apertura,

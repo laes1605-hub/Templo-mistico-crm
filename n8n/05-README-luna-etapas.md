@@ -26,6 +26,17 @@ Luna pide todo lo pendiente de una sola vez, con un saludo empático, «por favo
 agradecimiento. El mensaje al cliente no usa `1.`, `2.` ni `3.`. Así también suena natural si
 se responde con una nota de voz y no dice «uno punto» o «dos punto».
 
+Además, para que Luna **hable con más fluidez y suene más natural**:
+
+- En las notas de voz la lista se convierte en una **enumeración hablada** («envíame estos
+  datos: la primera cosa; la segunda; y la última») en lugar de recitar renglones sueltos, con
+  pausas de respiración naturales entre ideas y sin recortar nunca el último dato.
+- La síntesis de Fish Audio usa muestreo expresivo (`temperature 0.75`, `top_p 0.85`), dentro de
+  la banda recomendada (0.7-0.8) para habla variada pero estable.
+- La redacción de la IA se genera con temperatura media y penalización de repetición, y el
+  prompt le pide ritmo hablado: frases de largo variado, conectores naturales y sin repetir
+  aperturas ni cierres entre mensajes.
+
 Un nombre de una sola palabra —por ejemplo, «Ana»— se considera **parcial**. Luna no lo marca
 como terminado: pide explícitamente el nombre y apellido. Si después recibe «Ana Pérez»,
 enriquece el dato parcial sin sobrescribir ningún nombre completo que ya estuviera guardado.

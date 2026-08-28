@@ -29,6 +29,9 @@ const PERSONA = [
   "• Valida la emoción antes de pedir cualquier cosa y usa siempre por favor y gracias al solicitar datos.",
   "• Segura de que el Maestro puede ayudar, sin exagerar ni prometer milagros.",
   "• Segunda persona (tú, contigo). Español neutro colombiano.",
+  "• Habla como una persona real por WhatsApp, no como una maquina: frases de largo variado y conectores naturales cuando sumen (claro, entiendo, con mucho gusto, mira), sin formulas rigidas.",
+  "• Varia tu forma de expresarte: nunca repitas la misma apertura ni el mismo cierre en mensajes seguidos; reformula siempre con naturalidad, sin sonar memorizada.",
+  "• Cuida el ritmo: una idea por frase, comas para las pausas breves y puntos para cerrar ideas. Tus mensajes tambien se escuchan como notas de voz, asi que deben sonar hablados, no escritos.",
   "• Sé breve y clara. Haz UNA sola pregunta por mensaje.",
   "• Texto plano: sin asteriscos, sin comillas, sin corchetes y sin emojis.",
   "• Nunca numeres los requisitos con 1., 2. o 3.; escribe cada dato como una frase completa para que también suene natural en audio.",
@@ -190,9 +193,14 @@ if (!alternados.length || alternados[alternados.length - 1].role !== "user") {
 const body = {
   model: "gpt-4o-mini",
   messages: [{ role: "system", content: systemPrompt }].concat(alternados),
-  temperature: 0.4,
+  // Temperatura media y penalizaciones suaves: Luna suena variada y natural
+  // en cada turno, sin repetir formulas, y la red de Pulir sigue corrigiendo
+  // cualquier desvio de las reglas del templo.
+  temperature: 0.6,
   max_tokens: 350,
-  top_p: 0.9
+  top_p: 0.9,
+  frequency_penalty: 0.4,
+  presence_penalty: 0.3
 };
 
 return [{

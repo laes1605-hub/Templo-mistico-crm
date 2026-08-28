@@ -239,7 +239,7 @@ async function fusionar({ attrs = {}, ia = null, foto = null, etapa = "datos", t
 let f = await fusionar({ ia: null, texto: "Busco suerte y quiero ganar en el chance." });
 ok(f.salida.checklist.tipo_trabajo === "personal", "suerte/chance → trabajo PERSONAL");
 ok(f.salida.checklist.motivo_categoria === "suerte", "suerte queda como categoria del caso");
-ok(f.salida.faltantes.map(x => x.clave).join(",") === "nombre_cliente,foto_cliente,foto_mano", "personal pide nombre completo, foto de rostro y palma derecha", f.salida.faltantesTexto);
+ok(f.salida.faltantes.map(x => x.clave).join(",") === "foto_cliente,nombre_cliente,foto_mano", "personal pide foto de rostro, nombre completo y palma derecha", f.salida.faltantesTexto);
 
 f = await fusionar({ ia: null, texto: "Quiero recuperar a mi pareja, se fue y necesito que vuelva." });
 ok(f.salida.checklist.tipo_trabajo === "pareja", "recuperar a la pareja → trabajo de PAREJA");
@@ -248,6 +248,17 @@ ok(f.salida.faltantes.length === 4, "pareja mantiene nombres y dos fotos como ca
 
 f = await fusionar({ attrs: { tipo_trabajo: "pareja" }, foto: { tipo: "pareja", url: "https://cdn/dos.jpg", personas: 2 } });
 ok(f.salida.checklist.foto_cliente && f.salida.checklist.foto_otra_persona, "una foto juntos completa las dos fotos de pareja");
+
+f = await fusionar({ attrs: { tipo_trabajo: "personal", nombre_cliente: "Ana", foto_cliente: true, foto_mano: true } });
+ok(f.salida.nombreClienteCompleto === false && f.salida.faltantes.map(x => x.clave).join(",") === "nombre_cliente", "un solo nombre sigue pendiente y Luna pide nombre completo");
+ok(/nombre parcial: Ana/i.test(f.salida.contextoMemoria), "la memoria distingue un nombre parcial de uno completo");
+
+f = await fusionar({
+  attrs: { tipo_trabajo: "pareja", nombre_cliente: "Ana", nombre_otra_persona: "Luis" },
+  ia: { tipo_trabajo: "pareja", nombre_cliente: "Ana Perez", nombre_otra_persona: "Luis Gomez" }
+});
+ok(f.salida.checklist.nombre_cliente === "Ana Perez" && f.salida.checklist.nombre_otra_persona === "Luis Gomez", "los nombres completos enriquecen nombres parciales guardados");
+ok(f.salida.nombreClienteCompleto && f.salida.nombreOtraPersonaCompleto, "pareja solo cierra los nombres cuando ambos están completos");
 
 const guardado = {
   tipo_trabajo: "pareja", nombre_cliente: "Ana Perez", nombre_otra_persona: "Karla Gomez",
@@ -274,13 +285,17 @@ async function pulir({ texto, checklist = {}, etapa = "datos", faltantes = [], c
 }
 
 let p = await pulir({ texto: "Hola, ¿cómo te llamas? Envíame una foto.", checklist: { tipo_trabajo: "personal" }, faltantes: [
-  { clave: "nombre_cliente", etiqueta: "su nombre completo" },
   { clave: "foto_cliente", etiqueta: "una foto suya, clara y de frente, con el rostro visible" },
+  { clave: "nombre_cliente", etiqueta: "su nombre completo (nombre y apellido)" },
   { clave: "foto_mano", etiqueta: "una foto clara de la palma de su mano derecha" }
 ] });
 const respuestaPersonal = p;
 ok(p.pausarChat === true && p.listaRequisitosEnviada === true, "Datos con tipo identificado solicita la pausa");
-ok(/tu nombre completo/i.test(p.textoRespuesta) && /foto tuya[^\n]*rostro/i.test(p.textoRespuesta) && /palma de tu mano derecha/i.test(p.textoRespuesta), "personal envía nombre completo, foto de rostro y palma derecha");
+ok(/tu nombre completo[^\n]*nombre y apellido/i.test(p.textoRespuesta) && /foto tuya[^\n]*rostro/i.test(p.textoRespuesta) && /palma de tu mano derecha/i.test(p.textoRespuesta), "personal envía foto de rostro, nombre y apellido, y palma derecha");
+const ordenFoto = p.textoRespuesta.search(/foto tuya/i);
+const ordenNombre = p.textoRespuesta.search(/tu nombre completo/i);
+const ordenPalma = p.textoRespuesta.search(/palma de tu mano derecha/i);
+ok(ordenFoto >= 0 && ordenFoto < ordenNombre && ordenNombre < ordenPalma, "personal mantiene el orden exacto: foto, nombre completo y palma");
 ok(/gracias/i.test(p.textoRespuesta) && /por favor/i.test(p.textoRespuesta) && /mucho gusto/i.test(p.textoRespuesta), "la solicitud de datos es amable y agradece la confianza");
 ok(!/^\s*\d+[.)]/m.test(p.textoRespuesta), "la solicitud no usa 1., 2. ni 3.");
 
@@ -307,7 +322,7 @@ p = await pulir({ texto: "Lo que sea, dime tu nombre.", checklist: { tipo_trabaj
   { clave: "foto_cliente", etiqueta: "una foto clara y de frente del cliente" },
   { clave: "foto_otra_persona", etiqueta: "una foto clara y de frente de la otra persona o una foto clara donde aparezcan los dos" }
 ] });
-ok(p.pausarChat === true && /nombres completos de las dos personas/i.test(p.textoRespuesta) && /foto clara y de frente de cada persona/i.test(p.textoRespuesta) && /donde aparezcan las dos/i.test(p.textoRespuesta), "pareja envía nombres completos y todas las opciones de fotografía");
+ok(p.pausarChat === true && /nombres completos de las dos personas[^\n]*nombre y apellido/i.test(p.textoRespuesta) && /foto clara y de frente de cada persona/i.test(p.textoRespuesta) && /donde aparezcan las dos/i.test(p.textoRespuesta), "pareja pide nombre y apellido de ambos, y fotos separadas o juntos");
 ok(!/^\s*\d+[.)]/m.test(p.textoRespuesta), "la solicitud de pareja tampoco usa numeración robótica");
 
 p = await pulir({ texto: "Hola, dime más.", checklist: {}, faltantes: [{ clave: "tipo_trabajo", etiqueta: "tipo" }] });
@@ -316,8 +331,16 @@ ok(p.pausarChat === false && /suerte, amor/.test(p.textoRespuesta), "si no se en
 p = await pulir({ texto: "Hola, envíame tu nombre y una foto.", checklist: {}, etapa: "lead_nuevo", faltantes: [] });
 ok(p.pausarChat === false && /soy luna/i.test(p.textoRespuesta) && /podemos ayudarte/i.test(p.textoRespuesta), "Lead Nuevo saluda con amabilidad, se presenta y pregunta el motivo");
 
-p = await pulir({ texto: "Cuentame otra vez el motivo.", checklist: { tipo_trabajo: "personal", nombre_cliente: "Ana" }, faltantes: [{ clave: "foto_cliente", etiqueta: "una foto suya" }] });
-ok(p.pausarChat === true && /foto tuya/i.test(p.textoRespuesta) && /palma de tu mano derecha/i.test(p.textoRespuesta) && !/cu[eé]ntame.*motivo/i.test(p.textoRespuesta), "Datos pide todos los pendientes sin volver a preguntar el motivo");
+p = await pulir({ texto: "Cuentame otra vez el motivo.", checklist: { tipo_trabajo: "personal", nombre_cliente: "Ana" }, faltantes: [{ clave: "nombre_cliente", etiqueta: "su nombre completo" }] });
+ok(p.pausarChat === true && /foto tuya/i.test(p.textoRespuesta) && /tu nombre completo[^\n]*nombre y apellido/i.test(p.textoRespuesta) && /palma de tu mano derecha/i.test(p.textoRespuesta), "un nombre parcial nunca hace que Luna olvide pedir el nombre completo");
+ok(!/cu[eé]ntame.*motivo/i.test(p.textoRespuesta), "Datos no vuelve a preguntar el motivo");
+
+p = await pulir({
+  texto: "respuesta incompleta",
+  checklist: { tipo_trabajo: "pareja", nombre_cliente: "Ana", nombre_otra_persona: "Luis" },
+  faltantes: [{ clave: "nombre_cliente" }, { clave: "nombre_otra_persona" }]
+});
+ok(/nombres completos de las dos personas[^\n]*nombre y apellido/i.test(p.textoRespuesta), "pareja vuelve a pedir ambos nombres cuando solo tiene nombres de pila");
 
 // ---------------------------------------------------------------------------
 // 5. Transicion y pausa persistente

@@ -26,9 +26,14 @@ Luna pide todo lo pendiente de una sola vez, con un saludo empático, «por favo
 agradecimiento. El mensaje al cliente no usa `1.`, `2.` ni `3.`. Así también suena natural si
 se responde con una nota de voz y no dice «uno punto» o «dos punto».
 
-Si alguno de esos datos ya estaba guardado, Luna solo muestra lo que falta. La foto de una
-pareja sirve para completar las dos fotos. En un trabajo personal, una foto de la palma nunca
-se toma como foto del rostro.
+Un nombre de una sola palabra —por ejemplo, «Ana»— se considera **parcial**. Luna no lo marca
+como terminado: pide explícitamente el nombre y apellido. Si después recibe «Ana Pérez»,
+enriquece el dato parcial sin sobrescribir ningún nombre completo que ya estuviera guardado.
+La misma validación se aplica por separado a las dos personas en trabajos de pareja.
+
+Si alguno de esos datos ya estaba guardado de forma completa, Luna solo muestra lo que falta.
+La foto de una pareja sirve para completar las dos fotos. En un trabajo personal, una foto de
+la palma nunca se toma como foto del rostro.
 
 ## Cómo se identifica el trabajo
 
@@ -109,8 +114,9 @@ La verificación comprueba que:
 - Lead Nuevo saluda y transfiere directamente a Datos;
 - Datos clasifica suerte, amor y recuperación, envía todos los requisitos en un solo mensaje
   amable y activa la pausa después del envío;
-- pareja exige ambos nombres completos y acepta una foto de los dos;
-- personal exige nombre completo, foto de rostro y palma derecha;
+- pareja exige nombre y apellido de ambos y acepta una foto de los dos;
+- personal exige, en orden, foto de rostro, nombre y apellido, y palma derecha;
+- un nombre de pila sigue pendiente y puede enriquecerse con el nombre completo;
 - el audio no lee «uno punto» y conserva también el último requisito;
 - un envío fallido no pausa el chat;
 - una pausa corta el flujo antes de volver a llamar a la IA;

@@ -14,6 +14,21 @@ const faltantes = fusion.faltantes || [];
 const tipo = checklist.tipo_trabajo || "";
 const listaYaEnviada = checklist.lista_requisitos_enviada === true;
 
+// Un nombre de pila o el nombre corto del perfil no equivale al nombre
+// completo solicitado para el expediente. Debe haber al menos dos palabras
+// utiles (por ejemplo, nombre y apellido).
+function esNombreCompleto(valor) {
+  const partes = String(valor || "")
+    .trim()
+    .replace(/[.,;:()\[\]{}]/g, " ")
+    .split(/\s+/)
+    .map(p => p.trim())
+    .filter(Boolean);
+  return partes.length >= 2 && partes.filter(p => p.length >= 2).length >= 2;
+}
+const nombreClienteCompleto = esNombreCompleto(checklist.nombre_cliente);
+const nombreOtraPersonaCompleto = esNombreCompleto(checklist.nombre_otra_persona);
+
 // -----------------------------------------------------
 // 1) TEXTO DEL MODELO
 // -----------------------------------------------------
@@ -80,13 +95,13 @@ for (const frase of frases) {
 
   if (!pedido) continue;
   if (pideNombre) {
-    if (checklist.nombre_cliente && checklist.nombre_otra_persona) {
+    if (nombreClienteCompleto && nombreOtraPersonaCompleto) {
       violaciones.push("pidio_nombre_ya_guardado");
-    } else if (checklist.nombre_cliente && tipo === "personal") {
+    } else if (nombreClienteCompleto && tipo === "personal") {
       violaciones.push("pidio_nombre_cliente_ya_guardado");
-    } else if (checklist.nombre_cliente && tipo === "pareja" && !checklist.nombre_otra_persona && PIDE_NOMBRE_TUYO.test(frase)) {
+    } else if (nombreClienteCompleto && tipo === "pareja" && !nombreOtraPersonaCompleto && PIDE_NOMBRE_TUYO.test(frase)) {
       violaciones.push("pidio_nombre_cliente_ya_guardado");
-    } else if (checklist.nombre_otra_persona && PIDE_NOMBRE_OTRO.test(frase)) {
+    } else if (nombreOtraPersonaCompleto && PIDE_NOMBRE_OTRO.test(frase)) {
       violaciones.push("pidio_nombre_pareja_ya_guardado");
     }
   }
@@ -126,11 +141,11 @@ function motivoVisible() {
 // sintetizador diga "uno punto" o "dos punto".
 function requisitosPareja() {
   const lista = [];
-  if (!checklist.nombre_cliente && !checklist.nombre_otra_persona) {
-    lista.push("los nombres completos de las dos personas");
+  if (!nombreClienteCompleto && !nombreOtraPersonaCompleto) {
+    lista.push("los nombres completos de las dos personas, con nombre y apellido de cada una");
   } else {
-    if (!checklist.nombre_cliente) lista.push("tu nombre completo");
-    if (!checklist.nombre_otra_persona) lista.push("el nombre completo de la otra persona");
+    if (!nombreClienteCompleto) lista.push("tu nombre completo, con nombre y apellido");
+    if (!nombreOtraPersonaCompleto) lista.push("el nombre completo de la otra persona, con nombre y apellido");
   }
   if (!checklist.foto_cliente && !checklist.foto_otra_persona) {
     lista.push("una foto clara y de frente de cada persona, o una sola foto clara donde aparezcan las dos");
@@ -144,8 +159,9 @@ function requisitosPareja() {
 
 function requisitosPersonal() {
   const lista = [];
-  if (!checklist.nombre_cliente) lista.push("tu nombre completo");
+  // Orden exacto solicitado para trabajos personales: foto, nombre y palma.
   if (!checklist.foto_cliente) lista.push("una foto tuya, clara y de frente, donde se vea bien tu rostro");
+  if (!nombreClienteCompleto) lista.push("tu nombre completo, con nombre y apellido");
   if (!checklist.foto_mano) lista.push("una foto clara de la palma de tu mano derecha");
   return lista;
 }

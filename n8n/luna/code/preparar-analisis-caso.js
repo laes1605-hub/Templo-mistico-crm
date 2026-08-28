@@ -65,8 +65,8 @@ const systemPrompt = [
   "4) motivo_categoria: elige UNA sola categoria, la mas especifica posible. Si dice suerte, usa suerte; si habla de amor o recuperar a alguien, usa amor o retorno.",
   "5) motivo_resumen: UNA frase en tercera persona con lo esencial (quien, que le pasa, que quiere). Nunca inventes detalles que el cliente no dijo.",
   "6) motivo_conocido: true solo si el cliente ya explico por que vino, aunque sea en una linea.",
-  "7) nombre_cliente y nombre_otra_persona: SOLO si el cliente los escribio explicitamente en la conversacion. Copialos tal cual, con apellidos si los dio. Si no aparecen, null. No uses el nombre del perfil de WhatsApp salvo que el cliente se presente con el.",
-  "8) PROHIBIDO borrar datos: si un dato ya esta en DATOS YA GUARDADOS, devuelvelo identico aunque no se repita en la conversacion.",
+  "7) nombre_cliente y nombre_otra_persona: SOLO si el cliente los escribio explicitamente en la conversacion. Copia la version mas completa que haya dado, incluyendo apellidos. Un solo nombre como Ana es PARCIAL, no completo. No uses el nombre del perfil de WhatsApp salvo que el cliente se presente con el.",
+  "8) PROHIBIDO borrar datos: si un dato ya esta en DATOS YA GUARDADOS, devuelvelo identico aunque no se repita. Excepcion: si hay un nombre parcial guardado y luego el cliente escribe su nombre y apellido, devuelve la version completa nueva.",
   "9) Si el cliente se corrige (\"no, es Karla, no Carla\"), usa la ultima version que dio."
 ].join("\n");
 

@@ -32,6 +32,17 @@ const NOMBRES_ETAPA_FICHA = { lead_nuevo: "Lead Nuevo", datos: "Datos" };
 
 const bool = (v) => v === true || v === "true" || v === 1 || v === "1";
 const txt = (v) => (v === null || v === undefined) ? "" : String(v).trim();
+// Un solo nombre (por ejemplo, "Ana") no cumple el requisito de nombre
+// completo. Exigimos al menos dos palabras utiles para no confundir el nombre
+// corto del perfil o un nombre de pila con el dato completo del expediente.
+function esNombreCompleto(valor) {
+  const partes = txt(valor)
+    .replace(/[.,;:()\[\]{}]/g, " ")
+    .split(/\s+/)
+    .map(p => p.trim())
+    .filter(Boolean);
+  return partes.length >= 2 && partes.filter(p => p.length >= 2).length >= 2;
+}
 const novedades = [];
 
 // -----------------------------------------------------
@@ -103,17 +114,26 @@ if (ia && typeof ia === "object") {
     novedades.push("motivo_conocido");
   }
   const nombreCli = txt(ia.nombre_cliente);
-  if (!checklist.nombre_cliente && nombreCli && nombreCli.toLowerCase() !== "null" && nombreCli.length >= 2) {
+  const nombreCliUtil = nombreCli && nombreCli.toLowerCase() !== "null" && nombreCli.length >= 2;
+  const debeCompletarNombreCliente = !checklist.nombre_cliente ||
+    (!esNombreCompleto(checklist.nombre_cliente) && esNombreCompleto(nombreCli));
+  if (nombreCliUtil && debeCompletarNombreCliente) {
+    const eraParcial = Boolean(checklist.nombre_cliente);
     checklist.nombre_cliente = nombreCli.substring(0, 80);
-    novedades.push("nombre_cliente:" + checklist.nombre_cliente);
+    novedades.push((eraParcial ? "nombre_cliente_completado:" : "nombre_cliente:") + checklist.nombre_cliente);
   }
-  // El nombre de otra persona solo existe en trabajos de pareja
+  // El nombre de otra persona solo existe en trabajos de pareja. Un nombre
+  // completo nuevo puede enriquecer uno parcial, pero nunca pisa otro nombre
+  // que ya estaba completo.
   const nombreOtro = txt(ia.nombre_otra_persona);
-  if (checklist.tipo_trabajo === "pareja" && !checklist.nombre_otra_persona &&
-      nombreOtro && nombreOtro.toLowerCase() !== "null" && nombreOtro.length >= 2 &&
-      nombreOtro.toLowerCase() !== checklist.nombre_cliente.toLowerCase()) {
+  const nombreOtroUtil = nombreOtro && nombreOtro.toLowerCase() !== "null" && nombreOtro.length >= 2;
+  const debeCompletarNombreOtro = !checklist.nombre_otra_persona ||
+    (!esNombreCompleto(checklist.nombre_otra_persona) && esNombreCompleto(nombreOtro));
+  if (checklist.tipo_trabajo === "pareja" && debeCompletarNombreOtro &&
+      nombreOtroUtil && nombreOtro.toLowerCase() !== checklist.nombre_cliente.toLowerCase()) {
+    const eraParcial = Boolean(checklist.nombre_otra_persona);
     checklist.nombre_otra_persona = nombreOtro.substring(0, 80);
-    novedades.push("nombre_otra_persona:" + checklist.nombre_otra_persona);
+    novedades.push((eraParcial ? "nombre_otra_persona_completado:" : "nombre_otra_persona:") + checklist.nombre_otra_persona);
   }
 }
 
@@ -292,13 +312,13 @@ const faltantes = [];
 if (!checklist.tipo_trabajo) {
   faltantes.push({ clave: "tipo_trabajo", etiqueta: "saber si el trabajo es personal o de pareja" });
 } else if (checklist.tipo_trabajo === "pareja") {
-  if (!checklist.nombre_cliente) faltantes.push({ clave: "nombre_cliente", etiqueta: "el nombre completo del cliente" });
-  if (!checklist.nombre_otra_persona) faltantes.push({ clave: "nombre_otra_persona", etiqueta: "el nombre completo de la otra persona" });
+  if (!esNombreCompleto(checklist.nombre_cliente)) faltantes.push({ clave: "nombre_cliente", etiqueta: "el nombre completo del cliente" });
+  if (!esNombreCompleto(checklist.nombre_otra_persona)) faltantes.push({ clave: "nombre_otra_persona", etiqueta: "el nombre completo de la otra persona" });
   if (!checklist.foto_cliente) faltantes.push({ clave: "foto_cliente", etiqueta: "una foto clara y de frente del cliente" });
   if (!checklist.foto_otra_persona) faltantes.push({ clave: "foto_otra_persona", etiqueta: "una foto clara y de frente de la otra persona o una foto clara donde aparezcan los dos" });
 } else {
-  if (!checklist.nombre_cliente) faltantes.push({ clave: "nombre_cliente", etiqueta: "su nombre completo" });
   if (!checklist.foto_cliente) faltantes.push({ clave: "foto_cliente", etiqueta: "una foto suya, clara y de frente, con el rostro visible" });
+  if (!esNombreCompleto(checklist.nombre_cliente)) faltantes.push({ clave: "nombre_cliente", etiqueta: "su nombre completo (nombre y apellido)" });
   if (!checklist.foto_mano) faltantes.push({ clave: "foto_mano", etiqueta: "una foto clara de la palma de su mano derecha" });
 }
 
@@ -423,6 +443,16 @@ const marca = (ok, etiqueta, valor) => {
   if (ok) recibido.push("✅ " + etiqueta + (valor ? " → " + valor : "") + "  (GUARDADO, PROHIBIDO PEDIRLO OTRA VEZ)");
   else pendiente.push("❌ " + etiqueta + "  (SOLO ESTO SE PUEDE PEDIR)");
 };
+const marcaNombre = (valor, etiqueta) => {
+  if (esNombreCompleto(valor)) {
+    marca(true, etiqueta, valor);
+  } else {
+    const parcial = txt(valor);
+    pendiente.push("❌ " + etiqueta +
+      (parcial ? " (solo se tiene un nombre parcial: " + parcial + ")" : "") +
+      "  (PEDIR NOMBRE Y APELLIDO)");
+  }
+};
 
 if (!checklist.tipo_trabajo) {
   pendiente.push("❌ Tipo de trabajo (personal o de pareja): aun no se sabe");
@@ -439,13 +469,13 @@ if (checklist.motivo_categoria || checklist.motivo_resumen) {
 }
 
 if (checklist.tipo_trabajo === "pareja") {
-  marca(checklist.nombre_cliente, "Nombre del cliente", checklist.nombre_cliente);
-  marca(checklist.nombre_otra_persona, "Nombre de la persona a consultar", checklist.nombre_otra_persona);
+  marcaNombre(checklist.nombre_cliente, "Nombre completo del cliente");
+  marcaNombre(checklist.nombre_otra_persona, "Nombre completo de la otra persona");
   marca(checklist.foto_cliente, "Foto del cliente");
-  marca(checklist.foto_otra_persona, "Foto de la persona a consultar");
+  marca(checklist.foto_otra_persona, "Foto de la otra persona");
 } else if (checklist.tipo_trabajo === "personal") {
-  marca(checklist.nombre_cliente, "Nombre del cliente", checklist.nombre_cliente);
   marca(checklist.foto_cliente, "Foto del cliente");
+  marcaNombre(checklist.nombre_cliente, "Nombre completo del cliente");
   marca(checklist.foto_mano, "Foto de la palma de la mano derecha");
 }
 
@@ -476,6 +506,8 @@ return [{
     tipoTrabajo: checklist.tipo_trabajo,
     nombreCliente: checklist.nombre_cliente || estado.nombreContacto || "Cliente",
     nombreOtraPersona: checklist.nombre_otra_persona,
+    nombreClienteCompleto: esNombreCompleto(checklist.nombre_cliente),
+    nombreOtraPersonaCompleto: esNombreCompleto(checklist.nombre_otra_persona),
     checklist: checklist,
     fotosPendientes: fotosPendientes,
     faltantes: faltantes,

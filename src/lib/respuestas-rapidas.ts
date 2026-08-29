@@ -1,9 +1,10 @@
 /**
  * Respuestas rápidas: textos, audios (OGG) e imágenes.
  *
- * Fuente de verdad: tabla Supabase `respuestas_rapidas` (todos los
- * dispositivos). localStorage queda como caché / respaldo si no hay red o
- * todavía no se aplicó la migración.
+ * La tabla `respuestas_rapidas` es la biblioteca compartida. Cada dispositivo
+ * conserva una copia local para poder preparar respuestas sin red, pero sólo
+ * las respuestas marcadas como pendientes se publican cuando el operador pulsa
+ * «Sincronizar con todos».
  */
 import { remuxWebmToOgg } from "./webm-to-ogg";
 import { isWebmBytes } from "./audio-download";
@@ -19,10 +20,18 @@ export interface RespuestaRapida {
   /** Texto plano (tipo texto) o data URI (tipo audio/imagen). */
   contenido: string;
   creado_en: string;
+  /** false sólo mientras existe en este dispositivo y falta publicarla. */
+  sincronizada?: boolean;
+}
+
+export interface ResultadoSincronizacionRR {
+  respuestas: RespuestaRapida[];
+  subidas: number;
+  pendientes: number;
+  error?: string;
 }
 
 const STORAGE_KEY = "templo-crm:respuestas-rapidas:v1";
-const MIGRATED_KEY = "templo-crm:respuestas-rapidas:migrado-supabase";
 const MAX_AUDIO_BYTES = 6 * 1024 * 1024;
 const MAX_IMG_DIRECTA = 2 * 1024 * 1024;
 
@@ -33,13 +42,81 @@ function uid(): string {
   return `rr-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function cachearLocal(todas: RespuestaRapida[]) {
-  if (typeof window === "undefined") return;
+function esTipoRespuesta(valor: unknown): valor is TipoRespuestaRapida {
+  return valor === "texto" || valor === "audio" || valor === "imagen";
+}
+
+function fechaRespuesta(valor: string): number {
+  const fecha = new Date(valor).getTime();
+  return Number.isFinite(fecha) ? fecha : 0;
+}
+
+/** Dos filas con el mismo tipo y contenido son la misma respuesta, aunque sus
+ * ids provengan de teléfonos distintos. El contenido no se hashea aquí para
+ * evitar colisiones: se compara completo; la migración crea además una huella
+ * MD5 y un índice único en la base de datos para proteger sincronizaciones
+ * simultáneas. */
+function claveContenido(respuesta: Pick<RespuestaRapida, "tipo" | "contenido">): string {
+  return `${respuesta.tipo}\u001f${respuesta.contenido}`;
+}
+
+function ordenarRespuestas(todas: RespuestaRapida[]): RespuestaRapida[] {
+  return [...todas].sort((a, b) => {
+    const diferencia = fechaRespuesta(a.creado_en) - fechaRespuesta(b.creado_en);
+    return diferencia || a.id.localeCompare(b.id);
+  });
+}
+
+/** Conserva una sola copia de contenido idéntico. Se prefiere la copia que ya
+ * está en la nube y, entre las equivalentes, la más antigua. */
+function deduplicarRespuestas(todas: RespuestaRapida[]): RespuestaRapida[] {
+  const porContenido = new Map<string, RespuestaRapida>();
+  for (const respuesta of todas) {
+    const clave = claveContenido(respuesta);
+    const actual = porContenido.get(clave);
+    if (!actual) {
+      porContenido.set(clave, respuesta);
+      continue;
+    }
+
+    const preferirNueva =
+      (respuesta.sincronizada === true && actual.sincronizada !== true) ||
+      (respuesta.sincronizada === actual.sincronizada &&
+        (fechaRespuesta(respuesta.creado_en) < fechaRespuesta(actual.creado_en) ||
+          (fechaRespuesta(respuesta.creado_en) === fechaRespuesta(actual.creado_en) && respuesta.id < actual.id)));
+    if (preferirNueva) porContenido.set(clave, respuesta);
+  }
+  return ordenarRespuestas(Array.from(porContenido.values()));
+}
+
+function cachearLocal(todas: RespuestaRapida[]): RespuestaRapida[] {
+  const unicas = deduplicarRespuestas(todas);
+  if (typeof window === "undefined") return unicas;
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(todas));
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(unicas));
   } catch {
     // Caché opcional: si el teléfono no tiene espacio, igual viven en la nube.
   }
+  return unicas;
+}
+
+function filaACache(row: any): RespuestaRapida | null {
+  if (!row || !row.id || !esTipoRespuesta(row.tipo) || typeof row.contenido !== "string" || !row.contenido) return null;
+  return {
+    id: String(row.id),
+    tipo: row.tipo,
+    titulo: String(row.titulo || ""),
+    contenido: row.contenido,
+    creado_en: typeof row.creado_en === "string" ? row.creado_en : new Date().toISOString(),
+    // Los cachés anteriores no tienen este campo: se consideran pendientes
+    // hasta que se comparen con la biblioteca remota.
+    sincronizada: row.sincronizada === true,
+  };
+}
+
+function filaARemota(row: any): RespuestaRapida | null {
+  const respuesta = filaACache(row);
+  return respuesta ? { ...respuesta, sincronizada: true } : null;
 }
 
 export function listarRespuestasRapidas(): RespuestaRapida[] {
@@ -49,83 +126,153 @@ export function listarRespuestasRapidas(): RespuestaRapida[] {
     if (!raw) return [];
     const arr = JSON.parse(raw);
     if (!Array.isArray(arr)) return [];
-    return arr.filter((r) => r && r.id && r.tipo && typeof r.contenido === "string" && r.contenido.length > 0);
+    return deduplicarRespuestas(arr.map(filaACache).filter(Boolean) as RespuestaRapida[]);
   } catch {
     return [];
   }
 }
 
-function filaARespuesta(row: any): RespuestaRapida | null {
-  if (!row || !row.id || !row.tipo || typeof row.contenido !== "string" || !row.contenido) return null;
-  if (row.tipo !== "texto" && row.tipo !== "audio" && row.tipo !== "imagen") return null;
-  return {
-    id: String(row.id),
-    tipo: row.tipo,
-    titulo: String(row.titulo || ""),
-    contenido: row.contenido,
-    creado_en: row.creado_en || new Date().toISOString(),
-  };
+async function obtenerRemotas(): Promise<RespuestaRapida[]> {
+  const { data, error } = await supabase
+    .from("respuestas_rapidas")
+    .select("id, tipo, titulo, contenido, creado_en")
+    .order("creado_en", { ascending: true });
+  if (error) throw error;
+  return deduplicarRespuestas((data || []).map(filaARemota).filter(Boolean) as RespuestaRapida[]);
 }
 
-export async function sincronizarRespuestasRapidas(): Promise<RespuestaRapida[]> {
+/** Une la copia remota con las respuestas locales aún no publicadas. Una copia
+ * remota siempre gana sobre una pendiente con el mismo archivo/texto. */
+function combinarRemotasYPendientes(remotas: RespuestaRapida[], locales: RespuestaRapida[]): RespuestaRapida[] {
+  const clavesRemotas = new Set(remotas.map(claveContenido));
+  const pendientes = locales
+    .filter((respuesta) => respuesta.sincronizada !== true && !clavesRemotas.has(claveContenido(respuesta)))
+    .map((respuesta) => ({ ...respuesta, sincronizada: false }));
+  return deduplicarRespuestas([...remotas.map((respuesta) => ({ ...respuesta, sincronizada: true })), ...pendientes]);
+}
+
+/** Descarga la biblioteca compartida sin publicar automáticamente respuestas
+ * antiguas del teléfono. Así abrir la app no vuelve a crear duplicados. */
+export async function actualizarRespuestasRapidas(): Promise<RespuestaRapida[]> {
   const locales = listarRespuestasRapidas();
   try {
-    const { data, error } = await supabase
-      .from("respuestas_rapidas")
-      .select("id, tipo, titulo, contenido, creado_en")
-      .order("creado_en", { ascending: true });
-
-    if (error) throw error;
-    const remotas = (data || []).map(filaARespuesta).filter(Boolean) as RespuestaRapida[];
-
-    // Sube al servidor las que solo estaban en este teléfono (una vez).
-    if (typeof window !== "undefined" && !window.localStorage.getItem(MIGRATED_KEY) && locales.length > 0) {
-      const idsRemotos = new Set(remotas.map((r) => r.id));
-      const pendientes = locales.filter((l) => !idsRemotos.has(l.id));
-      for (const item of pendientes) {
-        const { data: inserted, error: insErr } = await supabase
-          .from("respuestas_rapidas")
-          .insert({
-            id: item.id,
-            tipo: item.tipo,
-            titulo: item.titulo,
-            contenido: item.contenido,
-            creado_en: item.creado_en,
-          })
-          .select("id, tipo, titulo, contenido, creado_en")
-          .maybeSingle();
-        if (!insErr && inserted) {
-          const fila = filaARespuesta(inserted);
-          if (fila && !idsRemotos.has(fila.id)) {
-            remotas.push(fila);
-            idsRemotos.add(fila.id);
-          }
-        } else if (insErr) {
-          // Si el id no es uuid válido, inserta con id nuevo.
-          const { data: inserted2 } = await supabase
-            .from("respuestas_rapidas")
-            .insert({ tipo: item.tipo, titulo: item.titulo, contenido: item.contenido, creado_en: item.creado_en })
-            .select("id, tipo, titulo, contenido, creado_en")
-            .maybeSingle();
-          const fila = filaARespuesta(inserted2);
-          if (fila && !idsRemotos.has(fila.id)) {
-            remotas.push(fila);
-            idsRemotos.add(fila.id);
-          }
-        }
-      }
-      try { window.localStorage.setItem(MIGRATED_KEY, "1"); } catch {}
-    }
-
-    remotas.sort((a, b) => new Date(a.creado_en).getTime() - new Date(b.creado_en).getTime());
-    cachearLocal(remotas);
-    return remotas;
+    const remotas = await obtenerRemotas();
+    return cachearLocal(combinarRemotasYPendientes(remotas, locales));
   } catch {
-    return locales;
+    return cachearLocal(locales);
   }
 }
 
-/** Guarda una respuesta nueva en la nube (y en caché local). */
+function esIdNoValido(error: any): boolean {
+  const mensaje = String(error?.message || "").toLowerCase();
+  return error?.code === "22P02" || (mensaje.includes("uuid") && mensaje.includes("invalid"));
+}
+
+function esDuplicado(error: any): boolean {
+  const mensaje = String(error?.message || "").toLowerCase();
+  return error?.code === "23505" || mensaje.includes("duplicate key") || mensaje.includes("duplicate");
+}
+
+/** Inserta una respuesta pendiente. Sólo se reintenta sin id si el id heredado
+ * no era UUID; el código anterior reintentaba ante cualquier error y podía
+ * insertar una segunda copia del mismo audio. */
+async function insertarPendiente(item: RespuestaRapida): Promise<RespuestaRapida | null> {
+  const payload = {
+    id: item.id,
+    tipo: item.tipo,
+    titulo: item.titulo,
+    contenido: item.contenido,
+    creado_en: item.creado_en,
+  };
+  let { data, error } = await supabase
+    .from("respuestas_rapidas")
+    .insert(payload)
+    .select("id, tipo, titulo, contenido, creado_en")
+    .maybeSingle();
+
+  if (error && esIdNoValido(error)) {
+    ({ data, error } = await supabase
+      .from("respuestas_rapidas")
+      .insert({
+        tipo: item.tipo,
+        titulo: item.titulo,
+        contenido: item.contenido,
+        creado_en: item.creado_en,
+      })
+      .select("id, tipo, titulo, contenido, creado_en")
+      .maybeSingle());
+  }
+
+  if (error) {
+    if (esDuplicado(error)) return null;
+    throw error;
+  }
+  return filaARemota(data);
+}
+
+/**
+ * Publica las respuestas pendientes de este teléfono y descarga después la
+ * biblioteca única de Supabase. Es la acción que debe ejecutar el botón
+ * «Sincronizar con todos».
+ */
+export async function sincronizarRespuestasRapidas(): Promise<ResultadoSincronizacionRR> {
+  const locales = listarRespuestasRapidas();
+  let remotas: RespuestaRapida[];
+  try {
+    remotas = await obtenerRemotas();
+  } catch (error: any) {
+    const respuestas = cachearLocal(locales);
+    return {
+      respuestas,
+      subidas: 0,
+      pendientes: respuestas.filter((respuesta) => respuesta.sincronizada !== true).length,
+      error: error?.message || "No se pudo conectar con la biblioteca compartida.",
+    };
+  }
+
+  const clavesRemotas = new Set(remotas.map(claveContenido));
+  let subidas = 0;
+  let errores = 0;
+
+  for (const pendiente of locales.filter((respuesta) => respuesta.sincronizada !== true)) {
+    const clave = claveContenido(pendiente);
+    if (clavesRemotas.has(clave)) continue;
+
+    try {
+      const insertada = await insertarPendiente(pendiente);
+      if (insertada) {
+        remotas.push(insertada);
+        clavesRemotas.add(clave);
+        subidas += 1;
+      }
+      // Si otro teléfono la insertó al mismo tiempo, la recarga final la toma.
+    } catch {
+      errores += 1;
+    }
+  }
+
+  // Vuelve a consultar para absorber inserciones simultáneas y que el índice
+  // único de la base de datos elija la copia canónica si hubo una carrera.
+  try {
+    remotas = await obtenerRemotas();
+  } catch {
+    // Conservamos las inserciones que sí confirmó este dispositivo; las demás
+    // siguen pendientes y se podrán reintentar con el siguiente botón.
+  }
+
+  const respuestas = cachearLocal(combinarRemotasYPendientes(remotas, locales));
+  const pendientes = respuestas.filter((respuesta) => respuesta.sincronizada !== true).length;
+  return {
+    respuestas,
+    subidas,
+    pendientes,
+    error: errores > 0 ? "Algunas respuestas no se pudieron subir. Intenta sincronizar de nuevo." : undefined,
+  };
+}
+
+/** Guarda una respuesta nueva sólo en este dispositivo hasta que se pulse
+ * Sincronizar con todos. Esto hace explícito qué se comparte y evita subidas
+ * repetidas al abrir la app. */
 export async function guardarRespuestaRapida(
   nueva: { tipo: TipoRespuestaRapida; titulo: string; contenido: string }
 ): Promise<RespuestaRapida> {
@@ -135,48 +282,26 @@ export async function guardarRespuestaRapida(
     titulo: nueva.titulo,
     contenido: nueva.contenido,
     creado_en: new Date().toISOString(),
+    sincronizada: false,
   };
 
-  try {
-    const { data, error } = await supabase
-      .from("respuestas_rapidas")
-      .insert({
-        id: item.id,
-        tipo: item.tipo,
-        titulo: item.titulo,
-        contenido: item.contenido,
-        creado_en: item.creado_en,
-      })
-      .select("id, tipo, titulo, contenido, creado_en")
-      .maybeSingle();
-    if (error) throw error;
-    const fila = filaARespuesta(data) || item;
-    const todas = [...listarRespuestasRapidas().filter((r) => r.id !== fila.id), fila];
-    cachearLocal(todas);
-    return fila;
-  } catch (e: any) {
-    // Si la tabla aún no existe, se queda en el teléfono.
-    const todas = [...listarRespuestasRapidas(), item];
-    try {
-      if (typeof window !== "undefined") window.localStorage.setItem(STORAGE_KEY, JSON.stringify(todas));
-    } catch {
-      throw new Error(
-        e?.message ||
-          "No se pudo guardar. Aplica la migración supabase/migrations/20260913_respuestas_rapidas.sql o borra respuestas antiguas."
-      );
-    }
-    return item;
-  }
+  const todas = cachearLocal([...listarRespuestasRapidas(), item]);
+  return todas.find((respuesta) => claveContenido(respuesta) === claveContenido(item)) || item;
 }
 
-/** Borra por id en la nube y en caché. */
+/** Borra localmente una respuesta pendiente o de la biblioteca compartida si
+ * ya estaba publicada. No oculta un borrado remoto que haya fallado. */
 export async function eliminarRespuestaRapida(id: string): Promise<RespuestaRapida[]> {
-  try {
-    await supabase.from("respuestas_rapidas").delete().eq("id", id);
-  } catch {}
-  const todas = listarRespuestasRapidas().filter((r) => r.id !== id);
-  cachearLocal(todas);
-  return todas;
+  const locales = listarRespuestasRapidas();
+  const objetivo = locales.find((respuesta) => respuesta.id === id);
+  if (!objetivo) return locales;
+
+  if (objetivo.sincronizada === true) {
+    const { error } = await supabase.from("respuestas_rapidas").delete().eq("id", id);
+    if (error) throw new Error(error.message || "No se pudo borrar la respuesta compartida.");
+  }
+
+  return cachearLocal(locales.filter((respuesta) => respuesta.id !== id));
 }
 
 // ---------------------------------------------------------------------------

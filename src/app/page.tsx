@@ -12,6 +12,7 @@ import { audioMensajeToArchivo } from "../lib/audio-download";
 import {
   type RespuestaRapida,
   listarRespuestasRapidas,
+  actualizarRespuestasRapidas,
   sincronizarRespuestasRapidas,
   guardarRespuestaRapida,
   eliminarRespuestaRapida,
@@ -312,7 +313,9 @@ export default function CRMApp() {
     mime: string;
   }>(null);
   const [rrError, setRrError] = useState("");
+  const [rrNotice, setRrNotice] = useState("");
   const [guardandoRR, setGuardandoRR] = useState(false);
+  const [sincronizandoRR, setSincronizandoRR] = useState(false);
   const rrFileInputRef = useRef<HTMLInputElement>(null);
   const [guardandoContacto, setGuardandoContacto] = useState(false);
   const [contactoGuardado, setContactoGuardado] = useState<"nativo" | "vcf" | null>(null);
@@ -342,7 +345,7 @@ export default function CRMApp() {
     fetchCampanasAds();
     cargarConfigDivisas();
     cargarConfigGeneral();
-    void sincronizarRespuestasRapidas().then(setRespuestasRapidas);
+    void actualizarRespuestasRapidas().then(setRespuestasRapidas);
     // Recalcular mensajes no leídos (cubre los que llegaron con la app cerrada)
     sincronizarNoLeidos();
     // Sincronizar con Chatwoot al abrir: trae lo que haya perdido el webhook
@@ -367,7 +370,7 @@ export default function CRMApp() {
     const pagSub = supabase.channel("r-pag").on("postgres_changes", { event: "*", schema: "public", table: "pagos" }, fetchTodosPagos).subscribe();
     const tarSub = supabase.channel("r-tar").on("postgres_changes", { event: "*", schema: "public", table: "tareas" }, fetchTodasTareas).subscribe();
     const rrSub = supabase.channel("r-rr").on("postgres_changes", { event: "*", schema: "public", table: "respuestas_rapidas" }, () => {
-      void sincronizarRespuestasRapidas().then(setRespuestasRapidas);
+      void actualizarRespuestasRapidas().then(setRespuestasRapidas);
     }).subscribe();
 
     return () => {
@@ -453,6 +456,41 @@ export default function CRMApp() {
   useEffect(() => { abonoModalRef.current = abonoModalCliente; }, [abonoModalCliente]);
   useEffect(() => { reprogramarModalRef.current = reprogramarModal; }, [reprogramarModal]);
   useEffect(() => { showDivisaConfigRef.current = showDivisaConfig; }, [showDivisaConfig]);
+
+  // MainActivity envía este evento para el botón y el gesto Atrás de Android.
+  // El primer gesto siempre deja una pantalla conocida: la lista de Chats.
+  // La Activity se encarga de cerrar la app sólo si recibe un segundo gesto
+  // consecutivo dentro de dos segundos.
+  useEffect(() => {
+    const volverAChats = () => {
+      setTab("chats");
+      setSelectedConv(null);
+      setShowMobileDetails(false);
+
+      // No dejar un panel o diálogo sobre la lista de chats al volver.
+      setShowAjustes(false);
+      setShowAdmin(false);
+      setBalances(null);
+      setAdminSecret("");
+      setShowAiModal(false);
+      setShowDeleteConfirm(null);
+      setResultadoEliminar(null);
+      setBloqueoChatwoot(null);
+      setAbonoModalCliente(null);
+      setAbonoMonto("");
+      setReprogramarModal(null);
+      setNuevaFechaPago("");
+      setShowDivisaConfig(false);
+      setShowEtapaMenu(false);
+      setShowRespuestasMenu(false);
+      setRrBorrador(null);
+      setIsEditingPipeline(false);
+      setIsEditingGroupLabels(false);
+    };
+
+    window.addEventListener("temploBackButton", volverAChats);
+    return () => window.removeEventListener("temploBackButton", volverAChats);
+  }, []);
 
   useEffect(() => {
     const atraparHistorial = () => {
@@ -2158,13 +2196,38 @@ export default function CRMApp() {
   }
 
   // ===================== RESPUESTAS RÁPIDAS =====================
-  // Librería compartida (texto, audio OGG, imagen) en Supabase: al guardar
-  // en un dispositivo aparece en todos. localStorage es solo caché.
+  // La biblioteca remota es común para todos los dispositivos. Las respuestas
+  // nuevas quedan marcadas como pendientes hasta que se pulsa Sincronizar.
   function abrirMenuRespuestas() {
     setRespuestasRapidas(listarRespuestasRapidas());
     setRrError("");
+    setRrNotice("");
     setShowRespuestasMenu(true);
-    void sincronizarRespuestasRapidas().then(setRespuestasRapidas);
+    // Al abrir sólo se descargan cambios: nunca se suben copias antiguas de
+    // forma automática, que era lo que podía duplicar audios entre teléfonos.
+    void actualizarRespuestasRapidas().then(setRespuestasRapidas);
+  }
+
+  async function sincronizarRRManual() {
+    if (sincronizandoRR) return;
+    setSincronizandoRR(true);
+    setRrError("");
+    setRrNotice("");
+    try {
+      const resultado = await sincronizarRespuestasRapidas();
+      setRespuestasRapidas(resultado.respuestas);
+      if (resultado.error) {
+        setRrError(resultado.error);
+      } else if (resultado.subidas > 0) {
+        setRrNotice(`${resultado.subidas} ${resultado.subidas === 1 ? "respuesta compartida" : "respuestas compartidas"} con todos los dispositivos.`);
+      } else {
+        setRrNotice("Biblioteca actualizada: todos los dispositivos verán las mismas respuestas.");
+      }
+    } catch (error: any) {
+      setRrError(error?.message || "No se pudo sincronizar la biblioteca.");
+    } finally {
+      setSincronizandoRR(false);
+    }
   }
 
   async function handleRRFile(e: React.ChangeEvent<HTMLInputElement>) {
@@ -2190,17 +2253,23 @@ export default function CRMApp() {
     if (!rrBorrador || guardandoRR) return;
     setGuardandoRR(true);
     setRrError("");
+    setRrNotice("");
     try {
+      let nueva: RespuestaRapida;
       if (rrBorrador.tipo === "texto") {
         const texto = rrBorrador.texto.trim();
         if (!texto) { setRrError("Escribe el texto de la respuesta."); return; }
-        const nueva = await guardarRespuestaRapida({ tipo: "texto", titulo: rrBorrador.titulo.trim() || texto.slice(0, 40), contenido: texto });
-        setRespuestasRapidas((prev) => [...prev.filter((r) => r.id !== nueva.id), nueva]);
+        nueva = await guardarRespuestaRapida({ tipo: "texto", titulo: rrBorrador.titulo.trim() || texto.slice(0, 40), contenido: texto });
       } else {
         if (!rrBorrador.dataUri) { setRrError("Selecciona el archivo de la respuesta."); return; }
-        const nueva = await guardarRespuestaRapida({ tipo: rrBorrador.tipo, titulo: rrBorrador.titulo.trim() || rrBorrador.nombre || "respuesta", contenido: rrBorrador.dataUri });
-        setRespuestasRapidas((prev) => [...prev.filter((r) => r.id !== nueva.id), nueva]);
+        nueva = await guardarRespuestaRapida({ tipo: rrBorrador.tipo, titulo: rrBorrador.titulo.trim() || rrBorrador.nombre || "respuesta", contenido: rrBorrador.dataUri });
       }
+      setRespuestasRapidas(listarRespuestasRapidas());
+      setRrNotice(
+        nueva.sincronizada === true
+          ? "Esta respuesta ya estaba en la biblioteca; no se creó un duplicado."
+          : "Guardada en este dispositivo. Pulsa Sincronizar con todos para compartirla."
+      );
       setRrBorrador(null);
     } catch (e: any) {
       setRrError(e?.message || "No se pudo guardar la respuesta.");
@@ -2209,9 +2278,15 @@ export default function CRMApp() {
     }
   }
 
-  function borrarRespuestaRapida(id: string) {
+  async function borrarRespuestaRapida(id: string) {
     if (!window.confirm("¿Borrar esta respuesta rápida?")) return;
-    void eliminarRespuestaRapida(id).then(setRespuestasRapidas);
+    setRrError("");
+    try {
+      setRespuestasRapidas(await eliminarRespuestaRapida(id));
+      setRrNotice("Respuesta rápida eliminada.");
+    } catch (error: any) {
+      setRrError(error?.message || "No se pudo borrar la respuesta rápida.");
+    }
   }
 
   // Envía la respuesta seleccionada a la conversación actual (mismo camino
@@ -2236,11 +2311,26 @@ export default function CRMApp() {
   }
 
   function renderMenuRespuestasRapidas(): React.ReactNode {
+    const pendientesRR = respuestasRapidas.filter((respuesta) => respuesta.sincronizada !== true).length;
     return (
       <>
         <div className="fixed inset-0 z-40" onClick={() => { setShowRespuestasMenu(false); setRrBorrador(null); }} />
         <div className="absolute bottom-full right-0 mb-2 z-50 w-80 max-w-[92vw] bg-surface border border-border rounded-xl shadow-2xl p-2">
-          <p className="text-[9px] uppercase font-bold text-gray-500 px-1.5 pb-1.5">Respuestas rápidas</p>
+          <div className="flex items-center justify-between gap-2 px-1.5 pb-1.5">
+            <p className="text-[9px] uppercase font-bold text-gray-500">Respuestas rápidas</p>
+            <button
+              type="button"
+              onClick={sincronizarRRManual}
+              disabled={sincronizandoRR}
+              title="Subir las respuestas pendientes y actualizar la biblioteca compartida"
+              className="flex items-center gap-1 rounded-md border border-purple-700/60 px-1.5 py-1 text-[9px] font-bold text-purple-300 hover:bg-purple-950/40 disabled:cursor-wait disabled:opacity-60"
+            >
+              <RefreshCw className={`w-3 h-3 ${sincronizandoRR ? "animate-spin" : ""}`} />
+              <span>{sincronizandoRR ? "Sincronizando..." : pendientesRR > 0 ? `Sincronizar (${pendientesRR})` : "Sincronizar"}</span>
+            </button>
+          </div>
+          {rrNotice && <p className="mx-1.5 mb-1.5 rounded-md bg-emerald-950/40 px-2 py-1 text-[10px] text-emerald-300">{rrNotice}</p>}
+          {!rrBorrador && rrError && <p className="mx-1.5 mb-1.5 rounded-md bg-red-950/40 px-2 py-1 text-[10px] text-red-300">{rrError}</p>}
           {rrBorrador ? (
             <div className="bg-background border border-border rounded-lg p-2 space-y-2 mb-2">
               <div className="flex items-center justify-between">
@@ -2301,7 +2391,7 @@ export default function CRMApp() {
               >
                 {guardandoRR ? "Guardando..." : "Guardar respuesta"}
               </button>
-              <p className="text-[9px] text-gray-600">Se sube a la nube y queda en todos los dispositivos.</p>
+              <p className="text-[9px] text-gray-600">Se guarda aquí primero; luego pulsa Sincronizar con todos.</p>
             </div>
           ) : (
             <>
@@ -2321,6 +2411,7 @@ export default function CRMApp() {
                           {rr.tipo === "audio" ? <Mic className="w-3.5 h-3.5" /> : rr.tipo === "imagen" ? <ImageIcon className="w-3.5 h-3.5" /> : <Type className="w-3.5 h-3.5" />}
                         </span>
                         <span className="truncate">{rr.titulo || (rr.tipo === "audio" ? "Nota de voz" : rr.tipo === "imagen" ? "Imagen" : rr.contenido)}</span>
+                        {rr.sincronizada !== true && <span className="ml-auto flex-shrink-0 rounded bg-amber-950/70 px-1 py-0.5 text-[8px] font-bold uppercase text-amber-300">Pendiente</span>}
                       </button>
                       <button type="button" onClick={() => borrarRespuestaRapida(rr.id)} className="p-1 text-gray-600 hover:text-red-400 md:opacity-0 md:group-hover:opacity-100 transition-opacity" title="Borrar"><Trash2 className="w-3 h-3" /></button>
                     </div>

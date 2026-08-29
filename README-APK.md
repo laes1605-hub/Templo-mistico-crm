@@ -2,21 +2,23 @@
 
 Este proyecto ya está preparado para convertirse en APK usando **Capacitor**.
 
-## ✅ Actualización APK 1.3 — Android Studio
+## ✅ Actualización APK 1.3.1 — Android Studio
 
 La versión está configurada como:
 
-- `versionName`: **1.3.0**
-- `versionCode`: **4**
+- `versionName`: **1.3.1**
+- `versionCode`: **5**
 - `appId`: `com.templomistico.crm`
 - `compileSdk` / `targetSdk`: **36**
 - Java requerido: **JDK 21**
 
 Para compilar esta actualización desde cero:
 
-> **Importante:** `capacitor.config.json` hace que la APK cargue `https://templo-mistico-crm.vercel.app`. Primero verifica que Vercel haya desplegado este commit; de lo contrario la APK podría abrir la versión web anterior aunque el proyecto Android esté en 1.3.0.
+> **Importante:** `capacitor.config.json` hace que la APK cargue `https://templo-mistico-crm.vercel.app`. Primero verifica que Vercel haya desplegado este commit; de lo contrario la APK podría abrir la versión web anterior aunque el proyecto Android esté en 1.3.1.
 
-### Novedades de la APK 1.3
+### Novedades de la APK 1.3.1
+
+- **Atrás en Android:** el primer gesto o pulsación vuelve siempre a **Chats**. Pulsa o desliza Atrás una segunda vez, dentro de dos segundos, para salir de la app.
 
 - **Llamar por WhatsApp Personal:** desde un chat Personal, la APK comprueba que el número exista en Contactos e intenta abrir la llamada de voz en `com.whatsapp` (nunca WhatsApp Business). Si la agenda/versión de WhatsApp no expone la acción directa, abre el chat Personal como respaldo para tocar el ícono de teléfono.
 - **En seguimiento:** ejecuta `supabase/migrations/20260907_llamadas_seguimiento_contactos.sql`. El chip aparece junto a **Por leer** en Personal y genera un aviso local diario a las **9:00 a. m.** mientras haya clientes en esa etapa y los avisos estén activados.
@@ -48,7 +50,7 @@ Para compilar esta actualización desde cero:
    ```
 
 9. Para distribuir una versión firmada, usa **Build > Generate Signed Bundle / APK > APK**, crea o selecciona un keystore y conserva la misma clave para futuras actualizaciones. Selecciona la variante `release`.
-10. Instala la actualización sobre la APK anterior. Como el `versionCode` pasó de 3 a 4, Android la reconocerá como una actualización; no desinstales la versión anterior si quieres conservar sus permisos y datos locales.
+10. Instala la actualización sobre la APK anterior. Como el `versionCode` pasó de 4 a 5, Android la reconocerá como una actualización; no desinstales la versión anterior si quieres conservar sus permisos y datos locales.
 
 Cada vez que cambies el código web, repite `npm run build` y `npx cap sync android` antes de volver a compilar. No ejecutes `npx cap add android` para esta actualización: la carpeta Android ya existe.
 

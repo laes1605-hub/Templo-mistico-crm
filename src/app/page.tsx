@@ -2879,10 +2879,12 @@ export default function CRMApp() {
   const previewConvertido = convertirACOP(previewMonto, monedaPago, previewTasa, previewComision);
 
   return (
-    <div className="flex flex-col md:flex-row h-[100dvh] w-screen bg-background text-gray-200 overflow-hidden font-sans">
+    <div className="flex flex-col md:flex-row h-[100dvh] w-screen bg-background text-gray-200 overflow-hidden font-sans pt-[var(--safe-area-inset-top)]">
       
       {/* BARRA NAVEGACIÓN */}
-      <aside className="fixed bottom-0 w-full h-16 bg-surface border-t border-border flex flex-row items-center justify-around z-40 md:relative md:w-20 md:h-full md:border-r md:border-t-0 md:flex-col md:py-6 md:justify-between">
+      {/* La altura incluye la zona de gestos/navegación de Android para que el
+          fondo del CRM llegue hasta el borde inferior de la pantalla. */}
+      <aside className="fixed bottom-0 w-full h-[calc(4rem_+_var(--safe-area-inset-bottom))] pb-[var(--safe-area-inset-bottom)] bg-surface border-t border-border flex flex-row items-center justify-around z-40 md:relative md:w-20 md:h-full md:pb-0 md:border-r md:border-t-0 md:flex-col md:py-6 md:justify-between">
         <div className="hidden md:flex w-12 h-12 rounded-2xl bg-gradient-to-tr from-purple-600 to-indigo-500 items-center justify-center shadow-lg shadow-purple-900/40">
           <span className="text-xl font-bold text-white">🔮</span>
         </div>
@@ -2914,7 +2916,9 @@ export default function CRMApp() {
       </aside>
 
       {/* CONTENIDO PRINCIPAL */}
-      <main className="flex-1 flex overflow-hidden mb-16 md:mb-0 relative">
+      {/* El margen inferior despeja la barra de navegación, que ahora también
+          cubre la zona de gestos de Android (safe-area-inset-bottom). */}
+      <main className="flex-1 flex overflow-hidden mb-[calc(4rem_+_var(--safe-area-inset-bottom))] md:mb-0 relative">
         
         {/* ================= CHATS ================= */}
         {tab === "chats" && (

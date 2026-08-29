@@ -3,8 +3,51 @@
 // ===================== SISTEMA DE TEMAS =====================
 // Modo: dark | light | system  ·  Acento: purple | blue | emerald | rose | amber | cyan
 
+import { Capacitor, registerPlugin } from "@capacitor/core";
+
 export type ThemeMode = "dark" | "light" | "system";
 export type ThemeAccent = "purple" | "blue" | "emerald" | "rose" | "amber" | "cyan";
+
+// Fondos exactos de la interfaz (deben coincidir con --tm-background en
+// _colors.generated.css). Se envían a las barras del sistema para que la
+// franja de hora/notificaciones se mimetice con la app.
+export const BACKGROUND_DARK = "#090d16";
+export const BACKGROUND_LIGHT = "#f1f3f7";
+
+// Plugin nativo propio (android/.../StatusBarThemePlugin.java): pinta la
+// barra de estado y de navegación con el color de fondo del tema y elige
+// iconos claros u oscuros según corresponda.
+type StatusBarThemePlugin = {
+  apply(options: { color: string; lightIcons: boolean }): Promise<void>;
+};
+const StatusBarTheme = registerPlugin<StatusBarThemePlugin>("StatusBarTheme");
+
+// Plugin interno de Capacitor 8: recuerda el estilo aplicado y lo vuelve a
+// aplicar cuando el sistema rota la pantalla o cambia el modo del sistema.
+type SystemBarsPlugin = {
+  setStyle(options: { bar: "StatusBar" | "NavigationBar"; style: "LIGHT" | "DARK" }): Promise<void>;
+};
+const SystemBars = registerPlugin<SystemBarsPlugin>("SystemBars");
+
+/**
+ * Lleva el color de la barra de estado (y de navegación) al mismo fondo del
+ * CRM. Es un no-op en navegador: sólo actúa dentro de la APK Android.
+ */
+function syncBarrasSistema(isLight: boolean): void {
+  try {
+    if (!Capacitor.isNativePlatform() || Capacitor.getPlatform() !== "android") return;
+  } catch {
+    return;
+  }
+  const color = isLight ? BACKGROUND_LIGHT : BACKGROUND_DARK;
+  const lightIcons = !isLight;
+  // Android 14 y anteriores: pinta la franja con el color exacto.
+  StatusBarTheme.apply({ color, lightIcons }).catch(() => {});
+  // Android 15+ (edge-to-edge): la web ya se dibuja bajo la barra; sólo
+  // hay que alinear los iconos claros/oscuros con el tema activo.
+  SystemBars.setStyle({ bar: "StatusBar", style: isLight ? "LIGHT" : "DARK" }).catch(() => {});
+  SystemBars.setStyle({ bar: "NavigationBar", style: isLight ? "LIGHT" : "DARK" }).catch(() => {});
+}
 
 export const ACCENTS: { id: ThemeAccent; label: string; color: string }[] = [
   { id: "purple", label: "Púrpura", color: "#8b5cf6" },
@@ -44,7 +87,9 @@ export function applyTheme(mode: ThemeMode, accent: ThemeAccent) {
   root.setAttribute("data-accent", accent);
   // Color de la barra de estado / navegador
   const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.setAttribute("content", isLight ? "#f1f3f7" : "#090d16");
+  if (meta) meta.setAttribute("content", isLight ? BACKGROUND_LIGHT : BACKGROUND_DARK);
+  // Barras del sistema en la APK (hora/notificaciones y navegación)
+  syncBarrasSistema(isLight);
 }
 
 export function saveTheme(mode: ThemeMode, accent: ThemeAccent) {

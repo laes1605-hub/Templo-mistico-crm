@@ -26,6 +26,11 @@ export const viewport: Viewport = {
   initialScale: 1,
   maximumScale: 1,
   userScalable: false,
+  // viewport-fit=cover: la interfaz se dibuja también bajo la barra de estado
+  // (hora/notificaciones) en la APK, de modo que esa franja muestra el mismo
+  // fondo de la app y la pantalla se ve uniforme. El hueco que deja la barra
+  // se compensa con --safe-area-inset-top (ver globals.css y page.tsx).
+  viewportFit: "cover",
 };
 
 export default function RootLayout({

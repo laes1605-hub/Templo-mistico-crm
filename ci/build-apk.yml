@@ -1,3 +1,9 @@
+# Build APK: compila la APK debug en cada push a main o a ramas arena/**.
+# Debe vivir en .github/workflows/ (GitHub ignora cualquier otra carpeta).
+# Resultado: artefacto descargable "templo-mistico-crm-debug" y commit en
+# apk/templo-mistico-crm-debug.apk de la misma rama. Lanzable a mano desde
+# Actions -> Build APK -> Run workflow.
+
 name: Build APK
 
 on:
@@ -29,7 +35,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Setup Java 21
@@ -44,16 +50,39 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Si la web no compila, no generar una APK que cargaria una web rota.
+      - name: Verificar build web
+        run: npm run build
+
+      # Invocacion directa del binario (sin capa npx) y, si falla, el error se
+      # publica como anotacion del check para poder diagnosticarlo por API.
       - name: Sync Capacitor (copia web assets + plugins)
-        run: npx cap sync android
+        run: |
+          set -o pipefail
+          echo "node $(node -v) | npm $(npm -v) | omit: $(npm config get omit)"
+          CAP_BIN="node_modules/@capacitor/cli/bin/capacitor"
+          if [ ! -f "$CAP_BIN" ]; then
+            echo "::error::No existe $CAP_BIN - revisar npm ci / devDependencies"
+            exit 1
+          fi
+          if node "$CAP_BIN" sync android 2>&1 | tee /tmp/cap-sync.log; then
+            echo "Sync OK"
+          else
+            tail -c 900 /tmp/cap-sync.log | while IFS= read -r line; do echo "::error::$line"; done
+            exit 1
+          fi
 
       - name: Build APK (debug)
         working-directory: android
         run: |
           chmod +x gradlew
-          # Evita reutilizar un APK de una versión anterior.
-          ./gradlew clean assembleDebug --no-daemon
-          echo "APK versionName: $(grep -n 'versionName' app/build.gradle)"
+          set -o pipefail
+          if ./gradlew clean assembleDebug --no-daemon 2>&1 | tee /tmp/gradle-build.log; then
+            echo "APK versionName: $(grep -n 'versionName' app/build.gradle)"
+          else
+            tail -c 900 /tmp/gradle-build.log | while IFS= read -r line; do echo "::error::$line"; done
+            exit 1
+          fi
 
       - name: Copiar APK al repositorio
         run: |
@@ -75,6 +104,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "APK sin cambios, nada que commitear"
           else
-            git commit -m "build: APK debug generado automáticamente [skip ci]"
+            git commit -m "build: APK debug generado automaticamente [skip ci]"
+            git pull --rebase origin ${{ github.ref_name }}
             git push origin HEAD:${{ github.ref_name }}
           fi

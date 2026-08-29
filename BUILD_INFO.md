@@ -1,8 +1,55 @@
 # Build Info - Templo Místico CRM
 
-**Fecha:** Fri Aug 28 (rama `arena/01a045dd-templo-mistico-crm`)
+**Fecha:** Fri Aug 29 (rama `arena/01a04b9a-templo-mistico-crm`)
 **Commit:** (ver git log)
-**Branch:** arena/01a045dd-templo-mistico-crm
+**Branch:** arena/01a04b9a-templo-mistico-crm
+
+## Build 2026-08-29 (APK 1.3.2): barra de estado mimetizada con la app (pantalla uniforme)
+
+**Problema:** la franja superior del teléfono (donde Android muestra la hora,
+la batería y las notificaciones) se veía de otro color distinto al fondo del
+CRM, porque la web no se dibujaba bajo esa zona y el sistema pintaba el fondo
+de la ventana nativa (gris/blanco según el modo del teléfono).
+
+### Solución web (se activa al desplegar en Vercel)
+- `src/app/layout.tsx`: el viewport ahora declara `viewport-fit=cover`, así la
+  interfaz se dibuja a pantalla completa y el fondo del CRM llega hasta el
+  borde físico, por detrás de la barra de estado (edge-to-edge). Es lo que la
+  documentación de Capacitor 8 recomienda.
+- `src/app/globals.css`: variables `--safe-area-inset-top/right/bottom/left`.
+  En la APK las rellena Capacitor con los valores reales del teléfono; en
+  navegador/PWA usan `env(safe-area-inset-*)` (0 en escritorio, notch del
+  iPhone en PWA).
+- `src/app/page.tsx`:
+  - El contenedor raíz reserva el hueco de la barra de estado con
+    `pt-[var(--safe-area-inset-top)]` → el contenido (bandeja, chats,
+    pipeline, tareas…) empieza justo debajo de la hora, pero el FONDO morado
+    oscuro continúa por detrás de la barra: franja y app del mismo color.
+  - La barra de navegación inferior crece hasta cubrir la zona de gestos de
+    Android (`calc(4rem + safe-area-inset-bottom)`) y `main` acompaña con el
+    margen equivalente, para que la pantalla también sea uniforme por abajo.
+- `src/components/ChatImage.tsx`: el visor de imágenes a pantalla completa
+  también respeta la franja superior/inferior.
+- `src/lib/theme.ts`: al cambiar el tema (oscuro/claro/sistema) se sincronizan
+  las barras del sistema de la APK:
+  - Plugin nativo propio `StatusBarTheme` (nuevo): pinta la barra de estado y
+    de navegación con el color exacto del tema (`#090d16` oscuro,
+    `#f1f3f7` claro) y elige iconos blancos u oscuros. En Android 14 y
+    anteriores es lo que da el color uniforme; en Android 15+ el color lo
+    pone la propia web (edge-to-edge) y el plugin sólo ajusta los iconos.
+  - Plugin interno `SystemBars` de Capacitor 8: se alinea su estilo para que
+    una rotación de pantalla no revierta los iconos.
+
+### Solución nativa (APK)
+- `android/.../StatusBarThemePlugin.java` (nuevo) + registro en
+  `MainActivity.java`.
+- `android/app/src/main/res/values/colors.xml` (nuevo):
+  `tm_window_background = #090D16` (el mismo fondo del tema oscuro del CRM).
+- `styles.xml`: `AppTheme.NoActionBar` usa ese color como `windowBackground`,
+  `statusBarColor` y `navigationBarColor` → sin franja gris/blanca arriba ni
+  destello blanco durante la carga, desde el primer frame.
+- Versión: `versionName` 1.3.2, `versionCode` 6.
+- `npm run build` ✅ · `tsc --noEmit` ✅ · XML nativos validados ✅
 
 ## Build 2026-08-28 (2): latencia de sincronización 1–2 s + barra de cuenta a una línea
 

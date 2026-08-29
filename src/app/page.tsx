@@ -430,6 +430,61 @@ export default function CRMApp() {
   useEffect(() => { conversacionesRef.current = conversaciones; }, [conversaciones]);
   useEffect(() => { selectedConvRef.current = selectedConv; }, [selectedConv]);
 
+  // Botón atrás (Android / historial): no salir de la app; volver a Chats.
+  const tabRef = useRef(tab);
+  const showMobileDetailsRef = useRef(showMobileDetails);
+  const showAjustesRef = useRef(showAjustes);
+  const showAdminRef = useRef(showAdmin);
+  const showAiModalRef = useRef(showAiModal);
+  const showDeleteConfirmRef = useRef(showDeleteConfirm);
+  const showEtapaMenuRef = useRef(showEtapaMenu);
+  const showRespuestasMenuRef = useRef(showRespuestasMenu);
+  const abonoModalRef = useRef(abonoModalCliente);
+  const reprogramarModalRef = useRef(reprogramarModal);
+  const showDivisaConfigRef = useRef(showDivisaConfig);
+  useEffect(() => { tabRef.current = tab; }, [tab]);
+  useEffect(() => { showMobileDetailsRef.current = showMobileDetails; }, [showMobileDetails]);
+  useEffect(() => { showAjustesRef.current = showAjustes; }, [showAjustes]);
+  useEffect(() => { showAdminRef.current = showAdmin; }, [showAdmin]);
+  useEffect(() => { showAiModalRef.current = showAiModal; }, [showAiModal]);
+  useEffect(() => { showDeleteConfirmRef.current = showDeleteConfirm; }, [showDeleteConfirm]);
+  useEffect(() => { showEtapaMenuRef.current = showEtapaMenu; }, [showEtapaMenu]);
+  useEffect(() => { showRespuestasMenuRef.current = showRespuestasMenu; }, [showRespuestasMenu]);
+  useEffect(() => { abonoModalRef.current = abonoModalCliente; }, [abonoModalCliente]);
+  useEffect(() => { reprogramarModalRef.current = reprogramarModal; }, [reprogramarModal]);
+  useEffect(() => { showDivisaConfigRef.current = showDivisaConfig; }, [showDivisaConfig]);
+
+  useEffect(() => {
+    const atraparHistorial = () => {
+      try { window.history.pushState({ tmBack: true }, ""); } catch {}
+    };
+    atraparHistorial();
+    const onPop = () => {
+      if (showAjustesRef.current) setShowAjustes(false);
+      else if (showAdminRef.current) { setShowAdmin(false); setBalances(null); setAdminSecret(""); }
+      else if (showAiModalRef.current) setShowAiModal(false);
+      else if (showDeleteConfirmRef.current) { setShowDeleteConfirm(null); setResultadoEliminar(null); setBloqueoChatwoot(null); }
+      else if (abonoModalRef.current) { setAbonoModalCliente(null); setAbonoMonto(""); }
+      else if (reprogramarModalRef.current) { setReprogramarModal(null); setNuevaFechaPago(""); }
+      else if (showDivisaConfigRef.current) setShowDivisaConfig(false);
+      else if (showEtapaMenuRef.current) setShowEtapaMenu(false);
+      else if (showRespuestasMenuRef.current) { setShowRespuestasMenu(false); setRrBorrador(null); }
+      else if (showMobileDetailsRef.current) setShowMobileDetails(false);
+      else if (selectedConvRef.current) {
+        setSelectedConv(null);
+        setShowMobileDetails(false);
+        setTab("chats");
+      } else {
+        setTab("chats");
+        setSelectedConv(null);
+        setShowMobileDetails(false);
+      }
+      atraparHistorial();
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
   useEffect(() => {
     const notifSub = supabase.channel("r-msg-notif")
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "mensajes" }, (payload) => {

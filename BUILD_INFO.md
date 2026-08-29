@@ -108,6 +108,7 @@
 - supabase/migrations/20260904_eliminar_cliente_completo.sql (eliminación completa v1)
 - supabase/migrations/20260905_eliminar_cliente_total.sql   ← nueva (eliminación total v2)
 - supabase/migrations/20260907_llamadas_seguimiento_contactos.sql ← nueva (etapa En seguimiento + alerta diaria)
+- supabase/migrations/20260915_sincronizacion_respuestas_rapidas_unica.sql ← nueva (biblioteca compartida y elimina duplicados exactos)
 
 ## Luna por etapas (nuevo)
 - Workflow importable: `n8n/IMPORTAR-EN-N8N.json` (generado localmente; docs en `n8n/05-README-luna-etapas.md`)

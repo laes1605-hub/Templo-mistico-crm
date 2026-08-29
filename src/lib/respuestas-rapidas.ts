@@ -1,14 +1,13 @@
 /**
- * Respuestas rápidas: textos, audios (OGG) e imágenes guardados en el
- * dispositivo (localStorage) que pueden enviarse a CUALQUIER conversación
- * desde el botón "Respuestas rápidas" de la barra de escribir.
+ * Respuestas rápidas: textos, audios (OGG) e imágenes.
  *
- * Los audios se convierten a OGG/Opus cuando son WebM (remux sin recodificar,
- * mismo resultado que las notas de voz del chat). Las imágenes grandes se
- * reducen a ~1024px JPEG para no agotar el almacenamiento local.
+ * Fuente de verdad: tabla Supabase `respuestas_rapidas` (todos los
+ * dispositivos). localStorage queda como caché / respaldo si no hay red o
+ * todavía no se aplicó la migración.
  */
 import { remuxWebmToOgg } from "./webm-to-ogg";
 import { isWebmBytes } from "./audio-download";
+import { supabase } from "./supabase";
 
 export type TipoRespuestaRapida = "texto" | "audio" | "imagen";
 
@@ -23,6 +22,7 @@ export interface RespuestaRapida {
 }
 
 const STORAGE_KEY = "templo-crm:respuestas-rapidas:v1";
+const MIGRATED_KEY = "templo-crm:respuestas-rapidas:migrado-supabase";
 const MAX_AUDIO_BYTES = 6 * 1024 * 1024;
 const MAX_IMG_DIRECTA = 2 * 1024 * 1024;
 
@@ -31,6 +31,15 @@ function uid(): string {
     if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
   } catch {}
   return `rr-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function cachearLocal(todas: RespuestaRapida[]) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(todas));
+  } catch {
+    // Caché opcional: si el teléfono no tiene espacio, igual viven en la nube.
+  }
 }
 
 export function listarRespuestasRapidas(): RespuestaRapida[] {
@@ -46,10 +55,80 @@ export function listarRespuestasRapidas(): RespuestaRapida[] {
   }
 }
 
-/** Guarda una respuesta nueva. Lanza Error si no hay espacio suficiente. */
-export function guardarRespuestaRapida(
+function filaARespuesta(row: any): RespuestaRapida | null {
+  if (!row || !row.id || !row.tipo || typeof row.contenido !== "string" || !row.contenido) return null;
+  if (row.tipo !== "texto" && row.tipo !== "audio" && row.tipo !== "imagen") return null;
+  return {
+    id: String(row.id),
+    tipo: row.tipo,
+    titulo: String(row.titulo || ""),
+    contenido: row.contenido,
+    creado_en: row.creado_en || new Date().toISOString(),
+  };
+}
+
+export async function sincronizarRespuestasRapidas(): Promise<RespuestaRapida[]> {
+  const locales = listarRespuestasRapidas();
+  try {
+    const { data, error } = await supabase
+      .from("respuestas_rapidas")
+      .select("id, tipo, titulo, contenido, creado_en")
+      .order("creado_en", { ascending: true });
+
+    if (error) throw error;
+    const remotas = (data || []).map(filaARespuesta).filter(Boolean) as RespuestaRapida[];
+
+    // Sube al servidor las que solo estaban en este teléfono (una vez).
+    if (typeof window !== "undefined" && !window.localStorage.getItem(MIGRATED_KEY) && locales.length > 0) {
+      const idsRemotos = new Set(remotas.map((r) => r.id));
+      const pendientes = locales.filter((l) => !idsRemotos.has(l.id));
+      for (const item of pendientes) {
+        const { data: inserted, error: insErr } = await supabase
+          .from("respuestas_rapidas")
+          .insert({
+            id: item.id,
+            tipo: item.tipo,
+            titulo: item.titulo,
+            contenido: item.contenido,
+            creado_en: item.creado_en,
+          })
+          .select("id, tipo, titulo, contenido, creado_en")
+          .maybeSingle();
+        if (!insErr && inserted) {
+          const fila = filaARespuesta(inserted);
+          if (fila && !idsRemotos.has(fila.id)) {
+            remotas.push(fila);
+            idsRemotos.add(fila.id);
+          }
+        } else if (insErr) {
+          // Si el id no es uuid válido, inserta con id nuevo.
+          const { data: inserted2 } = await supabase
+            .from("respuestas_rapidas")
+            .insert({ tipo: item.tipo, titulo: item.titulo, contenido: item.contenido, creado_en: item.creado_en })
+            .select("id, tipo, titulo, contenido, creado_en")
+            .maybeSingle();
+          const fila = filaARespuesta(inserted2);
+          if (fila && !idsRemotos.has(fila.id)) {
+            remotas.push(fila);
+            idsRemotos.add(fila.id);
+          }
+        }
+      }
+      try { window.localStorage.setItem(MIGRATED_KEY, "1"); } catch {}
+    }
+
+    remotas.sort((a, b) => new Date(a.creado_en).getTime() - new Date(b.creado_en).getTime());
+    cachearLocal(remotas);
+    return remotas;
+  } catch {
+    return locales;
+  }
+}
+
+/** Guarda una respuesta nueva en la nube (y en caché local). */
+export async function guardarRespuestaRapida(
   nueva: { tipo: TipoRespuestaRapida; titulo: string; contenido: string }
-): RespuestaRapida {
+): Promise<RespuestaRapida> {
   const item: RespuestaRapida = {
     id: uid(),
     tipo: nueva.tipo,
@@ -57,26 +136,46 @@ export function guardarRespuestaRapida(
     contenido: nueva.contenido,
     creado_en: new Date().toISOString(),
   };
-  const todas = [...listarRespuestasRapidas(), item];
-  if (typeof window === "undefined") return item;
+
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(todas));
+    const { data, error } = await supabase
+      .from("respuestas_rapidas")
+      .insert({
+        id: item.id,
+        tipo: item.tipo,
+        titulo: item.titulo,
+        contenido: item.contenido,
+        creado_en: item.creado_en,
+      })
+      .select("id, tipo, titulo, contenido, creado_en")
+      .maybeSingle();
+    if (error) throw error;
+    const fila = filaARespuesta(data) || item;
+    const todas = [...listarRespuestasRapidas().filter((r) => r.id !== fila.id), fila];
+    cachearLocal(todas);
+    return fila;
+  } catch (e: any) {
+    // Si la tabla aún no existe, se queda en el teléfono.
+    const todas = [...listarRespuestasRapidas(), item];
+    try {
+      if (typeof window !== "undefined") window.localStorage.setItem(STORAGE_KEY, JSON.stringify(todas));
+    } catch {
+      throw new Error(
+        e?.message ||
+          "No se pudo guardar. Aplica la migración supabase/migrations/20260913_respuestas_rapidas.sql o borra respuestas antiguas."
+      );
+    }
     return item;
-  } catch {
-    throw new Error(
-      "Sin espacio en el almacenamiento del teléfono. Borra respuestas antiguas o guarda archivos más ligeros."
-    );
   }
 }
 
-/** Borra por id y devuelve la lista actualizada. */
-export function eliminarRespuestaRapida(id: string): RespuestaRapida[] {
-  const todas = listarRespuestasRapidas().filter((r) => r.id !== id);
+/** Borra por id en la nube y en caché. */
+export async function eliminarRespuestaRapida(id: string): Promise<RespuestaRapida[]> {
   try {
-    if (typeof window !== "undefined") window.localStorage.setItem(STORAGE_KEY, JSON.stringify(todas));
-  } catch {
-    // Sin espacio no pasa nada: la lista en memoria queda filtrada.
-  }
+    await supabase.from("respuestas_rapidas").delete().eq("id", id);
+  } catch {}
+  const todas = listarRespuestasRapidas().filter((r) => r.id !== id);
+  cachearLocal(todas);
   return todas;
 }
 
@@ -118,13 +217,11 @@ export async function prepararAudioRR(file: File): Promise<{ dataUri: string; ti
 
   const titulo = nombreBase(file, "nota-de-voz");
   const bytes = new Uint8Array(await file.arrayBuffer());
-  // Anotación explícita: TS 5.9 tipa Uint8Array con el buffer base (ArrayBufferLike).
   let out: Uint8Array = bytes;
   let mime = file.type && file.type.startsWith("audio/") ? file.type : "audio/ogg";
 
   if (isWebmBytes(bytes)) {
     try {
-      // prerollMs: 0 → sin silencio artificial (es para guardar, no para WhatsApp)
       out = remuxWebmToOgg(bytes, { prerollMs: 0 });
       mime = "audio/ogg";
     } catch {
@@ -137,7 +234,7 @@ export async function prepararAudioRR(file: File): Promise<{ dataUri: string; ti
 
 /**
  * Imagen → data URI lista para guardar. Las grandes (o GIF) se reducen a
- * ~1024px JPEG para no agotar el almacenamiento del teléfono.
+ * ~1024px JPEG para no agotar el almacenamiento.
  */
 export async function prepararImagenRR(file: File): Promise<{ dataUri: string; titulo: string }> {
   if (!(file.type || "").startsWith("image/")) throw new Error("Selecciona un archivo de imagen.");

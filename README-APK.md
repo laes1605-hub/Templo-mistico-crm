@@ -22,6 +22,20 @@ La versión está configurada como:
 - Requiere que Vercel haya desplegado este commit (la APK carga la web de
   Vercel): el cambio combina código web (`viewport-fit=cover` + safe areas) y
   código nativo (`StatusBarThemePlugin`).
+- **Build automático (activación en 1 minuto):** el workflow `Build APK`
+  (`ci/build-apk.yml`) compila la APK en cada push y la deja en
+  `apk/templo-mistico-crm-debug.apk` + artefacto descargable. **Nunca se
+  ejecutó** porque estaba en `ci/`: GitHub sólo lee workflows desde
+  `.github/workflows/`, y la credencial del agente de Arena no puede crear
+  archivos ahí (GitHub lo bloquea para las GitHub Apps sin permiso
+  `workflows`). Para activarlo, copia el archivo una sola vez (las
+  instrucciones exactas están al inicio de `ci/build-apk.yml`):
+  1. En github.com → este repo → **Add file → Create new file**.
+  2. Nombre exacto: `.github/workflows/build-apk.yml`.
+  3. Pega el contenido completo de `ci/build-apk.yml` y haz commit.
+  A partir de ese momento todo push a `main` o a una rama `arena/**`
+  genera su APK automáticamente (también en **Actions → Build APK → Run
+  workflow** para lanzarlo a mano).
 
 ## ✅ Actualización APK 1.3.1 — Android Studio
 

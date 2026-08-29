@@ -12,6 +12,7 @@ import { audioMensajeToArchivo } from "../lib/audio-download";
 import {
   type RespuestaRapida,
   listarRespuestasRapidas,
+  sincronizarRespuestasRapidas,
   guardarRespuestaRapida,
   eliminarRespuestaRapida,
   prepararAudioRR,
@@ -341,6 +342,7 @@ export default function CRMApp() {
     fetchCampanasAds();
     cargarConfigDivisas();
     cargarConfigGeneral();
+    void sincronizarRespuestasRapidas().then(setRespuestasRapidas);
     // Recalcular mensajes no leídos (cubre los que llegaron con la app cerrada)
     sincronizarNoLeidos();
     // Sincronizar con Chatwoot al abrir: trae lo que haya perdido el webhook
@@ -364,6 +366,9 @@ export default function CRMApp() {
     const cliSub = supabase.channel("r-cli").on("postgres_changes", { event: "*", schema: "public", table: "clientes" }, () => { refrescarLista(); fetchTodosClientes(); }).subscribe();
     const pagSub = supabase.channel("r-pag").on("postgres_changes", { event: "*", schema: "public", table: "pagos" }, fetchTodosPagos).subscribe();
     const tarSub = supabase.channel("r-tar").on("postgres_changes", { event: "*", schema: "public", table: "tareas" }, fetchTodasTareas).subscribe();
+    const rrSub = supabase.channel("r-rr").on("postgres_changes", { event: "*", schema: "public", table: "respuestas_rapidas" }, () => {
+      void sincronizarRespuestasRapidas().then(setRespuestasRapidas);
+    }).subscribe();
 
     return () => {
       if (refrescoTimer) clearTimeout(refrescoTimer);
@@ -371,6 +376,7 @@ export default function CRMApp() {
       supabase.removeChannel(cliSub);
       supabase.removeChannel(pagSub);
       supabase.removeChannel(tarSub);
+      supabase.removeChannel(rrSub);
     };
   }, []);
 
@@ -2097,12 +2103,13 @@ export default function CRMApp() {
   }
 
   // ===================== RESPUESTAS RÁPIDAS =====================
-  // Librería de respuestas (texto, audio OGG, imagen) que sirven para TODAS
-  // las conversaciones. Se guardan en el dispositivo (localStorage).
+  // Librería compartida (texto, audio OGG, imagen) en Supabase: al guardar
+  // en un dispositivo aparece en todos. localStorage es solo caché.
   function abrirMenuRespuestas() {
     setRespuestasRapidas(listarRespuestasRapidas());
     setRrError("");
     setShowRespuestasMenu(true);
+    void sincronizarRespuestasRapidas().then(setRespuestasRapidas);
   }
 
   async function handleRRFile(e: React.ChangeEvent<HTMLInputElement>) {
@@ -2132,12 +2139,12 @@ export default function CRMApp() {
       if (rrBorrador.tipo === "texto") {
         const texto = rrBorrador.texto.trim();
         if (!texto) { setRrError("Escribe el texto de la respuesta."); return; }
-        const nueva = guardarRespuestaRapida({ tipo: "texto", titulo: rrBorrador.titulo.trim() || texto.slice(0, 40), contenido: texto });
-        setRespuestasRapidas([...respuestasRapidas, nueva]);
+        const nueva = await guardarRespuestaRapida({ tipo: "texto", titulo: rrBorrador.titulo.trim() || texto.slice(0, 40), contenido: texto });
+        setRespuestasRapidas((prev) => [...prev.filter((r) => r.id !== nueva.id), nueva]);
       } else {
         if (!rrBorrador.dataUri) { setRrError("Selecciona el archivo de la respuesta."); return; }
-        const nueva = guardarRespuestaRapida({ tipo: rrBorrador.tipo, titulo: rrBorrador.titulo.trim() || rrBorrador.nombre || "respuesta", contenido: rrBorrador.dataUri });
-        setRespuestasRapidas([...respuestasRapidas, nueva]);
+        const nueva = await guardarRespuestaRapida({ tipo: rrBorrador.tipo, titulo: rrBorrador.titulo.trim() || rrBorrador.nombre || "respuesta", contenido: rrBorrador.dataUri });
+        setRespuestasRapidas((prev) => [...prev.filter((r) => r.id !== nueva.id), nueva]);
       }
       setRrBorrador(null);
     } catch (e: any) {
@@ -2239,7 +2246,7 @@ export default function CRMApp() {
               >
                 {guardandoRR ? "Guardando..." : "Guardar respuesta"}
               </button>
-              <p className="text-[9px] text-gray-600">Disponible en todas las conversaciones (se guarda en este teléfono).</p>
+              <p className="text-[9px] text-gray-600">Se sube a la nube y queda en todos los dispositivos.</p>
             </div>
           ) : (
             <>
@@ -4470,6 +4477,10 @@ export default function CRMApp() {
 
       {/* MODAL AJUSTES: TEMA Y NOTIFICACIONES */}
       {showAjustes && <AjustesPanel onClose={() => setShowAjustes(false)} />}
+    </div>
+  );
+}
+={() => setShowAjustes(false)} />}
     </div>
   );
 }

@@ -52,20 +52,42 @@ export async function POST(req: Request) {
 
     let fuente = "meta_business";
     let chatwootConvId: string | number | null = null;
+    let chatwootIds: string[] = [];
     let targetClienteId = clienteId || null;
 
     if (conversacionId) {
-      const { data: convData, error: conversationError } = await supabase
-        .from("conversaciones")
-        .select("cliente_id, fuente, chatwoot_conversation_id")
-        .eq("id", conversacionId)
-        .single();
-
+      let convData: any = null;
+      let conversationError: any = null;
+      {
+        const r = await supabase
+          .from("conversaciones")
+          .select("cliente_id, fuente, chatwoot_conversation_id, chatwoot_conversation_ids")
+          .eq("id", conversacionId)
+          .single();
+        convData = r.data;
+        conversationError = r.error;
+      }
       if (conversationError) {
+        const r2 = await supabase
+          .from("conversaciones")
+          .select("cliente_id, fuente, chatwoot_conversation_id")
+          .eq("id", conversacionId)
+          .single();
+        convData = r2.data;
+        conversationError = r2.error;
+      }
+
+      if (conversationError || !convData) {
         return NextResponse.json({ error: "No se pudo identificar la conversación." }, { status: 404 });
       }
       fuente = convData?.fuente || "meta_business";
       chatwootConvId = convData?.chatwoot_conversation_id || null;
+      const extraIds = Array.isArray(convData?.chatwoot_conversation_ids)
+        ? convData.chatwoot_conversation_ids.map((x: any) => String(x)).filter(Boolean)
+        : [];
+      chatwootIds = Array.from(
+        new Set([...(chatwootConvId ? [String(chatwootConvId)] : []), ...extraIds])
+      );
       if (!targetClienteId && convData?.cliente_id) {
         targetClienteId = convData.cliente_id;
       }
@@ -128,29 +150,37 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: "Falta CHATWOOT_API_TOKEN para enviar por WhatsApp API." }, { status: 500 });
       }
 
-      // Si la conversación unificada no tenía chatwoot_conversation_id, buscarlo o crearlo en Chatwoot
-      if (!chatwootConvId) {
-        if (targetClienteId) {
-          const { data: altConv } = await supabase
-            .from("conversaciones")
-            .select("chatwoot_conversation_id")
-            .eq("cliente_id", targetClienteId)
-            .not("chatwoot_conversation_id", "is", null)
-            .limit(1)
-            .maybeSingle();
-          if (altConv?.chatwoot_conversation_id) {
-            chatwootConvId = altConv.chatwoot_conversation_id;
+      // Preferir inbox Cloud API. Si no hay match, se conserva el id que ya tenía el chat.
+      const inboxApi = 5;
+      let idApi: string | number | null = null;
+      if (chatwootIds.length > 1 && chatwootToken) {
+        for (const id of chatwootIds) {
+          try {
+            const det = await fetch(`${chatwootUrl}/api/v1/accounts/1/conversations/${id}`, {
+              headers: { api_access_token: chatwootToken },
+            });
+            if (!det.ok) continue;
+            const json = await det.json();
+            const inbox = json?.inbox_id ?? json?.inbox?.id;
+            const nombre = String(json?.inbox?.name || "").toLowerCase();
+            if (Number(inbox) === inboxApi || nombre.includes("api") || nombre.includes("cloud")) {
+              idApi = id;
+              break;
+            }
+          } catch {
+            /* siguiente */
           }
         }
-
-        if (!chatwootConvId) {
-          chatwootConvId = await buscarOCrearConversacionChatwoot(cleanNumber, 5);
-          if (chatwootConvId && conversacionId) {
-            await supabase
-              .from("conversaciones")
-              .update({ chatwoot_conversation_id: String(chatwootConvId) })
-              .eq("id", conversacionId);
-          }
+      }
+      if (idApi) {
+        chatwootConvId = idApi;
+      } else if (!chatwootConvId) {
+        chatwootConvId = await buscarOCrearConversacionChatwoot(cleanNumber, inboxApi);
+        if (chatwootConvId && conversacionId) {
+          await supabase
+            .from("conversaciones")
+            .update({ chatwoot_conversation_id: String(chatwootConvId) })
+            .eq("id", conversacionId);
         }
       }
 

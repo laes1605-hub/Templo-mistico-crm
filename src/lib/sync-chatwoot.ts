@@ -182,13 +182,56 @@ function telefonoDe(sender: any, conv: any): { telefono: string; display: string
   const candidatos = [
     sender?.phone_number,
     conv?.meta?.sender?.phone_number,
+    conv?.contact?.phone_number,
     sender?.identifier,
     conv?.meta?.sender?.identifier,
+    conv?.contact?.identifier,
+    sender?.additional_attributes?.phone_number,
   ];
   for (const c of candidatos) {
     if (pareceTelefonoReal(c)) return { telefono: normalizarTelefono(c), display: normalizarTelefono(c) };
   }
   return { telefono: `revisar_${conv?.id || Date.now()}`, display: "Sin teléfono" };
+}
+
+/** WhatsApp API (Meta) vs WhatsApp Personal (Evolution). No depende de un inbox_id fijo. */
+function fuenteDeConversacion(convCw: any, fallback?: string | null): string {
+  const inboxId = convCw?.inbox_id ?? convCw?.inbox?.id;
+  const nombre = String(convCw?.inbox?.name || convCw?.meta?.channel || "").toLowerCase();
+  const canal = String(convCw?.meta?.channel || convCw?.channel || convCw?.inbox?.channel_type || "").toLowerCase();
+  if (
+    nombre.includes("api") ||
+    nombre.includes("cloud") ||
+    nombre.includes("templo") ||
+    nombre.includes("meta") ||
+    canal.includes("whatsapp") && !nombre.includes("personal") && !nombre.includes("evolution")
+  ) {
+    if (nombre.includes("personal") || nombre.includes("evolution") || nombre.includes("maestro")) {
+      return "evolution";
+    }
+    return "meta_business";
+  }
+  if (nombre.includes("personal") || nombre.includes("evolution") || nombre.includes("maestro")) {
+    return "evolution";
+  }
+  if (inboxId != null && Number(inboxId) === 5) return "meta_business";
+  return fallback || "evolution";
+}
+
+function extraerConversacionesCw(json: any): any[] {
+  const candidatos = [json?.data?.payload, json?.payload, json?.data?.conversations, json?.conversations, json?.data];
+  for (const c of candidatos) {
+    if (Array.isArray(c)) return c;
+  }
+  return [];
+}
+
+function extraerMensajesCw(json: any): any[] {
+  const candidatos = [json?.payload, json?.data?.payload, json?.data, json?.messages];
+  for (const c of candidatos) {
+    if (Array.isArray(c)) return c;
+  }
+  return Array.isArray(json) ? json : [];
 }
 
 // ---------------------------------------------------------------------------
@@ -319,28 +362,58 @@ type ConvExistente = {
   ultimo_mensaje?: string | null;
   numero_whatsapp?: string | null;
   fuente?: string | null;
+  chatwoot_conversation_id?: string | null;
+  chatwoot_conversation_ids?: string[] | null;
 };
 
 const SELECT_CONV =
-  "id,chatwoot_conversation_id,ultimo_mensaje_en,no_leidos,ultimo_leido_en,cliente_id,ultimo_mensaje,numero_whatsapp,fuente";
+  "id,chatwoot_conversation_id,chatwoot_conversation_ids,ultimo_mensaje_en,no_leidos,ultimo_leido_en,cliente_id,ultimo_mensaje,numero_whatsapp,fuente";
 
 async function fetchConversacionesSb(rutaBase: string): Promise<any[] | null> {
   const r = await sbFetch(rutaBase);
   if (r.ok && Array.isArray(r.json)) return r.json;
-  // Columna ausente (migración pendiente): reintentar con las mínimas.
+  // Columna ausente (migración pendiente): reintentar sin el array de ids.
+  if (/chatwoot_conversation_ids|pgrst204|does not exist/i.test(r.texto || "")) {
+    const sinArray = rutaBase.replace("chatwoot_conversation_ids,", "");
+    const rAlt = await sbFetch(sinArray);
+    if (rAlt.ok && Array.isArray(rAlt.json)) return rAlt.json;
+  }
   const r2 = await sbFetch(
-    `${rutaBase.split("&select=")[0]}&select=id,ultimo_mensaje_en,no_leidos,ultimo_leido_en`
+    `${rutaBase.split("&select=")[0]}&select=id,chatwoot_conversation_id,ultimo_mensaje_en,no_leidos,ultimo_leido_en,cliente_id,ultimo_mensaje,numero_whatsapp,fuente`
   );
   return r2.ok && Array.isArray(r2.json) ? r2.json : null;
 }
 
+function idsChatwootDe(row: ConvExistente | null | undefined): string[] {
+  if (!row) return [];
+  const out = new Set<string>();
+  if (row.chatwoot_conversation_id) out.add(String(row.chatwoot_conversation_id));
+  for (const id of row.chatwoot_conversation_ids || []) {
+    if (id) out.add(String(id));
+  }
+  return Array.from(out);
+}
+
 async function buscarConversacion(chatwootConvId: string | number): Promise<ConvExistente | null> {
+  const id = String(chatwootConvId);
   const encontrados = await fetchConversacionesSb(
-    `/conversaciones?chatwoot_conversation_id=eq.${encodeURIComponent(
-      String(chatwootConvId)
-    )}&select=${SELECT_CONV}`
+    `/conversaciones?chatwoot_conversation_id=eq.${encodeURIComponent(id)}&select=${SELECT_CONV}`
   );
-  return encontrados && encontrados.length > 0 ? encontrados[0] : null;
+  if (encontrados && encontrados.length > 0) return encontrados[0];
+  const porArray = await sbFetch(
+    `/conversaciones?chatwoot_conversation_ids=cs.{${encodeURIComponent(id)}}&select=${SELECT_CONV}&limit=1`
+  );
+  if (porArray.ok && Array.isArray(porArray.json) && porArray.json.length > 0) return porArray.json[0];
+  return null;
+}
+
+async function buscarConversacionPorCliente(clienteId: string): Promise<ConvExistente | null> {
+  const rows = await fetchConversacionesSb(
+    `/conversaciones?cliente_id=eq.${encodeURIComponent(clienteId)}&select=${SELECT_CONV}&order=ultimo_mensaje_en.desc.nullslast&limit=5`
+  );
+  if (!rows || rows.length === 0) return null;
+  const personal = rows.find((r) => r.fuente === "evolution");
+  return personal || rows[0];
 }
 
 /**
@@ -355,7 +428,7 @@ async function mapaDeConversaciones(): Promise<Map<string, ConvExistente>> {
   const mapa = new Map<string, ConvExistente>();
   if (rows) {
     for (const row of rows) {
-      if (row?.chatwoot_conversation_id) mapa.set(String(row.chatwoot_conversation_id), row);
+      for (const id of idsChatwootDe(row)) mapa.set(id, row);
     }
   }
   return mapa;
@@ -370,49 +443,40 @@ async function upsertConversacion(
   res: ResultadoSync,
   existentePrevio?: ConvExistente | null
 ): Promise<ConvExistente | null> {
-  // El sondeo ya buscó la conversación; se reusa para no repetir la consulta.
+  // Un solo chat por cliente: API y Personal escriben en la misma fila.
   let existente = existentePrevio !== undefined ? existentePrevio : await buscarConversacion(convCw.id);
-  // Si no se encuentra por chatwoot_conversation_id, buscar si el cliente ya tiene una conversación existente en el CRM
   if (!existente && clienteId) {
-    const porCli = await sbFetch(
-      `/conversaciones?cliente_id=eq.${encodeURIComponent(clienteId)}&select=${SELECT_CONV}&order=ultimo_mensaje_en.desc&limit=1`
-    );
-    if (porCli.ok && Array.isArray(porCli.json) && porCli.json.length > 0) {
-      existente = porCli.json[0];
-    }
+    existente = await buscarConversacionPorCliente(clienteId);
   }
 
-  // Datos que el payload de un webhook puede no traer: nunca pisar un valor
-  // bueno de Supabase con un placeholder ("revisar_...") o con la fuente por
-  // defecto. Se conserva el valor existente en esos casos.
   const telefonoFinal =
     !pareceTelefonoReal(telefono) && existente?.numero_whatsapp
       ? existente.numero_whatsapp
       : telefono;
-  const fuente =
-    convCw.inbox_id != null
-      ? convCw.inbox_id === 5
-        ? "meta_business"
-        : "evolution"
-      : existente?.fuente || "evolution";
+  // No pisar la fuente del chat unificado: el envío sigue la etapa, no el inbox de este mensaje.
+  const fuenteNueva = fuenteDeConversacion(convCw, existente?.fuente);
+  const fuente = existente?.fuente || fuenteNueva;
+  const cwId = convCw?.id != null ? String(convCw.id) : "";
+  const idsUnidos = cwId ? Array.from(new Set([...idsChatwootDe(existente), cwId])) : idsChatwootDe(existente);
 
   if (existente) {
-    // No se tocan archivada / no_leidos / ultimo_leido_en / agente_activo:
-    // eso lo maneja el operador desde el dashboard.
-    // Si el último mensaje ya está igual, no se escribe: así el sondeo
-    // silencioso no inunda el realtime con eventos vacíos.
+    const idsIguales =
+      idsUnidos.length === idsChatwootDe(existente).length &&
+      idsUnidos.every((id) => idsChatwootDe(existente).includes(id));
     const sinCambios =
       existente.ultimo_mensaje === ultimoMensaje &&
       existente.ultimo_mensaje_en === ultimoMensajeEn &&
       existente.numero_whatsapp === telefonoFinal &&
-      existente.fuente === fuente;
+      idsIguales;
     if (sinCambios) return existente;
 
     const cambios = await depurar("conversaciones", {
       ultimo_mensaje: ultimoMensaje,
       ultimo_mensaje_en: ultimoMensajeEn,
       numero_whatsapp: telefonoFinal,
-      fuente,
+      chatwoot_conversation_ids: idsUnidos,
+      // Sólo rellena el id principal si aún no había ninguno.
+      ...(!existente.chatwoot_conversation_id && cwId ? { chatwoot_conversation_id: cwId } : {}),
       actualizado_en: new Date().toISOString(),
     });
     await sbFetch(`/conversaciones?id=eq.${existente.id}`, {
@@ -426,6 +490,7 @@ async function upsertConversacion(
   const datos = await depurar("conversaciones", {
     cliente_id: clienteId,
     chatwoot_conversation_id: String(convCw.id),
+    chatwoot_conversation_ids: [String(convCw.id)],
     numero_whatsapp: telefono,
     fuente,
     ultimo_mensaje: ultimoMensaje,
@@ -480,9 +545,11 @@ function fechaISO(valor: any): string {
 /** Convierte un mensaje de Chatwoot al formato del CRM. null = ignorar. */
 export function mapMensajeCw(m: any): MensajeMapeado | null {
   if (!m || m.private === true) return null;
-  const message_type = Number(m.message_type);
-  // 0=entrante, 1=saliente, 2=actividad, 3=plantilla → sólo 0 y 1.
-  if (message_type !== 0 && message_type !== 1) return null;
+  const tipoRaw = String(m.message_type ?? "").toLowerCase().trim();
+  // Chatwoot API usa 0/1; el webhook usa "incoming"/"outgoing".
+  const esEntrante = tipoRaw === "0" || tipoRaw === "incoming" || tipoRaw === "in";
+  const esSaliente = tipoRaw === "1" || tipoRaw === "outgoing" || tipoRaw === "out";
+  if (!esEntrante && !esSaliente) return null;
 
   let tipoContenido = "texto";
   let urlArchivo: string | null = null;
@@ -506,7 +573,7 @@ export function mapMensajeCw(m: any): MensajeMapeado | null {
 
   return {
     chatwoot_message_id: String(m.id),
-    tipo: message_type === 0 ? "recibido" : "enviado",
+    tipo: esEntrante ? "recibido" : "enviado",
     contenido: contenido || `[${tipoContenido}]`,
     tipo_contenido: tipoContenido,
     url_archivo: urlArchivo,
@@ -850,9 +917,10 @@ async function sincronizarConversacionCw(
     `/conversations/${convCw.id}/messages?per_page=${opts.perPageMensajes}`,
     15000
   );
-  const mensajesCw: any[] = Array.isArray(mensajesResp.json?.payload)
-    ? mensajesResp.json.payload
-    : [];
+  let mensajesCw: any[] = extraerMensajesCw(mensajesResp.json);
+  if (mensajesCw.length === 0 && Array.isArray(convCw?.messages)) {
+    mensajesCw = convCw.messages;
+  }
   if (!mensajesResp.ok) {
     res.errores.push(
       `historial ${convCw.id}: (${mensajesResp.status}) ${mensajesResp.texto.slice(0, 120)}`
@@ -972,26 +1040,37 @@ export async function sincronizarTodo(opciones: OpcionesSync = {}): Promise<Resu
     }
 
     // ------------------------------------------------------------------
-    // 2) Bandeja. Listar conversaciones abiertas de Chatwoot (100/página).
+    // 2) Bandeja. WhatsApp Personal (Evolution) suele crear chats en
+    //    `pending` y/o sin asignar: si sólo pedimos status=open se pierden.
     // ------------------------------------------------------------------
     let conversacionesCw: any[] = [];
     const perPage = 100;
     const maxPaginas = opciones.rapido ? 2 : 5;
-    for (let pagina = 1; pagina <= maxPaginas; pagina += 1) {
-      const listado = await cwGet(
-        `/conversations?status=open&per_page=${perPage}&page=${pagina}`,
-        15000
-      );
-      if (!listado.ok && pagina === 1) {
-        res.errores.push(
-          `Chatwoot no respondió el listado (${listado.status}): ${listado.texto.slice(0, 160)}`
+    const estados = opciones.completa
+      ? ["open", "pending", "snoozed"]
+      : ["open", "pending"];
+    const vistosCw = new Set<string>();
+    for (const estado of estados) {
+      for (let pagina = 1; pagina <= maxPaginas; pagina += 1) {
+        const listado = await cwGet(
+          `/conversations?status=${estado}&assignee_type=all&per_page=${perPage}&page=${pagina}`,
+          15000
         );
-        break;
+        if (!listado.ok && pagina === 1 && estado === estados[0]) {
+          res.errores.push(
+            `Chatwoot no respondió el listado (${listado.status}): ${listado.texto.slice(0, 160)}`
+          );
+        }
+        const lote = extraerConversacionesCw(listado.json);
+        for (const conv of lote) {
+          const id = String(conv?.id || "");
+          if (!id || vistosCw.has(id)) continue;
+          vistosCw.add(id);
+          conversacionesCw.push(conv);
+        }
+        if (!listado.ok || lote.length < perPage) break;
+        if (conversacionesCw.length >= maxConversaciones * 2) break;
       }
-      const lote = listado.json?.data?.payload || listado.json?.payload || [];
-      conversacionesCw = conversacionesCw.concat(lote);
-      if (!listado.ok || lote.length < perPage) break;
-      if (conversacionesCw.length >= maxConversaciones) break;
     }
     // Ordenar por actividad más reciente primero (prioriza lo urgente).
     conversacionesCw.sort((a, b) => actividadCwMs(b) - actividadCwMs(a));
@@ -1057,13 +1136,18 @@ export async function procesarEventoWebhook(
   const res = nuevoResultado();
   const inicio = Date.now();
   try {
-    if (!body || (!body.conversation && !body.id)) {
+    if (!body || (!body.conversation && !body.conversation_id && !body.id)) {
       res.errores.push("evento sin conversación");
       res.tardo_ms = Date.now() - inicio;
       return res;
     }
-    const conv = body.conversation || {};
-    const sender = body.sender || conv?.meta?.sender || {};
+    const conv = {
+      ...(body.conversation || {}),
+      id: body.conversation?.id || body.conversation_id || body.conversation?.display_id,
+      inbox_id: body.conversation?.inbox_id || body.inbox?.id || body.inbox_id,
+      inbox: body.conversation?.inbox || body.inbox || body.conversation?.inbox,
+    };
+    const sender = body.sender || conv?.meta?.sender || body.contact || {};
     const attrs = conv?.custom_attributes || {};
     const { telefono, display } = telefonoDe(sender, conv);
 

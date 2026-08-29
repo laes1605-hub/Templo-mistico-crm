@@ -2156,7 +2156,7 @@ export default function CRMApp() {
 
   function borrarRespuestaRapida(id: string) {
     if (!window.confirm("¿Borrar esta respuesta rápida?")) return;
-    setRespuestasRapidas(eliminarRespuestaRapida(id));
+    void eliminarRespuestaRapida(id).then(setRespuestasRapidas);
   }
 
   // Envía la respuesta seleccionada a la conversación actual (mismo camino
@@ -4477,10 +4477,6 @@ export default function CRMApp() {
 
       {/* MODAL AJUSTES: TEMA Y NOTIFICACIONES */}
       {showAjustes && <AjustesPanel onClose={() => setShowAjustes(false)} />}
-    </div>
-  );
-}
-={() => setShowAjustes(false)} />}
     </div>
   );
 }

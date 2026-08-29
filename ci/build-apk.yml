@@ -1,29 +1,8 @@
-# ══════════════════════════════════════════════════════════════════════════
-# BUILD APK — workflow de compilación automática
-# ══════════════════════════════════════════════════════════════════════════
-# ⚠️ PARA ACTIVARLO (una sola vez): GitHub Actions SÓLO ejecuta workflows que
-# estén en `.github/workflows/`; desde `ci/` nunca corre (por eso no se
-# ejecutaba). Además, GitHub bloquea a las GitHub Apps sin permiso
-# "workflows" crear archivos en esa carpeta, así que esta única copia hay que
-# hacerla tú desde la web o desde tu equipo:
-#
-#   Opción web (github.com → este repo → Add file → Create new file):
-#     1. Nombra el archivo exactamente:  .github/workflows/build-apk.yml
-#     2. Pega el contenido COMPLETO de este archivo (ci/build-apk.yml).
-#     3. Commit a `main` (o a la rama que quieras construir).
-#
-#   Opción terminal (con permisos de push en el repo):
-#     mkdir -p .github/workflows
-#     cp ci/build-apk.yml .github/workflows/build-apk.yml
-#     git add .github/workflows/build-apk.yml
-#     git commit -m "CI: activar Build APK" && git push
-#
-# A partir de ese momento, cada push a `main` o a una rama `arena/**`
-# compila la APK debug, la sube como artefacto descargable
-# (Actions → Build APK → artefacto templo-mistico-crm-debug) y la commitea
-# en apk/templo-mistico-crm-debug.apk de la misma rama. También puede
-# lanzarse a mano: Actions → Build APK → Run workflow.
-# ══════════════════════════════════════════════════════════════════════════
+# Build APK: compila la APK debug en cada push a main o a ramas arena/**.
+# Requiere vivir en .github/workflows/ (GitHub ignora cualquier otra carpeta).
+# Resultado: artefacto descargable "templo-mistico-crm-debug" y commit en
+# apk/templo-mistico-crm-debug.apk de la misma rama. Lanzable a mano desde
+# Actions -> Build APK -> Run workflow.
 
 name: Build APK
 
@@ -71,8 +50,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Verificación temprana: si el código web no compila, no tiene sentido
-      # generar una APK que cargaría una web rota en Vercel.
+      # Si la web no compila, no generar una APK que cargaria una web rota.
       - name: Verificar build web
         run: npm run build
 
@@ -83,7 +61,6 @@ jobs:
         working-directory: android
         run: |
           chmod +x gradlew
-          # Evita reutilizar un APK de una versión anterior.
           ./gradlew clean assembleDebug --no-daemon
           echo "APK versionName: $(grep -n 'versionName' app/build.gradle)"
 
@@ -107,7 +84,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "APK sin cambios, nada que commitear"
           else
-            git commit -m "build: APK debug generado automáticamente [skip ci]"
+            git commit -m "build: APK debug generado automaticamente [skip ci]"
             git pull --rebase origin ${{ github.ref_name }}
             git push origin HEAD:${{ github.ref_name }}
           fi

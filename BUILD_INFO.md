@@ -96,7 +96,7 @@
   nube, lo sube como artefacto y lo commitea en `apk/templo-mistico-crm-debug.apk`
 - App ID: com.templomistico.crm
 - App Name: Templo Místico CRM
-- Version: 1.3.0 (definida en `package.json` y usada por Android; `versionCode` 4)
+- Version: 1.3.1 (definida en `package.json` y usada por Android; `versionCode` 5)
 - WebDir: out · La APK carga https://templo-mistico-crm.vercel.app (server.url)
   → los cambios web van live con el deploy de Vercel, sin rebuild del APK
 

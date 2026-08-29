@@ -454,6 +454,41 @@ export default function CRMApp() {
   useEffect(() => { reprogramarModalRef.current = reprogramarModal; }, [reprogramarModal]);
   useEffect(() => { showDivisaConfigRef.current = showDivisaConfig; }, [showDivisaConfig]);
 
+  // MainActivity envía este evento para el botón y el gesto Atrás de Android.
+  // El primer gesto siempre deja una pantalla conocida: la lista de Chats.
+  // La Activity se encarga de cerrar la app sólo si recibe un segundo gesto
+  // consecutivo dentro de dos segundos.
+  useEffect(() => {
+    const volverAChats = () => {
+      setTab("chats");
+      setSelectedConv(null);
+      setShowMobileDetails(false);
+
+      // No dejar un panel o diálogo sobre la lista de chats al volver.
+      setShowAjustes(false);
+      setShowAdmin(false);
+      setBalances(null);
+      setAdminSecret("");
+      setShowAiModal(false);
+      setShowDeleteConfirm(null);
+      setResultadoEliminar(null);
+      setBloqueoChatwoot(null);
+      setAbonoModalCliente(null);
+      setAbonoMonto("");
+      setReprogramarModal(null);
+      setNuevaFechaPago("");
+      setShowDivisaConfig(false);
+      setShowEtapaMenu(false);
+      setShowRespuestasMenu(false);
+      setRrBorrador(null);
+      setIsEditingPipeline(false);
+      setIsEditingGroupLabels(false);
+    };
+
+    window.addEventListener("temploBackButton", volverAChats);
+    return () => window.removeEventListener("temploBackButton", volverAChats);
+  }, []);
+
   useEffect(() => {
     const atraparHistorial = () => {
       try { window.history.pushState({ tmBack: true }, ""); } catch {}

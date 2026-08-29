@@ -4,6 +4,10 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.SystemClock;
+import android.widget.Toast;
+
+import androidx.activity.OnBackPressedCallback;
 
 import com.getcapacitor.BridgeActivity;
 
@@ -19,6 +23,10 @@ public class MainActivity extends BridgeActivity {
     private static final String CHANNEL_FOLLOW_UPS = "crm_follow_ups";
     private static final String CHANNEL_GENERAL = "crm_general";
 
+    // Tiempo máximo entre las dos pulsaciones para salir de la aplicación.
+    private static final long EXIT_CONFIRMATION_WINDOW_MS = 2_000L;
+    private long lastBackPressedAt = 0L;
+
     @Override
     public void onCreate(Bundle savedInstanceState) {
         // Debe registrarse antes de super.onCreate(): BridgeActivity construye
@@ -26,6 +34,36 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(WhatsAppPersonalPlugin.class);
         super.onCreate(savedInstanceState);
         createNotificationChannels();
+
+        // OnBackPressedDispatcher cubre tanto el botón físico/virtual como el
+        // gesto de volver de Android, incluido el gesto predictivo reciente.
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                handleSystemBack();
+            }
+        });
+    }
+
+    /**
+     * Primer "atrás": la interfaz web vuelve a Chats. Sólo una segunda
+     * pulsación dentro de dos segundos cierra esta Activity.
+     */
+    private void handleSystemBack() {
+        final long now = SystemClock.elapsedRealtime();
+        if (now - lastBackPressedAt <= EXIT_CONFIRMATION_WINDOW_MS) {
+            finishAffinity();
+            return;
+        }
+
+        lastBackPressedAt = now;
+        if (getBridge() != null) {
+            // El listener de page.tsx restablece la vista de Chats. Usamos un
+            // evento Capacitor en vez del historial del WebView para que el
+            // comportamiento sea igual con el botón y con el gesto Android.
+            getBridge().triggerWindowJSEvent("temploBackButton");
+        }
+        Toast.makeText(this, "Pulsa atrás otra vez para salir", Toast.LENGTH_SHORT).show();
     }
 
     private void createNotificationChannels() {

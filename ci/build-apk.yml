@@ -1,5 +1,5 @@
 # Build APK: compila la APK debug en cada push a main o a ramas arena/**.
-# Requiere vivir en .github/workflows/ (GitHub ignora cualquier otra carpeta).
+# Debe vivir en .github/workflows/ (GitHub ignora cualquier otra carpeta).
 # Resultado: artefacto descargable "templo-mistico-crm-debug" y commit en
 # apk/templo-mistico-crm-debug.apk de la misma rama. Lanzable a mano desde
 # Actions -> Build APK -> Run workflow.
@@ -35,7 +35,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Setup Java 21
@@ -54,15 +54,35 @@ jobs:
       - name: Verificar build web
         run: npm run build
 
+      # Invocacion directa del binario (sin capa npx) y, si falla, el error se
+      # publica como anotacion del check para poder diagnosticarlo por API.
       - name: Sync Capacitor (copia web assets + plugins)
-        run: npx cap sync android
+        run: |
+          set -o pipefail
+          echo "node $(node -v) | npm $(npm -v) | omit: $(npm config get omit)"
+          CAP_BIN="node_modules/@capacitor/cli/bin/capacitor"
+          if [ ! -f "$CAP_BIN" ]; then
+            echo "::error::No existe $CAP_BIN - revisar npm ci / devDependencies"
+            exit 1
+          fi
+          if node "$CAP_BIN" sync android --verbose 2>&1 | tee /tmp/cap-sync.log; then
+            echo "Sync OK"
+          else
+            tail -c 900 /tmp/cap-sync.log | while IFS= read -r line; do echo "::error::$line"; done
+            exit 1
+          fi
 
       - name: Build APK (debug)
         working-directory: android
         run: |
           chmod +x gradlew
-          ./gradlew clean assembleDebug --no-daemon
-          echo "APK versionName: $(grep -n 'versionName' app/build.gradle)"
+          set -o pipefail
+          if ./gradlew clean assembleDebug --no-daemon 2>&1 | tee /tmp/gradle-build.log; then
+            echo "APK versionName: $(grep -n 'versionName' app/build.gradle)"
+          else
+            tail -c 900 /tmp/gradle-build.log | while IFS= read -r line; do echo "::error::$line"; done
+            exit 1
+          fi
 
       - name: Copiar APK al repositorio
         run: |

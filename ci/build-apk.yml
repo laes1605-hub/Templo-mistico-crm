@@ -65,7 +65,7 @@ jobs:
             echo "::error::No existe $CAP_BIN - revisar npm ci / devDependencies"
             exit 1
           fi
-          if node "$CAP_BIN" sync android --verbose 2>&1 | tee /tmp/cap-sync.log; then
+          if node "$CAP_BIN" sync android 2>&1 | tee /tmp/cap-sync.log; then
             echo "Sync OK"
           else
             tail -c 900 /tmp/cap-sync.log | while IFS= read -r line; do echo "::error::$line"; done

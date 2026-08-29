@@ -32,6 +32,9 @@ public class MainActivity extends BridgeActivity {
         // Debe registrarse antes de super.onCreate(): BridgeActivity construye
         // el bridge de Capacitor dentro de esa llamada.
         registerPlugin(WhatsAppPersonalPlugin.class);
+        // Pinta la barra de estado con el color del tema del CRM (la franja de
+        // la hora y las notificaciones se mimetiza con la app).
+        registerPlugin(StatusBarThemePlugin.class);
         super.onCreate(savedInstanceState);
         createNotificationChannels();
 

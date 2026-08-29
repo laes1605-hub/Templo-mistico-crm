@@ -94,7 +94,7 @@ export default function ChatImage({
 
       {open && (
         <div
-          className="fixed inset-0 z-[80] bg-black/85 backdrop-blur-sm flex flex-col"
+          className="fixed inset-0 z-[80] bg-black/85 backdrop-blur-sm flex flex-col pt-[var(--safe-area-inset-top)] pb-[var(--safe-area-inset-bottom)]"
           onClick={() => setOpen(false)}
         >
           <div className="flex items-center justify-between gap-3 px-4 py-3 text-white" onClick={(e) => e.stopPropagation()}>

@@ -13,6 +13,14 @@
         <item name="windowActionBar">false</item>
         <item name="windowNoTitle">true</item>
         <item name="android:background">@null</item>
+        <!-- Fondo y barras del sistema del mismo color que el tema oscuro del
+             CRM: sin franjas de otro color arriba (hora/notificaciones) ni
+             abajo (gestos), ni destellos blancos durante la carga. En modo
+             claro, la web lo cambia en caliente a #f1f3f7 mediante
+             StatusBarThemePlugin. -->
+        <item name="android:windowBackground">@color/tm_window_background</item>
+        <item name="android:statusBarColor">@color/tm_window_background</item>
+        <item name="android:navigationBarColor">@color/tm_window_background</item>
     </style>
 
 

@@ -2,9 +2,30 @@
 
 Este proyecto ya está preparado para convertirse en APK usando **Capacitor**.
 
-## ✅ Actualización APK 1.3.1 — Android Studio
+## ✅ Actualización APK 1.3.2 — Barra de estado uniforme
 
 La versión está configurada como:
+
+- `versionName`: **1.3.2**
+- `versionCode`: **6**
+- `appId`: `com.templomistico.crm`
+- `compileSdk` / `targetSdk`: **36**
+- Java requerido: **JDK 21**
+
+### Novedades de la APK 1.3.2
+
+- **Pantalla uniforme:** la franja superior del teléfono (hora, batería y
+  notificaciones) se dibuja ahora con el mismo color de fondo del CRM, y el
+  contenido nunca queda tapado por la hora. También la zona de gestos inferior
+  queda del color de la app. Funciona en modo oscuro y claro: al cambiar el
+  tema en Ajustes, las barras del sistema cambian con él.
+- Requiere que Vercel haya desplegado este commit (la APK carga la web de
+  Vercel): el cambio combina código web (`viewport-fit=cover` + safe areas) y
+  código nativo (`StatusBarThemePlugin`).
+
+## ✅ Actualización APK 1.3.1 — Android Studio
+
+La versión estaba configurada como:
 
 - `versionName`: **1.3.1**
 - `versionCode`: **5**

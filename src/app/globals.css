@@ -20,6 +20,26 @@
    ============================================================ */
 @import "./_colors.generated.css";
 
+/* ===================== BARRAS DEL SISTEMA (safe area) =====================
+   La APK se dibuja a pantalla completa (edge-to-edge): la interfaz llega
+   hasta arriba, por detrás de la barra donde Android muestra la hora y las
+   notificaciones. Para que el contenido no quede tapado por esa franja,
+   reservamos su altura con estas variables:
+
+   - En la APK, el plugin nativo SystemBars de Capacitor sobreescribe estas
+     4 variables en línea (inline) sobre <html> con los valores reales del
+     teléfono (la declaración inline gana sobre esta regla :root).
+   - En navegador / PWA toman el valor nativo de env(safe-area-inset-*),
+     que en escritorio es 0 y en iPhone/PWA aporta el hueco del notch.
+
+   Se usan en page.tsx (contenedor raíz, barra inferior) y ChatImage.tsx. */
+:root {
+  --safe-area-inset-top: env(safe-area-inset-top, 0px);
+  --safe-area-inset-right: env(safe-area-inset-right, 0px);
+  --safe-area-inset-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-area-inset-left: env(safe-area-inset-left, 0px);
+}
+
 /* ===================== BASE ===================== */
 body {
   background-color: rgb(var(--tm-background));

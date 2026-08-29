@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Fondo de la interfaz del CRM en modo oscuro (#090d16, la variable
+         "tm-background" de src/app/_colors.generated.css). Se usa como color
+         de la ventana y de las barras del sistema para que la franja de la
+         hora/notificaciones y la de gestos se vean del mismo color que la
+         app desde el primer frame. En modo claro, la web lo cambia en
+         caliente a #f1f3f7 vía StatusBarThemePlugin. -->
+    <color name="tm_window_background">#090D16</color>
+</resources>

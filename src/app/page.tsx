@@ -18,6 +18,7 @@ import {
   eliminarRespuestaRapida,
   prepararAudioRR,
   prepararImagenRR,
+  adjuntoParaEnviar,
 } from "../lib/respuestas-rapidas";
 import { estaContactoGuardadoEnTelefono, guardarContactoEnTelefono } from "../lib/contacts";
 import { abrirLlamadaWhatsAppPersonal, llamadasWhatsAppPersonalDisponibles } from "../lib/whatsapp-personal";
@@ -1885,7 +1886,7 @@ export default function CRMApp() {
   }
 
   // ===================== ENVIAR MENSAJE =====================
-  async function sendToApi(texto: string, fileBase64: string | null = null, fileMime: string | null = null, fileName: string | null = null) {
+  async function sendToApi(texto: string, fileBase64: string | null = null, fileMime: string | null = null, fileName: string | null = null, fileUrl: string | null = null) {
     if (!selectedConv) return;
     setIsSending(true);
     setSendError("");
@@ -1903,12 +1904,12 @@ export default function CRMApp() {
           clienteId: selectedConv.cliente_id || clienteActual?.id,
           numeroWhatsApp: selectedConv.numero_whatsapp,
           cuentaResponsable,
-          texto, fileBase64, fileMime, fileName
+          texto, fileBase64, fileMime, fileName, fileUrl
         }),
       });
       const result = await response.json().catch(() => ({}));
       if (!response.ok || !result.success) throw new Error(result.error || "No se pudo enviar el mensaje.");
-      const esNotaDeVoz = Boolean(fileBase64 && ((fileMime || "").startsWith("audio/") || String(fileName || "").toLowerCase().includes("nota_de_voz")));
+      const esNotaDeVoz = Boolean((fileBase64 || fileUrl) && ((fileMime || "").startsWith("audio/") || String(fileName || "").toLowerCase().includes("nota_de_voz")));
       if (esNotaDeVoz && result.voiceNote === false) {
         const motivo = typeof result.audioReason === "string" && result.audioReason.trim()
           ? ` Motivo: ${result.audioReason.trim()}`
@@ -2322,6 +2323,8 @@ export default function CRMApp() {
 
   // Envía la respuesta seleccionada a la conversación actual (mismo camino
   // que un mensaje normal: texto plano, o archivo vía /api/send-message).
+  // Un audio/imagen ya publicado en Storage viaja como URL: el servidor lo
+  // descarga y el teléfono no mueve los megabytes del archivo.
   async function enviarRespuestaRapida(rr: RespuestaRapida) {
     if (!selectedConv) return;
     setShowRespuestasMenu(false);
@@ -2329,13 +2332,14 @@ export default function CRMApp() {
     try {
       if (rr.tipo === "texto") {
         await sendToApi(rr.contenido);
-      } else if (rr.tipo === "audio") {
-        const base64 = rr.contenido.split(",")[1] || "";
-        await sendToApi("", `data:audio/ogg;base64,${base64}`, "audio/ogg", "nota_de_voz.ogg");
-      } else {
-        const mime = (rr.contenido.split(";")[0] || "data:image/jpeg").replace("data:", "");
-        await sendToApi("", rr.contenido, mime, rr.titulo ? `${rr.titulo}.jpg` : "respuesta-rapida.jpg");
+        return;
       }
+      const adjunto = adjuntoParaEnviar(rr);
+      if (!adjunto) {
+        setRrError("Esa respuesta rápida no tiene archivo para enviar.");
+        return;
+      }
+      await sendToApi("", adjunto.fileBase64, adjunto.fileMime, adjunto.fileName, adjunto.fileUrl);
     } catch (e: any) {
       console.error("Error enviando respuesta rápida:", e);
     }

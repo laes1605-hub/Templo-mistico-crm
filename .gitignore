@@ -24,3 +24,6 @@ n8n/*.local.json
 
 # Workflow local de Luna con llaves embebidas: nunca versionar
 n8n/IMPORTAR-EN-N8N.json
+
+# Carpetas temporales de las pruebas locales (scripts/prueba-*)
+.tmp-prueba-*

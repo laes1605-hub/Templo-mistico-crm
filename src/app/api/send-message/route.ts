@@ -17,8 +17,17 @@ const cleanBase64 = (value: unknown) => {
 const WEBM_OGG_PREROLL_MS = 300;
 
 const safeFileName = (name: unknown, mime: string) => {
-  const fallbackExtension = mime.includes("ogg") ? "ogg" : mime.includes("mpeg") ? "mp3" : mime.includes("mp4") ? "m4a" : "webm";
-  const cleaned = String(name || `audio.${fallbackExtension}`).replace(/[^a-zA-Z0-9._-]/g, "_");
+  const fallbackExtension =
+    mime.includes("ogg") ? "ogg"
+    : mime.includes("mpeg") || mime.includes("mp3") ? "mp3"
+    : mime.includes("mp4") ? "mp4"
+    : mime.includes("jpeg") || mime.includes("jpg") ? "jpg"
+    : mime.includes("png") ? "png"
+    : mime.includes("webp") ? "webp"
+    : mime.includes("pdf") ? "pdf"
+    : mime.includes("webm") ? "webm"
+    : "bin";
+  const cleaned = String(name || `adjunto.${fallbackExtension}`).replace(/[^a-zA-Z0-9._-]/g, "_");
   return cleaned || `archivo.${fallbackExtension}`;
 };
 
@@ -59,7 +68,7 @@ export async function POST(req: Request) {
     }
 
     const pureBase64 = cleanBase64(base64Recibido);
-    const mime = String(mimeRecibido || "application/octet-stream").split(";")[0];
+    const mime = String(mimeRecibido || "application/octet-stream").split(";")[0].toLowerCase();
     const isAudio = Boolean(
       pureBase64 && (
         mime.startsWith("audio/") ||
@@ -67,6 +76,17 @@ export async function POST(req: Request) {
         String(fileName || "").toLowerCase().includes("audio")
       )
     );
+
+    let tipoGuardado = "texto";
+    if (isAudio) {
+      tipoGuardado = "audio";
+    } else if (pureBase64 && (mime.startsWith("image/") || /\.(jpe?g|png|gif|webp|bmp|heic|heif)$/i.test(String(fileName || "")))) {
+      tipoGuardado = "imagen";
+    } else if (pureBase64 && (mime.startsWith("video/") || /\.(mp4|webm|mov|avi|mkv)$/i.test(String(fileName || "")))) {
+      tipoGuardado = "video";
+    } else if (pureBase64) {
+      tipoGuardado = "archivo";
+    }
 
     let storedFileBase64: string | null = urlAdjunto ?? base64Recibido;
 
@@ -140,8 +160,6 @@ export async function POST(req: Request) {
           } else if (etapaData?.cuenta_responsable === "meta_business") {
             cuentaDestino = "meta_business";
           } else {
-            // Etapas iniciales (nuevo_lead, datos, en_consulta) van a meta_business; avanzadas a evolution
-            // Validacion por NOMBRE: Luna trabaja en Nuevo Lead y Datos
             const estNorm = String(cliData.estado || "").toLowerCase();
             const esNuevoLead = estNorm.includes("nuevo") && estNorm.includes("lead") || ["nuevo_lead", "lead_nuevo", "nuevo"].includes(estNorm);
             const esDatos = estNorm.includes("datos");
@@ -156,13 +174,8 @@ export async function POST(req: Request) {
       cuentaDestino = fuente === "evolution" ? "evolution" : "meta_business";
     }
 
-    let tipoGuardado = isAudio ? "audio" : "texto";
-    // Cómo terminó saliendo el audio: "meta_direct" = nota de voz nativa vía Graph API,
-    // "chatwoot" = adjunto de Chatwoot (nota de voz sólo si su versión la soporta),
-    // "evolution" = sendWhatsAppAudio (PTT nativo de Baileys).
     let envioAudioVia: "meta_direct" | "chatwoot" | "evolution" | null = null;
     let evolutionIsPtt = false;
-    // Motivo legible de por qué la nota NO salió nativa (se muestra en la app).
     let audioReason: string | null = null;
 
     if (cuentaDestino === "meta_business") {
@@ -215,9 +228,9 @@ export async function POST(req: Request) {
         try {
           bytes = Buffer.from(pureBase64, "base64");
         } catch {
-          return NextResponse.json({ error: "El archivo de audio no tiene un formato válido." }, { status: 400 });
+          return NextResponse.json({ error: "El archivo no tiene un formato válido." }, { status: 400 });
         }
-        if (!bytes.length) return NextResponse.json({ error: "El archivo de audio está vacío." }, { status: 400 });
+        if (!bytes.length) return NextResponse.json({ error: "El archivo está vacío." }, { status: 400 });
 
         let outgoingMime = mime;
         let outgoingName = safeFileName(fileName, mime);
@@ -256,7 +269,12 @@ export async function POST(req: Request) {
 
         if (!envioAudioVia) {
           const form = new FormData();
-          form.set("content", texto?.trim() || (isAudio ? "🎤 Nota de voz" : "Archivo enviado"));
+          const placeholderContenido =
+            isAudio ? "🎤 Nota de voz"
+            : tipoGuardado === "imagen" ? "📷 Imagen"
+            : tipoGuardado === "video" ? "🎥 Video"
+            : "Archivo adjunto";
+          form.set("content", texto?.trim() || placeholderContenido);
           form.set("message_type", "outgoing");
           form.set("private", "false");
 
@@ -294,7 +312,6 @@ export async function POST(req: Request) {
       }
 
       if (pureBase64 && isAudio) {
-        tipoGuardado = "audio";
         let audioMime = mime;
         let outgoingName = safeFileName(fileName, mime);
         let bytes: Buffer;
@@ -341,8 +358,8 @@ export async function POST(req: Request) {
         }
       } else if (pureBase64) {
         let mediatype = "document";
-        if (mime.startsWith("image/")) { mediatype = "image"; tipoGuardado = "imagen"; }
-        else if (mime.startsWith("video/")) { mediatype = "video"; tipoGuardado = "video"; }
+        if (tipoGuardado === "imagen") { mediatype = "image"; }
+        else if (tipoGuardado === "video") { mediatype = "video"; }
         const response = await fetch(`${evoUrl}/message/sendMedia/personal`, {
           method: "POST",
           headers: { "Content-Type": "application/json", apikey: evoKey },
@@ -377,14 +394,16 @@ export async function POST(req: Request) {
     if (conversacionId) {
       const contenidoFinal = texto?.trim() || (pureBase64 ? `[${tipoGuardado}]` : "");
       // AHORRO DE EGRESS: el adjunto se sube a Supabase Storage y en la tabla
-      // queda solo la URL. Si la subida falla, se conserva el base64 para no
-      // perder el archivo (plan B).
+      // queda solo la URL pública. Si la subida falla, se conserva el base64
+      // para no perder el archivo (plan B).
       let urlArchivoFinal: string | null = storedFileBase64;
       if (esDataUri(storedFileBase64)) {
-        urlArchivoFinal = await dataUriAStorage(
-          storedFileBase64,
-          tipoGuardado === "audio" ? "nota_de_voz" : safeFileName(fileName, mime)
-        );
+        const nombreBaseAdjunto =
+          tipoGuardado === "audio" ? "nota_de_voz"
+          : tipoGuardado === "imagen" ? "imagen"
+          : tipoGuardado === "video" ? "video"
+          : safeFileName(fileName, mime);
+        urlArchivoFinal = await dataUriAStorage(storedFileBase64, nombreBaseAdjunto);
       }
       const { error: messageError } = await supabase.from("mensajes").insert([
         {
@@ -398,8 +417,15 @@ export async function POST(req: Request) {
       ]);
       if (messageError) console.error("Could not save outgoing message:", messageError.message);
 
+      const resumenUltimo =
+        tipoGuardado === "audio" ? "🎤 Nota de voz"
+        : tipoGuardado === "imagen" ? (texto?.trim() ? `📷 ${texto.trim()}` : "📷 Imagen")
+        : tipoGuardado === "video" ? (texto?.trim() ? `🎥 ${texto.trim()}` : "🎥 Video")
+        : tipoGuardado === "archivo" ? (texto?.trim() || "📎 Archivo adjunto")
+        : contenidoFinal;
+
       await supabase.from("conversaciones").update({
-        ultimo_mensaje: contenidoFinal === "[audio]" ? "🎤 Nota de voz" : contenidoFinal,
+        ultimo_mensaje: resumenUltimo,
         ultimo_mensaje_en: new Date().toISOString()
       }).eq("id", conversacionId);
     }
@@ -416,9 +442,6 @@ export async function POST(req: Request) {
       }
     }
 
-    // `voiceNote` = sabemos con certeza que salió como nota de voz nativa
-    // (envío directo a Meta o PTT de Evolution). Con el fallback de Chatwoot no
-    // podemos saberlo: depende de la versión instalada (>= 4.15.0).
     const voiceNote = envioAudioVia === "meta_direct" || (envioAudioVia === "evolution" && evolutionIsPtt);
 
     return NextResponse.json({ success: true, voiceNote, via: envioAudioVia, cuenta: cuentaDestino, audioReason: voiceNote ? null : audioReason });

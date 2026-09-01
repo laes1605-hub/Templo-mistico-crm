@@ -416,14 +416,22 @@ async function buscarConversacionPorCliente(clienteId: string): Promise<ConvExis
   return personal || rows[0];
 }
 
+let cacheMapaConversaciones: { expira: number; mapa: Map<string, ConvExistente> } | null = null;
+
 /**
- * Mapa de TODAS las conversaciones conocidas por id de Chatwoot en UNA sola
- * consulta. El sondeo rápido lo usa para decidir qué chats cambiaron sin
- * preguntar por cada conversación por separado.
+ * Mapa de conversaciones conocidas por id de Chatwoot.
+ * En modo rápido limita a las más recientes y cachea en memoria 10s
+ * para que múltiples pestañas del dashboard no multipliquen el Egress.
  */
-async function mapaDeConversaciones(): Promise<Map<string, ConvExistente>> {
+async function mapaDeConversaciones(rapido = false): Promise<Map<string, ConvExistente>> {
+  const ahora = Date.now();
+  if (cacheMapaConversaciones && cacheMapaConversaciones.expira > ahora) {
+    return cacheMapaConversaciones.mapa;
+  }
+
+  const limit = rapido ? 150 : 800;
   const rows = await fetchConversacionesSb(
-    `/conversaciones?select=${SELECT_CONV}&order=ultimo_mensaje_en.desc.nullslast&limit=2000`
+    `/conversaciones?select=${SELECT_CONV}&order=ultimo_mensaje_en.desc.nullslast&limit=${limit}`
   );
   const mapa = new Map<string, ConvExistente>();
   if (rows) {
@@ -431,6 +439,7 @@ async function mapaDeConversaciones(): Promise<Map<string, ConvExistente>> {
       for (const id of idsChatwootDe(row)) mapa.set(id, row);
     }
   }
+  cacheMapaConversaciones = { expira: ahora + 10_000, mapa };
   return mapa;
 }
 
@@ -669,11 +678,13 @@ async function sincronizarMensajes(
   async function traerExistentesLigero(filtro: string, sufijo = ""): Promise<MensajeExistente[]> {
     const [ligeros, urls, pesados] = await Promise.all([
       sbFetch(`/mensajes?${filtro}&select=${SEL_MSG_LIGERO}${sufijo}`),
-      sbFetch(`/mensajes?${filtro}&url_archivo=not.is.null&url_archivo=not.like.data:*&select=id,url_archivo${sufijo}`),
+      sbFetch(`/mensajes?${filtro}&url_archivo=not.like.data:*&select=id,url_archivo${sufijo}`),
       sbFetch(`/mensajes?${filtro}&url_archivo=like.data:*&select=id${sufijo}`),
     ]);
     const mapaUrl = new Map<string, string>();
-    for (const r of Array.isArray(urls.json) ? urls.json : []) mapaUrl.set(String(r.id), r.url_archivo);
+    for (const r of Array.isArray(urls.json) ? urls.json : []) {
+      if (r?.id && r?.url_archivo) mapaUrl.set(String(r.id), r.url_archivo);
+    }
     const conBase64 = new Set<string>(
       (Array.isArray(pesados.json) ? pesados.json : []).map((r: any) => String(r.id))
     );
@@ -726,9 +737,10 @@ async function sincronizarMensajes(
   /** Completa URL, id y, sobre todo, el pie de foto que antes quedó como [imagen]. */
   async function actualizarExistente(existente: MensajeExistente, msg: MensajeMapeado, vincularId: boolean) {
     const seVincula = Boolean(vincularId && !existente.chatwoot_message_id);
+    const tieneUrlExistente = Boolean(existente.url_archivo && existente.url_archivo !== "data:archivo-omitido");
     const cambios: Record<string, any> = {
       ...(seVincula ? { chatwoot_message_id: msg.chatwoot_message_id } : {}),
-      ...(msg.url_archivo && !existente.url_archivo ? { url_archivo: msg.url_archivo } : {}),
+      ...(msg.url_archivo && !tieneUrlExistente ? { url_archivo: msg.url_archivo } : {}),
       ...(debeActualizarContenido(existente, msg) ? { contenido: msg.contenido } : {}),
     };
     if (Object.keys(cambios).length === 0) return { seVincula: false, actualizado: false };
@@ -1107,7 +1119,7 @@ export async function sincronizarTodo(opciones: OpcionesSync = {}): Promise<Resu
     // ------------------------------------------------------------------
     // El mapa de Supabase (1 consulta) decide qué chats tienen novedades en
     // CUALQUIER modo sondeo; en `completa` se repara todo igualmente.
-    const mapaSb = await mapaDeConversaciones();
+    const mapaSb = await mapaDeConversaciones(Boolean(opciones.rapido));
     let aProcesar: Array<{ convCw: any; existente: ConvExistente | null }> = [];
     for (const convCw of conversacionesCw) {
       const existente = mapaSb.get(String(convCw.id)) || null;

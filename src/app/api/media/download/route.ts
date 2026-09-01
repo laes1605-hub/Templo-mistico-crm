@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 
-const MAX_BYTES = 25 * 1024 * 1024;
+const MAX_BYTES = 50 * 1024 * 1024; // hasta 50 MB
 
 function isPrivateHostname(hostname: string): boolean {
   const h = hostname.toLowerCase().replace(/^\[|\]$/g, "");
@@ -15,7 +15,7 @@ function isPrivateHostname(hostname: string): boolean {
 }
 
 function extraHeadersFor(target: URL): Record<string, string> {
-  const headers: Record<string, string> = { Accept: "image/*,application/octet-stream;q=0.9,*/*;q=0.8" };
+  const headers: Record<string, string> = { Accept: "*/*" };
   const addIfSameOrigin = (rawBase: string | undefined, header: string, value: string) => {
     if (!rawBase || !value) return;
     try {
@@ -36,27 +36,28 @@ function filenameFrom(url: URL, contentType: string, contentDisposition: string 
     } catch {}
   }
   const last = decodeURIComponent(url.pathname.split("/").pop() || "");
-  if (/\.(jpe?g|png|gif|webp|bmp|heic|heif)$/i.test(last)) return last;
-  const ext = (contentType.split(";")[0].split("/")[1] || "jpg").replace("jpeg", "jpg");
-  return `imagen-cliente.${ext}`;
+  if (/\.([A-Za-z0-9]{2,5})$/i.test(last)) return last;
+  const rawSub = contentType.split(";")[0].split("/")[1] || "bin";
+  const ext = rawSub.replace("jpeg", "jpg");
+  return `adjunto.${ext}`;
 }
 
 export async function GET(req: Request) {
   try {
     const raw = new URL(req.url).searchParams.get("url") || "";
-    if (!raw) return NextResponse.json({ error: "Falta la URL de la imagen." }, { status: 400 });
+    if (!raw) return NextResponse.json({ error: "Falta la URL del archivo." }, { status: 400 });
     if (raw.startsWith("data:")) {
-      return NextResponse.json({ error: "Las imágenes incrustadas se descargan en el navegador." }, { status: 400 });
+      return NextResponse.json({ error: "Los archivos incrustados se procesan en el navegador." }, { status: 400 });
     }
 
     let target: URL;
     try {
       target = new URL(raw);
     } catch {
-      return NextResponse.json({ error: "URL de imagen inválida." }, { status: 400 });
+      return NextResponse.json({ error: "URL de archivo inválida." }, { status: 400 });
     }
     if (target.protocol !== "http:" && target.protocol !== "https:") {
-      return NextResponse.json({ error: "Solo se pueden descargar imágenes http(s)." }, { status: 400 });
+      return NextResponse.json({ error: "Solo se pueden descargar archivos http(s)." }, { status: 400 });
     }
     if (isPrivateHostname(target.hostname)) {
       return NextResponse.json({ error: "URL no permitida." }, { status: 400 });
@@ -69,37 +70,39 @@ export async function GET(req: Request) {
     });
     if (!upstream.ok) {
       return NextResponse.json(
-        { error: upstream.status === 404 ? "La imagen ya no está disponible." : `No se pudo obtener la imagen (${upstream.status}).` },
+        { error: upstream.status === 404 ? "El archivo ya no está disponible." : `No se pudo obtener el archivo (${upstream.status}).` },
         { status: upstream.status === 404 ? 404 : 502 }
       );
     }
 
     const contentLength = Number(upstream.headers.get("content-length") || 0);
     if (contentLength > MAX_BYTES) {
-      return NextResponse.json({ error: "La imagen es demasiado grande." }, { status: 413 });
+      return NextResponse.json({ error: "El archivo es demasiado grande." }, { status: 413 });
     }
 
-    const contentType = (upstream.headers.get("content-type") || "application/octet-stream").split(";")[0];
-    if (contentType.includes("text/html") || contentType.includes("text/plain")) {
-      return NextResponse.json({ error: "La imagen ya no está disponible." }, { status: 410 });
+    const contentType = (upstream.headers.get("content-type") || "application/octet-stream").split(";")[0].trim().toLowerCase();
+    if (contentType.includes("text/html")) {
+      return NextResponse.json({ error: "El archivo ya no está disponible." }, { status: 410 });
     }
 
     const bytes = new Uint8Array(await upstream.arrayBuffer());
-    if (!bytes.length) return NextResponse.json({ error: "La imagen está vacía." }, { status: 502 });
-    if (bytes.length > MAX_BYTES) return NextResponse.json({ error: "La imagen es demasiado grande." }, { status: 413 });
+    if (!bytes.length) return NextResponse.json({ error: "El archivo está vacío." }, { status: 502 });
+    if (bytes.length > MAX_BYTES) return NextResponse.json({ error: "El archivo es demasiado grande." }, { status: 413 });
 
     const filename = filenameFrom(target, contentType, upstream.headers.get("content-disposition"));
     return new NextResponse(bytes, {
       status: 200,
       headers: {
-        "Content-Type": contentType.startsWith("image/") ? contentType : "application/octet-stream",
-        "Content-Disposition": `attachment; filename="${filename}"`,
-        "Cache-Control": "private, no-store",
+        "Content-Type": contentType || "application/octet-stream",
+        "Content-Disposition": `inline; filename="${filename}"`,
+        "Cache-Control": "public, max-age=86400",
         "Content-Length": String(bytes.length),
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
       },
     });
   } catch (error: any) {
     console.error("Error descargando media:", error);
-    return NextResponse.json({ error: error.message || "No se pudo descargar la imagen." }, { status: 500 });
+    return NextResponse.json({ error: error.message || "No se pudo descargar el archivo." }, { status: 500 });
   }
 }

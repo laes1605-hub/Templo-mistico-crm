@@ -4,6 +4,7 @@ import { remuxWebmToOgg } from "../../../lib/webm-to-ogg";
 import { sendVoiceNoteViaMeta, obtenerCredencialesMeta } from "../../../lib/meta-voice-note";
 import { sendEvolutionVoiceNote } from "../../../lib/evolution-audio";
 import { buscarOCrearConversacionChatwoot } from "../../../lib/chatwoot";
+import { esDataUri, dataUriAStorage } from "../../../lib/media-storage";
 
 const cleanBase64 = (value: unknown) => {
   if (!value) return null;
@@ -356,13 +357,23 @@ export async function POST(req: Request) {
 
     if (conversacionId) {
       const contenidoFinal = texto?.trim() || (pureBase64 ? `[${tipoGuardado}]` : "");
+      // AHORRO DE EGRESS: el adjunto se sube a Supabase Storage y en la tabla
+      // queda solo la URL. Si la subida falla, se conserva el base64 para no
+      // perder el archivo (plan B).
+      let urlArchivoFinal: string | null = storedFileBase64;
+      if (esDataUri(storedFileBase64)) {
+        urlArchivoFinal = await dataUriAStorage(
+          storedFileBase64,
+          tipoGuardado === "audio" ? "nota_de_voz" : safeFileName(fileName, mime)
+        );
+      }
       const { error: messageError } = await supabase.from("mensajes").insert([
         {
           conversacion_id: conversacionId,
           tipo: "enviado",
           contenido: contenidoFinal,
           tipo_contenido: tipoGuardado,
-          url_archivo: storedFileBase64,
+          url_archivo: urlArchivoFinal,
           creado_en: new Date().toISOString()
         }
       ]);

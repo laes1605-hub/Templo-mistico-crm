@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { X, Moon, Sun, MonitorSmartphone, Bell, BellOff, Check, Palette, Mic, Save } from "lucide-react";
+import { X, Moon, Sun, MonitorSmartphone, Bell, BellOff, Check, Palette, Mic, Save, HardDriveDownload } from "lucide-react";
 import { supabase } from "../lib/supabase";
 import {
   ACCENTS, ThemeAccent, ThemeMode,
@@ -28,6 +28,10 @@ export default function AjustesPanel({ onClose }: { onClose: () => void }) {
   const [metaGuardando, setMetaGuardando] = useState(false);
   const [metaMsg, setMetaMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [metaVerToken, setMetaVerToken] = useState(false);
+  // Migración de adjuntos base64 → Supabase Storage (ahorro de Egress).
+  const [migrando, setMigrando] = useState(false);
+  const [migraMsg, setMigraMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [migraPendientes, setMigraPendientes] = useState<number | null>(null);
 
   useEffect(() => {
     setMode(getSavedMode());
@@ -48,8 +52,51 @@ export default function AjustesPanel({ onClose }: { onClose: () => void }) {
       } catch {
         /* config_general no disponible: se puede escribir igual al guardar */
       }
+      try {
+        const res = await fetch("/api/admin/migrar-media-storage");
+        const json = await res.json().catch(() => null);
+        if (res.ok && json && typeof json.pendientes === "number") setMigraPendientes(json.pendientes);
+      } catch {
+        /* endpoint no disponible (p. ej. build estática): se oculta la sección */
+      }
     })();
   }, []);
+
+  // Migra por lotes los audios/imágenes guardados como base64 en la base de
+  // datos hacia Supabase Storage. Repite hasta terminar o no avanzar.
+  async function migrarAdjuntos() {
+    setMigrando(true);
+    setMigraMsg(null);
+    try {
+      let pendientesPrevios = Infinity;
+      for (let ronda = 0; ronda < 50; ronda++) {
+        const res = await fetch("/api/admin/migrar-media-storage", { method: "POST" });
+        const json = await res.json().catch(() => null);
+        if (!res.ok || !json) {
+          throw new Error(json?.error || "El servidor no respondió a la migración.");
+        }
+        const pendientes = typeof json.pendientes === "number" ? json.pendientes : 0;
+        setMigraPendientes(pendientes);
+        if (pendientes <= 0) {
+          setMigraMsg({ ok: true, text: "¡Listo! Todos los adjuntos ya están en Storage." });
+          return;
+        }
+        if (pendientes >= pendientesPrevios) {
+          setMigraMsg({
+            ok: false,
+            text: `Quedan ${pendientes} adjuntos sin migrar (revisá que la migración SQL del bucket esté aplicada).`,
+          });
+          return;
+        }
+        pendientesPrevios = pendientes;
+        setMigraMsg({ ok: true, text: `Migrando… quedan ${pendientes} adjuntos.` });
+      }
+    } catch (e: any) {
+      setMigraMsg({ ok: false, text: e?.message || "No se pudo migrar. Intentá de nuevo." });
+    } finally {
+      setMigrando(false);
+    }
+  }
 
   async function guardarCredencialesMeta() {
     setMetaMsg(null);
@@ -273,6 +320,38 @@ export default function AjustesPanel({ onClose }: { onClose: () => void }) {
             </p>
           )}
         </div>
+
+        {/* MIGRACIÓN DE ADJUNTOS A STORAGE (ahorro de datos de Supabase) */}
+        {migraPendientes !== null && (migraPendientes > 0 || migraMsg) && (
+          <>
+            <p className="text-[11px] uppercase tracking-wider text-gray-500 font-bold mb-2 mt-5">
+              Ahorro de datos · Supabase
+            </p>
+            <div className="space-y-2">
+              <button
+                type="button"
+                onClick={migrarAdjuntos}
+                disabled={migrando || migraPendientes === 0}
+                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold transition-colors"
+              >
+                <HardDriveDownload className="w-4 h-4" />
+                {migrando
+                  ? "Migrando adjuntos…"
+                  : migraPendientes === 0
+                    ? "Adjuntos migrados ✓"
+                    : `Migrar ${migraPendientes} adjuntos a Storage`}
+              </button>
+              <p className="text-[10px] text-gray-500 leading-relaxed">
+                Mueve las notas de voz e imágenes antiguas guardadas dentro de la base de datos hacia{" "}
+                <strong>Supabase Storage</strong>. Los chats siguen viéndose igual, pero la app consume{" "}
+                muchísimos menos datos (Egress). Solo hace falta hacerlo una vez.
+              </p>
+              {migraMsg && (
+                <p className={`text-[11px] ${migraMsg.ok ? "text-emerald-400" : "text-red-400"}`}>{migraMsg.text}</p>
+              )}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

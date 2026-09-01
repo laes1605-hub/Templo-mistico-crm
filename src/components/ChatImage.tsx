@@ -24,6 +24,13 @@ export default function ChatImage({
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [imgSrc, setImgSrc] = useState(src);
+  const [fallbackTried, setFallbackTried] = useState(false);
+
+  useEffect(() => {
+    setImgSrc(src);
+    setFallbackTried(false);
+  }, [src]);
 
   const name = filename || guessImageFilename(src, label ? `foto-${label}` : "imagen-cliente");
 
@@ -35,6 +42,13 @@ export default function ChatImage({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [open]);
+
+  const handleImageError = () => {
+    if (!fallbackTried && src && !src.startsWith("data:") && !src.includes("/api/media/download")) {
+      setFallbackTried(true);
+      setImgSrc(`/api/media/download?url=${encodeURIComponent(src)}`);
+    }
+  };
 
   const handleDownload = async (e?: React.MouseEvent) => {
     e?.stopPropagation();
@@ -72,7 +86,13 @@ export default function ChatImage({
         }}
         aria-label={label ? `Ver foto ${label}` : "Ver imagen"}
       >
-        <img src={src} alt={alt || label || "Imagen del cliente"} className={imgClass} />
+        <img
+          src={imgSrc}
+          alt={alt || label || "Imagen del cliente"}
+          onError={handleImageError}
+          className={imgClass}
+          loading="lazy"
+        />
         {label && variant === "thumb" && (
           <span className="absolute inset-x-0 bottom-0 bg-black/70 text-[10px] text-white font-semibold py-1 text-center">
             {label}
@@ -116,8 +136,9 @@ export default function ChatImage({
           </div>
           <div className="flex-1 flex items-center justify-center p-4 overflow-auto" onClick={() => setOpen(false)}>
             <img
-              src={src}
+              src={imgSrc}
               alt={alt || label || "Imagen del cliente"}
+              onError={handleImageError}
               className="max-w-full max-h-[80vh] object-contain rounded-lg shadow-2xl"
               onClick={(e) => e.stopPropagation()}
             />

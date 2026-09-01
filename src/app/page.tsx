@@ -5,9 +5,11 @@ import { flushSync } from "react-dom";
 import { supabase } from "../lib/supabase";
 import VoiceNotePlayer from "../components/VoiceNotePlayer";
 import ChatImage from "../components/ChatImage";
+import ChatVideo from "../components/ChatVideo";
+import ChatFile from "../components/ChatFile";
 import CerebroPanel from "../components/CerebroPanel";
 import AjustesPanel from "../components/AjustesPanel";
-import { downloadMany, guessImageFilename, isImageMessage, saveAudioFiles } from "../lib/download-media";
+import { downloadMany, guessImageFilename, guessFilename, isImageMessage, isAudioMessage, isVideoMessage, isFileMessage, saveAudioFiles } from "../lib/download-media";
 import { audioMensajeToArchivo } from "../lib/audio-download";
 import {
   type RespuestaRapida,
@@ -3420,22 +3422,55 @@ export default function CRMApp() {
                     )}
                     {mensajes.map((msg, idxMsg) => {
                       const isMe = msg.tipo === "enviado";
-                      const isAudioMsg = msg.tipo_contenido === "audio" || msg.contenido === "[audio]" || msg.contenido === "[nota_de_voz]" || (msg.url_archivo && (msg.url_archivo.startsWith("data:audio/") || /\.(ogg|opus|webm|mp3|wav|m4a|aac)($|\?)/i.test(msg.url_archivo)));
+                      const isAudioMsg = isAudioMessage(msg);
+                      const isImgMsg = isImageMessage(msg);
+                      const isVidMsg = isVideoMessage(msg);
+                      const isDocMsg = isFileMessage(msg);
+                      const slug = slugFoto(getDisplayName(clienteActual, selectedConv));
+                      const pieDeFoto = textoAdjuntoMultimedia(msg);
+
                       return (
                         <div key={msg.id} className={`flex ${isMe ? "justify-end" : "justify-start"}`}>
                           <div className={`max-w-[85%] md:max-w-[70%] rounded-2xl px-3 py-2 shadow-sm ${isMe ? "bg-purple-600 text-white rounded-br-none" : "bg-surface border border-border text-gray-200 rounded-bl-none"}`}>
                             {(() => {
                               if (isAudioMsg && msg.url_archivo) {
-                                return <VoiceNotePlayer src={msg.url_archivo} isMe={isMe} />;
+                                return (
+                                  <div className="space-y-1">
+                                    <VoiceNotePlayer src={msg.url_archivo} isMe={isMe} />
+                                    {pieDeFoto && <p className="text-sm whitespace-pre-wrap leading-relaxed">{pieDeFoto}</p>}
+                                  </div>
+                                );
                               }
-                              if (isImageMessage(msg)) {
-                                const slug = slugFoto(getDisplayName(clienteActual, selectedConv));
-                                const pieDeFoto = textoAdjuntoMultimedia(msg);
+                              if (isImgMsg && msg.url_archivo) {
                                 return (
                                   <div className="space-y-2">
                                     <ChatImage
                                       src={msg.url_archivo}
                                       filename={guessImageFilename(String(msg.url_archivo), `foto-${slug}-${isMe ? "enviada" : "cliente"}`)}
+                                    />
+                                    {pieDeFoto && <p className="text-sm whitespace-pre-wrap leading-relaxed">{pieDeFoto}</p>}
+                                  </div>
+                                );
+                              }
+                              if (isVidMsg && msg.url_archivo) {
+                                return (
+                                  <div className="space-y-2">
+                                    <ChatVideo
+                                      src={msg.url_archivo}
+                                      filename={guessFilename(String(msg.url_archivo), `video-${slug}-${isMe ? "enviado" : "cliente"}.mp4`, "video/mp4")}
+                                      isMe={isMe}
+                                    />
+                                    {pieDeFoto && <p className="text-sm whitespace-pre-wrap leading-relaxed">{pieDeFoto}</p>}
+                                  </div>
+                                );
+                              }
+                              if (msg.url_archivo && (isDocMsg || msg.tipo_contenido === "archivo" || !msg.contenido || msg.contenido.startsWith("["))) {
+                                return (
+                                  <div className="space-y-2">
+                                    <ChatFile
+                                      src={msg.url_archivo}
+                                      filename={guessFilename(String(msg.url_archivo), `archivo-${slug}`)}
+                                      isMe={isMe}
                                     />
                                     {pieDeFoto && <p className="text-sm whitespace-pre-wrap leading-relaxed">{pieDeFoto}</p>}
                                   </div>

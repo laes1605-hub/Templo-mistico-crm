@@ -669,11 +669,13 @@ async function sincronizarMensajes(
   async function traerExistentesLigero(filtro: string, sufijo = ""): Promise<MensajeExistente[]> {
     const [ligeros, urls, pesados] = await Promise.all([
       sbFetch(`/mensajes?${filtro}&select=${SEL_MSG_LIGERO}${sufijo}`),
-      sbFetch(`/mensajes?${filtro}&url_archivo=not.is.null&url_archivo=not.like.data:*&select=id,url_archivo${sufijo}`),
+      sbFetch(`/mensajes?${filtro}&url_archivo=not.like.data:*&select=id,url_archivo${sufijo}`),
       sbFetch(`/mensajes?${filtro}&url_archivo=like.data:*&select=id${sufijo}`),
     ]);
     const mapaUrl = new Map<string, string>();
-    for (const r of Array.isArray(urls.json) ? urls.json : []) mapaUrl.set(String(r.id), r.url_archivo);
+    for (const r of Array.isArray(urls.json) ? urls.json : []) {
+      if (r?.id && r?.url_archivo) mapaUrl.set(String(r.id), r.url_archivo);
+    }
     const conBase64 = new Set<string>(
       (Array.isArray(pesados.json) ? pesados.json : []).map((r: any) => String(r.id))
     );
@@ -726,9 +728,10 @@ async function sincronizarMensajes(
   /** Completa URL, id y, sobre todo, el pie de foto que antes quedó como [imagen]. */
   async function actualizarExistente(existente: MensajeExistente, msg: MensajeMapeado, vincularId: boolean) {
     const seVincula = Boolean(vincularId && !existente.chatwoot_message_id);
+    const tieneUrlExistente = Boolean(existente.url_archivo && existente.url_archivo !== "data:archivo-omitido");
     const cambios: Record<string, any> = {
       ...(seVincula ? { chatwoot_message_id: msg.chatwoot_message_id } : {}),
-      ...(msg.url_archivo && !existente.url_archivo ? { url_archivo: msg.url_archivo } : {}),
+      ...(msg.url_archivo && !tieneUrlExistente ? { url_archivo: msg.url_archivo } : {}),
       ...(debeActualizarContenido(existente, msg) ? { contenido: msg.contenido } : {}),
     };
     if (Object.keys(cambios).length === 0) return { seVincula: false, actualizado: false };

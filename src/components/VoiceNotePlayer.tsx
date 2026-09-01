@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useRef, useState } from "react";
-import { Mic, Pause, Play } from "lucide-react";
+import { Mic, Pause, Play, AlertCircle } from "lucide-react";
 
 /**
  * Reproductor de nota de voz estilo WhatsApp para el dashboard.
@@ -10,10 +10,9 @@ import { Mic, Pause, Play } from "lucide-react";
  * muestra una burbuja de nota de voz: botón circular de play/pausa, onda de
  * amplitud, tiempos y el micrófono con velocidad de reproducción (1x/1.5x/2x).
  *
- * La onda intenta decodificarse del audio real (WebAudio); si el navegador no
- * puede decodificar el contenedor (p. ej. Safari viejo con WebM), genera una
- * onda sintética determinista a partir del contenido para que SIEMPRE se vea
- * como nota de voz en laptop y celular.
+ * Soporta reproducción dual: HTML5 `<audio>` por defecto, con fallback a
+ * WebAudio `AudioBufferSourceNode` en caso de incompatibilidad de códec
+ * (por ejemplo OGG en Safari) o errores de red.
  */
 
 const BAR_COUNT = 30;
@@ -52,7 +51,6 @@ const pcmToBars = (channel: Float32Array): number[] => {
     const start = Math.floor((i / BAR_COUNT) * channel.length);
     const end = Math.max(Math.floor(((i + 1) / BAR_COUNT) * channel.length), start + 1);
     let peak = 0;
-    // Pico (no promedio): se acerca más a la onda que muestra WhatsApp.
     for (let j = start; j < end; j += 16) {
       const v = Math.abs(channel[j] || 0);
       if (v > peak) peak = v;
@@ -71,30 +69,135 @@ export default function VoiceNotePlayer({ src, isMe }: { src: string; isMe: bool
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [speed, setSpeed] = useState(1);
+  const [hasError, setHasError] = useState(false);
+
+  // WebAudio fallback refs
+  const decodedBufferRef = useRef<AudioBuffer | null>(null);
+  const webAudioCtxRef = useRef<AudioContext | null>(null);
+  const webAudioSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const webAudioStartOffsetRef = useRef<number>(0);
+  const webAudioStartTimeRef = useRef<number>(0);
+  const webAudioTimerRef = useRef<any>(null);
+  const isUsingWebAudioRef = useRef<boolean>(false);
+
+  // Detener WebAudio fallback
+  const stopWebAudio = () => {
+    if (webAudioTimerRef.current) {
+      clearInterval(webAudioTimerRef.current);
+      webAudioTimerRef.current = null;
+    }
+    if (webAudioSourceRef.current) {
+      try { webAudioSourceRef.current.stop(); } catch {}
+      try { webAudioSourceRef.current.disconnect(); } catch {}
+      webAudioSourceRef.current = null;
+    }
+    isUsingWebAudioRef.current = false;
+  };
+
+  // Reproducir vía WebAudio fallback
+  const playWebAudio = () => {
+    if (!decodedBufferRef.current) return false;
+    stopWebAudio();
+
+    try {
+      const Ctx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!Ctx) return false;
+      if (!webAudioCtxRef.current || webAudioCtxRef.current.state === "closed") {
+        webAudioCtxRef.current = new Ctx();
+      }
+      const ctx = webAudioCtxRef.current;
+      if (ctx.state === "suspended") {
+        ctx.resume().catch(() => {});
+      }
+
+      const source = ctx.createBufferSource();
+      source.buffer = decodedBufferRef.current;
+      source.playbackRate.value = speed;
+      source.connect(ctx.destination);
+
+      const offset = currentTime >= duration ? 0 : currentTime;
+      webAudioStartOffsetRef.current = offset;
+      webAudioStartTimeRef.current = ctx.currentTime;
+      webAudioSourceRef.current = source;
+      isUsingWebAudioRef.current = true;
+
+      source.onended = () => {
+        if (isUsingWebAudioRef.current) {
+          setIsPlaying(false);
+          setCurrentTime(0);
+          stopWebAudio();
+        }
+      };
+
+      source.start(0, offset);
+      setIsPlaying(true);
+      window.dispatchEvent(new CustomEvent(PLAY_EVENT, { detail: playerIdRef.current }));
+
+      webAudioTimerRef.current = setInterval(() => {
+        if (!webAudioCtxRef.current || !isUsingWebAudioRef.current) return;
+        const elapsed = (webAudioCtxRef.current.currentTime - webAudioStartTimeRef.current) * speed;
+        const current = webAudioStartOffsetRef.current + elapsed;
+        if (current >= duration) {
+          setCurrentTime(duration);
+          setIsPlaying(false);
+          stopWebAudio();
+        } else {
+          setCurrentTime(current);
+        }
+      }, 50);
+
+      return true;
+    } catch {
+      return false;
+    }
+  };
 
   // ---- Elemento de audio oculto controlado por la UI de la burbuja ----
   useEffect(() => {
+    setHasError(false);
     const audio = new Audio();
     audio.preload = "metadata";
     audio.src = src;
     audioRef.current = audio;
 
-    const onTime = () => setCurrentTime(audio.currentTime);
+    const onTime = () => {
+      if (!isUsingWebAudioRef.current) {
+        setCurrentTime(audio.currentTime);
+      }
+    };
     const onMeta = () => {
-      if (isFinite(audio.duration) && audio.duration > 0) setDuration(audio.duration);
+      if (isFinite(audio.duration) && audio.duration > 0) {
+        setDuration((prev) => (prev > 0 ? prev : audio.duration));
+      }
     };
     const onPlay = () => {
       setIsPlaying(true);
       window.dispatchEvent(new CustomEvent(PLAY_EVENT, { detail: playerIdRef.current }));
     };
-    const onPause = () => setIsPlaying(false);
+    const onPause = () => {
+      if (!isUsingWebAudioRef.current) {
+        setIsPlaying(false);
+      }
+    };
     const onEnd = () => {
       setIsPlaying(false);
       setCurrentTime(0);
       audio.currentTime = 0;
     };
+    const onError = () => {
+      // HTML5 audio falló: no marcamos error de inmediato si podemos usar WebAudio
+      if (!decodedBufferRef.current) {
+        setHasError(false);
+      }
+    };
     const stopOthers = (e: Event) => {
-      if ((e as CustomEvent).detail !== playerIdRef.current && !audio.paused) audio.pause();
+      if ((e as CustomEvent).detail !== playerIdRef.current) {
+        if (!audio.paused) audio.pause();
+        if (isUsingWebAudioRef.current) {
+          stopWebAudio();
+          setIsPlaying(false);
+        }
+      }
     };
 
     audio.addEventListener("timeupdate", onTime);
@@ -103,16 +206,19 @@ export default function VoiceNotePlayer({ src, isMe }: { src: string; isMe: bool
     audio.addEventListener("play", onPlay);
     audio.addEventListener("pause", onPause);
     audio.addEventListener("ended", onEnd);
+    audio.addEventListener("error", onError);
     window.addEventListener(PLAY_EVENT, stopOthers);
 
     return () => {
       audio.pause();
+      stopWebAudio();
       audio.removeEventListener("timeupdate", onTime);
       audio.removeEventListener("loadedmetadata", onMeta);
       audio.removeEventListener("durationchange", onMeta);
       audio.removeEventListener("play", onPlay);
       audio.removeEventListener("pause", onPause);
       audio.removeEventListener("ended", onEnd);
+      audio.removeEventListener("error", onError);
       window.removeEventListener(PLAY_EVENT, stopOthers);
       audioRef.current = null;
     };
@@ -120,6 +226,9 @@ export default function VoiceNotePlayer({ src, isMe }: { src: string; isMe: bool
 
   useEffect(() => {
     if (audioRef.current) audioRef.current.playbackRate = speed;
+    if (isUsingWebAudioRef.current && webAudioSourceRef.current) {
+      try { webAudioSourceRef.current.playbackRate.value = speed; } catch {}
+    }
   }, [speed]);
 
   // ---- Onda real decodificada del audio (fallback: sintética) ----
@@ -127,34 +236,46 @@ export default function VoiceNotePlayer({ src, isMe }: { src: string; isMe: bool
     let cancelled = false;
 
     const decode = async () => {
-      const res = await fetch(src); // data URIs soportadas por fetch en todos los browsers modernos
-      const arrayBuffer = await res.arrayBuffer();
-      if (!arrayBuffer.byteLength) throw new Error("audio vacío");
+      let arrayBuffer: ArrayBuffer | null = null;
+      try {
+        const res = await fetch(src);
+        if (res.ok) arrayBuffer = await res.arrayBuffer();
+      } catch {
+        // CORS o red: intentar por el proxy del CRM
+      }
+
+      if (!arrayBuffer || !arrayBuffer.byteLength) {
+        if (!src.startsWith("data:")) {
+          try {
+            const proxyRes = await fetch(`/api/media/download?url=${encodeURIComponent(src)}`);
+            if (proxyRes.ok) arrayBuffer = await proxyRes.arrayBuffer();
+          } catch {}
+        }
+      }
+
+      if (!arrayBuffer || !arrayBuffer.byteLength) throw new Error("audio vacío");
 
       const OfflineCtx: any = (window as any).OfflineAudioContext || (window as any).webkitOfflineAudioContext;
       const OnlineCtx: any = window.AudioContext || (window as any).webkitAudioContext;
       let ctx: any;
       if (OfflineCtx) {
-        // Preferido: no consume un contexto de audio real (los navegadores
-        // limitan cuántos hay abiertos) y decodifica sin gesto del usuario.
         ctx = new OfflineCtx(1, 1, 48000);
       } else if (OnlineCtx) {
         ctx = new OnlineCtx();
       } else {
         throw new Error("WebAudio no disponible");
       }
-      // Firma con callbacks: compatible con Safari antiguo y Chrome moderno.
+
       const audioBuffer: AudioBuffer = await new Promise((resolve, reject) => {
         ctx.decodeAudioData(arrayBuffer, resolve, reject);
       });
       if (typeof ctx.close === "function") ctx.close().catch(() => {});
       if (cancelled) return;
 
+      decodedBufferRef.current = audioBuffer;
       setBars(pcmToBars(audioBuffer.getChannelData(0)));
-      // Los WebM grabados con MediaRecorder reportan duración Infinity en
-      // <audio>; la duración real decodificada es el respaldo exacto.
       if (isFinite(audioBuffer.duration) && audioBuffer.duration > 0) {
-        setDuration((prev) => (prev > 0 && isFinite(prev) ? prev : audioBuffer.duration));
+        setDuration(audioBuffer.duration);
       }
     };
 
@@ -168,13 +289,33 @@ export default function VoiceNotePlayer({ src, isMe }: { src: string; isMe: bool
   }, [src]);
 
   const togglePlayback = () => {
-    const audio = audioRef.current;
-    if (!audio) return;
-    if (audio.paused) {
-      audio.play().catch(() => setIsPlaying(false));
-    } else {
-      audio.pause();
+    if (isPlaying) {
+      if (isUsingWebAudioRef.current) {
+        stopWebAudio();
+        setIsPlaying(false);
+      } else if (audioRef.current) {
+        audioRef.current.pause();
+        setIsPlaying(false);
+      }
+      return;
     }
+
+    const audio = audioRef.current;
+    if (!audio) {
+      playWebAudio();
+      return;
+    }
+
+    audio.play().then(() => {
+      setIsPlaying(true);
+    }).catch(() => {
+      // HTML5 audio falló (p. ej. OGG en Safari o códec no soportado): probar WebAudio
+      const ok = playWebAudio();
+      if (!ok) {
+        setIsPlaying(false);
+        setHasError(true);
+      }
+    });
   };
 
   const cycleSpeed = () => {

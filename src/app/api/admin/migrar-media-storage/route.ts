@@ -11,6 +11,10 @@ export const maxDuration = 60;
  * URL pública. Con esto los mensajes viejos también dejan de inflar el Egress
  * (refetch del chat, realtime, sincronización).
  *
+ * Además, infiere y asegura que `tipo_contenido` quede correctamente guardado
+ * ("audio", "imagen", "video", "archivo") para que la app sepa siempre cómo
+ * renderizar y reproducir el archivo.
+ *
  * GET  → informa cuántos mensajes quedan pendientes de migrar.
  * POST → migra un lote (con presupuesto de tiempo). Llamar repetidamente
  *        hasta que `pendientes` llegue a 0. El botón "Migrar adjuntos" de
@@ -67,17 +71,39 @@ export async function POST() {
           fallidosIds.add(String(fila.id));
           continue;
         }
-        const nombre = fila.tipo_contenido === "audio" ? "nota_de_voz" : String(fila.tipo_contenido || "adjunto");
-        const url = await subirMediaAStorage(parseado.bytes, parseado.mime, nombre);
+
+        // Inferir tipo de contenido real desde el MIME del archivo
+        let tipo = String(fila.tipo_contenido || "").toLowerCase();
+        if (!tipo || tipo === "texto") {
+          if (parseado.mime.startsWith("audio/")) tipo = "audio";
+          else if (parseado.mime.startsWith("image/")) tipo = "imagen";
+          else if (parseado.mime.startsWith("video/")) tipo = "video";
+          else tipo = "archivo";
+        }
+
+        const nombreBase =
+          tipo === "audio" ? "nota_de_voz"
+          : tipo === "imagen" ? "imagen"
+          : tipo === "video" ? "video"
+          : "adjunto";
+
+        const url = await subirMediaAStorage(parseado.bytes, parseado.mime, nombreBase);
         if (!url) {
           fallidos += 1;
           fallidosIds.add(String(fila.id));
           continue;
         }
+
+        const updateData: Record<string, any> = { url_archivo: url };
+        if (tipo && tipo !== fila.tipo_contenido) {
+          updateData.tipo_contenido = tipo;
+        }
+
         const { error: errorUpdate } = await supabaseAdmin
           .from("mensajes")
-          .update({ url_archivo: url })
+          .update(updateData)
           .eq("id", fila.id);
+
         if (errorUpdate) {
           fallidos += 1;
           fallidosIds.add(String(fila.id));
@@ -101,8 +127,6 @@ export async function POST() {
     ok: true,
     migrados,
     fallidos,
-    // Los fallidos siguen contando como pendientes; el cliente debe parar
-    // cuando pendientes <= fallidos acumulados o cuando no haya avance.
     pendientes,
   });
 }

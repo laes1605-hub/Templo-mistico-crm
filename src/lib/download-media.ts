@@ -12,6 +12,32 @@ const MIME_EXT: Record<string, string> = {
   "image/heic": "heic",
   "image/heif": "heif",
   "image/svg+xml": "svg",
+  "audio/ogg": "ogg",
+  "audio/opus": "ogg",
+  "audio/mpeg": "mp3",
+  "audio/mp3": "mp3",
+  "audio/mp4": "m4a",
+  "audio/x-m4a": "m4a",
+  "audio/aac": "aac",
+  "audio/wav": "wav",
+  "audio/webm": "webm",
+  "audio/amr": "amr",
+  "audio/flac": "flac",
+  "video/mp4": "mp4",
+  "video/webm": "webm",
+  "video/quicktime": "mov",
+  "video/x-msvideo": "avi",
+  "video/x-matroska": "mkv",
+  "video/3gpp": "3gp",
+  "application/pdf": "pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+  "application/msword": "doc",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+  "application/vnd.ms-excel": "xls",
+  "application/zip": "zip",
+  "application/x-rar-compressed": "rar",
+  "text/plain": "txt",
+  "text/csv": "csv",
 };
 
 function isNative(): boolean {
@@ -24,7 +50,7 @@ function isNative(): boolean {
 
 export function mimeToExt(mime: string): string {
   const clean = (mime || "").split(";")[0].trim().toLowerCase();
-  return MIME_EXT[clean] || (clean.startsWith("image/") ? clean.slice(6) : "jpg");
+  return MIME_EXT[clean] || (clean.startsWith("image/") ? clean.slice(6) : clean.startsWith("audio/") ? clean.slice(6) : clean.startsWith("video/") ? clean.slice(6) : "bin");
 }
 
 export function guessImageFilename(url: string, fallback = "imagen-cliente"): string {
@@ -36,25 +62,83 @@ export function guessImageFilename(url: string, fallback = "imagen-cliente"): st
   try {
     const path = new URL(url).pathname;
     const last = decodeURIComponent(path.split("/").pop() || "");
-    if (/\.(jpe?g|png|gif|webp|bmp|heic|heif)$/i.test(last)) return last;
+    if (/\.([A-Za-z0-9]{2,5})$/i.test(last)) return last;
   } catch {}
   return `${base}.jpg`;
 }
 
+export function guessFilename(url: string, fallback = "archivo-adjunto", mimeType?: string): string {
+  const base = fallback.replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "") || "archivo-adjunto";
+  if (url.startsWith("data:")) {
+    const mime = mimeType || url.slice(5, url.indexOf(";")) || "application/octet-stream";
+    return `${base}.${mimeToExt(mime)}`;
+  }
+  try {
+    const path = new URL(url).pathname;
+    const last = decodeURIComponent(path.split("/").pop() || "");
+    if (/\.([A-Za-z0-9]{2,5})$/i.test(last)) return last;
+  } catch {}
+  if (mimeType) {
+    return `${base}.${mimeToExt(mimeType)}`;
+  }
+  return base;
+}
+
+/** ¿Es un mensaje de audio / nota de voz? */
+export function isAudioMessage(msg: any): boolean {
+  if (!msg?.url_archivo) return false;
+  const url = String(msg.url_archivo).toLowerCase();
+  const tipo = String(msg.tipo_contenido || "").toLowerCase();
+  const contenido = String(msg.contenido || "").toLowerCase();
+  if (tipo === "audio" || tipo === "voice" || tipo === "ptt") return true;
+  if (url.startsWith("data:audio/")) return true;
+  if (/\.(ogg|opus|webm|mp3|wav|m4a|aac|amr|flac|oga)($|\?|#)/i.test(url)) return true;
+  if (contenido === "[audio]" || contenido === "[nota_de_voz]" || contenido.includes("nota_de_voz") || contenido.includes("nota de voz") || contenido.includes("🎤")) return true;
+  if (url.includes("nota_de_voz") || url.includes("voice_note") || url.includes("/audio-")) return true;
+  return false;
+}
+
+/** ¿Es un mensaje de imagen? */
 export function isImageMessage(msg: any): boolean {
   if (!msg?.url_archivo) return false;
-  const url = String(msg.url_archivo);
+  const url = String(msg.url_archivo).toLowerCase();
   const tipo = String(msg.tipo_contenido || "").toLowerCase();
-  if (tipo === "imagen" || tipo === "sticker" || tipo === "image") return true;
+  const contenido = String(msg.contenido || "").toLowerCase();
+  if (isAudioMessage(msg)) return false;
+  if (tipo === "imagen" || tipo === "sticker" || tipo === "image" || tipo === "photo") return true;
   if (url.startsWith("data:image/")) return true;
-  if (/\.(jpe?g|png|gif|webp|bmp|heic|heif)($|\?)/i.test(url)) return true;
+  if (/\.(jpe?g|png|gif|webp|bmp|heic|heif|svg)($|\?|#)/i.test(url)) return true;
+  if (contenido === "[imagen]" || contenido === "[image]" || contenido === "[sticker]" || contenido.startsWith("📷")) return true;
+  if (url.includes("/imagen") || url.includes("-imagen.") || url.includes("-foto.")) return true;
   return false;
+}
+
+/** ¿Es un mensaje de video? */
+export function isVideoMessage(msg: any): boolean {
+  if (!msg?.url_archivo) return false;
+  const url = String(msg.url_archivo).toLowerCase();
+  const tipo = String(msg.tipo_contenido || "").toLowerCase();
+  const contenido = String(msg.contenido || "").toLowerCase();
+  if (isAudioMessage(msg) || isImageMessage(msg)) return false;
+  if (tipo === "video") return true;
+  if (url.startsWith("data:video/")) return true;
+  if (/\.(mp4|webm|mov|avi|mkv|3gp|m4v|ogv)($|\?|#)/i.test(url)) return true;
+  if (contenido === "[video]" || contenido.startsWith("🎥") || contenido.startsWith("🎬")) return true;
+  if (url.includes("/video-") || url.includes("-video.")) return true;
+  return false;
+}
+
+/** ¿Es un mensaje de documento / archivo adjunto (PDF, Word, Excel, ZIP, etc.)? */
+export function isFileMessage(msg: any): boolean {
+  if (!msg?.url_archivo) return false;
+  if (isAudioMessage(msg) || isImageMessage(msg) || isVideoMessage(msg)) return false;
+  return true;
 }
 
 async function blobFromDataUri(url: string): Promise<Blob> {
   const res = await fetch(url);
   const blob = await res.blob();
-  if (!blob.size) throw new Error("La imagen está vacía.");
+  if (!blob.size) throw new Error("El archivo está vacío.");
   return blob;
 }
 
@@ -62,21 +146,20 @@ async function blobFromProxy(url: string): Promise<Blob> {
   const res = await fetch(`/api/media/download?url=${encodeURIComponent(url)}`);
   if (!res.ok) {
     const detail = await res.json().catch(() => ({}));
-    throw new Error(detail?.error || `No se pudo descargar la imagen (${res.status}).`);
+    throw new Error(detail?.error || `No se pudo descargar el archivo (${res.status}).`);
   }
   const blob = await res.blob();
-  if (!blob.size) throw new Error("La imagen está vacía.");
-  if (blob.size > MAX_BYTES) throw new Error("La imagen es demasiado grande para descargarla.");
+  if (!blob.size) throw new Error("El archivo está vacío.");
+  if (blob.size > MAX_BYTES) throw new Error("El archivo es demasiado grande para descargarlo.");
   return blob;
 }
 
 /**
  * Resuelve un archivo multimedia del chat (data URI o URL remota) a Blob.
- * Exportado también para los audios: las notas de voz se guardan/downloadean
- * con el mismo camino (fetch directo → proxy /api/media/download).
+ * Exportado también para audios, videos y documentos.
  */
 export async function resolveMediaBlob(url: string): Promise<Blob> {
-  if (!url) throw new Error("No hay imagen para descargar.");
+  if (!url) throw new Error("No hay archivo para descargar.");
   if (url.startsWith("data:")) return blobFromDataUri(url);
 
   try {
@@ -103,15 +186,6 @@ function triggerAnchorDownload(blob: Blob, filename: string) {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(objectUrl), 4000);
 }
-
-// ---------------------------------------------------------------------------
-// Guardado real en el teléfono (APK / Capacitor)
-// ---------------------------------------------------------------------------
-// El WebView de Android NO descarga con <a download> ni soporta Web Share con
-// archivos; por eso antes "no pasaba nada" al tocar Descargar. Ahora se
-// escribe en Documents › Descargas con @capacitor/filesystem y se abre la
-// hoja de compartir nativa (@capacitor/share) para mover el archivo a
-// Galería, Archivos, WhatsApp, etc.
 
 function base64DeBytes(u8: Uint8Array): string {
   let bin = "";
@@ -146,7 +220,6 @@ async function guardarNativoCapacitor(files: File[], titulo: string): Promise<bo
     try {
       await Share.share({ files: uris, title: titulo });
     } catch (e: any) {
-      // El usuario cerró la hoja de compartir: los archivos siguen guardados.
       console.warn("Hoja de compartir cerrada:", e);
     }
     alert(
@@ -159,18 +232,11 @@ async function guardarNativoCapacitor(files: File[], titulo: string): Promise<bo
   }
 }
 
-/**
- * Reparte los archivos hacia el medio correcto según la plataforma:
- *  1. APK (Android): Capacitor Filesystem + Share (guardado real en el teléfono).
- *  2. Si Web Share con archivos está disponible: hoja de compartir.
- *  3. Navegador normal: descarga por ancla (archivo por archivo).
- */
 async function distribuirArchivos(files: File[], titulo: string): Promise<void> {
   if (files.length === 0) return;
 
   if (isNative()) {
     if (await guardarNativoCapacitor(files, titulo)) return;
-    // Si Capacitor falló, se cae a Web Share / ancla de todos modos.
   }
 
   if (typeof navigator !== "undefined" && typeof navigator.canShare === "function") {
@@ -190,13 +256,9 @@ async function distribuirArchivos(files: File[], titulo: string): Promise<void> 
   }
 }
 
-/**
- * Descarga una imagen del chat (data URI o URL remota).
- * En el APK guarda en el teléfono vía hoja nativa (Ver Descargar imágenes).
- */
 export async function downloadMedia(url: string, filename: string): Promise<void> {
   const blob = await resolveMediaBlob(url);
-  const type = blob.type && blob.type.startsWith("image/") ? blob.type : "image/jpeg";
+  const type = blob.type || "application/octet-stream";
   const file = new File([blob], filename, { type });
   await distribuirArchivos([file], filename);
 }
@@ -207,7 +269,7 @@ export async function downloadMany(items: Array<{ url: string; filename: string 
   for (const item of items) {
     try {
       const blob = await resolveMediaBlob(item.url);
-      const type = blob.type && blob.type.startsWith("image/") ? blob.type : "image/jpeg";
+      const type = blob.type || "image/jpeg";
       files.push(new File([blob], item.filename, { type }));
     } catch {
       fail += 1;
@@ -215,15 +277,10 @@ export async function downloadMany(items: Array<{ url: string; filename: string 
   }
 
   if (files.length === 0) return { ok: 0, fail };
-  await distribuirArchivos(files, files.length === 1 ? files[0].name : "Fotos del cliente");
+  await distribuirArchivos(files, files.length === 1 ? files[0].name : "Archivos del cliente");
   return { ok: files.length, fail };
 }
 
-/**
- * Guarda audios (notas de voz, en OGG). En la APK guarda en el teléfono vía
- * Filesystem + hoja de compartir nativa y en el navegador descarga archivo
- * por archivo. Devuelve cuántos se guardaron.
- */
 export async function saveAudioFiles(files: File[], title = "Notas de voz"): Promise<number> {
   if (files.length === 0) return 0;
   await distribuirArchivos(files, title);

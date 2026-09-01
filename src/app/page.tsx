@@ -361,7 +361,7 @@ export default function CRMApp() {
     sincronizarConChatwoot({ silencioso: true });
 
     // Refrescos de lista con mini-debounce: una ráfaga de eventos (mensaje +
-    // resumen de conversación + cliente) produce UN solo refetch ~250 ms
+    // resumen de conversación + cliente) produce UN solo refetch ~1500 ms
     // después, no tres seguidos. El mensaje en sí no espera: lo pinta el
     // realtime de `mensajes` o el refetch directo del sondeo del chat abierto.
     let refrescoTimer: ReturnType<typeof setTimeout> | null = null;
@@ -370,11 +370,20 @@ export default function CRMApp() {
       refrescoTimer = setTimeout(() => {
         refrescoTimer = null;
         fetchConversaciones(false);
-      }, 1000);
+      }, 1500);
+    };
+
+    let clientesTimer: ReturnType<typeof setTimeout> | null = null;
+    const refrescarClientes = () => {
+      if (clientesTimer) clearTimeout(clientesTimer);
+      clientesTimer = setTimeout(() => {
+        clientesTimer = null;
+        fetchTodosClientes();
+      }, 2000);
     };
 
     const convSub = supabase.channel("r-conv").on("postgres_changes", { event: "*", schema: "public", table: "conversaciones" }, () => refrescarLista()).subscribe();
-    const cliSub = supabase.channel("r-cli").on("postgres_changes", { event: "*", schema: "public", table: "clientes" }, () => { refrescarLista(); fetchTodosClientes(); }).subscribe();
+    const cliSub = supabase.channel("r-cli").on("postgres_changes", { event: "*", schema: "public", table: "clientes" }, () => { refrescarLista(); refrescarClientes(); }).subscribe();
     const pagSub = supabase.channel("r-pag").on("postgres_changes", { event: "*", schema: "public", table: "pagos" }, fetchTodosPagos).subscribe();
     const tarSub = supabase.channel("r-tar").on("postgres_changes", { event: "*", schema: "public", table: "tareas" }, fetchTodasTareas).subscribe();
     const rrSub = supabase.channel("r-rr").on("postgres_changes", { event: "*", schema: "public", table: "respuestas_rapidas" }, () => {
@@ -383,6 +392,7 @@ export default function CRMApp() {
 
     return () => {
       if (refrescoTimer) clearTimeout(refrescoTimer);
+      if (clientesTimer) clearTimeout(clientesTimer);
       supabase.removeChannel(convSub);
       supabase.removeChannel(cliSub);
       supabase.removeChannel(pagSub);
@@ -1217,7 +1227,7 @@ export default function CRMApp() {
           const ultimoTs = actuales.length > 0
             ? Math.max(...actuales.map((m: any) => Date.parse(m.creado_en) || 0))
             : 0;
-          let q = supabase.from("mensajes").select("*").in("conversacion_id", idsConv).order("creado_en", { ascending: true });
+          let q = supabase.from("mensajes").select("id, conversacion_id, tipo, tipo_contenido, contenido, url_archivo, creado_en, chatwoot_message_id").in("conversacion_id", idsConv).order("creado_en", { ascending: true });
           if (ultimoTs > 0) q = q.gt("creado_en", new Date(ultimoTs - 5 * 60_000).toISOString());
           const { data: msgs } = await q;
           if (msgs && msgs.length > 0) {
@@ -1252,33 +1262,41 @@ export default function CRMApp() {
   useEffect(() => {
     const visible = () => typeof document === "undefined" || document.visibilityState === "visible";
     const enLinea = () => typeof navigator === "undefined" || navigator.onLine !== false;
+    let ultimaActividad = Date.now();
+    const registrarActividad = () => { ultimaActividad = Date.now(); };
+    window.addEventListener("mousemove", registrarActividad, { passive: true });
+    window.addEventListener("keydown", registrarActividad, { passive: true });
+    window.addEventListener("touchstart", registrarActividad, { passive: true });
+
     const ticBandeja = () => {
       if (!visible() || !enLinea()) return;
-      // Delta: si ningún chat cambió cuesta 1 llamada a Chatwoot + 1 mapa de
-      // Supabase, así que se puede pedir cada pocos segundos sin castigo.
+      // Si el usuario no ha interactuado en más de 2 minutos, reducimos la frecuencia
+      const inactivo = Date.now() - ultimaActividad > 120_000;
+      if (inactivo && Math.random() > 0.3) return;
       void sincronizarConChatwoot({ silencioso: true, rapido: true });
     };
     const ticChatAbierto = () => {
       if (!visible() || !enLinea()) return;
       const conv = selectedConvRef.current;
       if (!conv?.chatwoot_conversation_id) return;
+      const inactivo = Date.now() - ultimaActividad > 120_000;
+      if (inactivo && Math.random() > 0.3) return;
       void sincronizarConChatwoot({
         conversacionId: conv.chatwoot_conversation_id,
         silencioso: true,
         rapido: true,
       });
     };
-    const t1 = setInterval(ticBandeja, 5_000);
-    const t2 = setInterval(ticChatAbierto, 2_500);
+    const t1 = setInterval(ticBandeja, 15_000);
+    const t2 = setInterval(ticChatAbierto, 8_000);
     // Respaldo: una pasada completa ocasional (atrapa chats que bajaron de las
     // primeras páginas del listado y repara pies de foto/adjuntos).
     const t3 = setInterval(() => {
       if (visible() && enLinea()) void sincronizarConChatwoot({ silencioso: true });
-    }, 180_000);
+    }, 300_000);
     const onVis = () => {
       if (!visible()) return;
-      // Al volver: sincronización inmediata (delta + chat) y una completa para
-      // reparar lo que pasó mientras la app estaba cerrada.
+      ultimaActividad = Date.now();
       ticBandeja();
       ticChatAbierto();
       void sincronizarConChatwoot({ silencioso: true });
@@ -1288,6 +1306,9 @@ export default function CRMApp() {
       clearInterval(t1);
       clearInterval(t2);
       clearInterval(t3);
+      window.removeEventListener("mousemove", registrarActividad);
+      window.removeEventListener("keydown", registrarActividad);
+      window.removeEventListener("touchstart", registrarActividad);
       document.removeEventListener("visibilitychange", onVis);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1777,7 +1798,7 @@ export default function CRMApp() {
     const ids = (typeof conv === "object" && conv?.all_conv_ids) ? conv.all_conv_ids : [convId];
     const { data } = await supabase
       .from("mensajes")
-      .select("*")
+      .select("id, conversacion_id, tipo, tipo_contenido, contenido, url_archivo, creado_en, chatwoot_message_id")
       .in("conversacion_id", ids)
       .order("creado_en", { ascending: true });
     if (data) setMensajes(data);

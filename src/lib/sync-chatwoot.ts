@@ -416,14 +416,22 @@ async function buscarConversacionPorCliente(clienteId: string): Promise<ConvExis
   return personal || rows[0];
 }
 
+let cacheMapaConversaciones: { expira: number; mapa: Map<string, ConvExistente> } | null = null;
+
 /**
- * Mapa de TODAS las conversaciones conocidas por id de Chatwoot en UNA sola
- * consulta. El sondeo rápido lo usa para decidir qué chats cambiaron sin
- * preguntar por cada conversación por separado.
+ * Mapa de conversaciones conocidas por id de Chatwoot.
+ * En modo rápido limita a las más recientes y cachea en memoria 10s
+ * para que múltiples pestañas del dashboard no multipliquen el Egress.
  */
-async function mapaDeConversaciones(): Promise<Map<string, ConvExistente>> {
+async function mapaDeConversaciones(rapido = false): Promise<Map<string, ConvExistente>> {
+  const ahora = Date.now();
+  if (cacheMapaConversaciones && cacheMapaConversaciones.expira > ahora) {
+    return cacheMapaConversaciones.mapa;
+  }
+
+  const limit = rapido ? 150 : 800;
   const rows = await fetchConversacionesSb(
-    `/conversaciones?select=${SELECT_CONV}&order=ultimo_mensaje_en.desc.nullslast&limit=2000`
+    `/conversaciones?select=${SELECT_CONV}&order=ultimo_mensaje_en.desc.nullslast&limit=${limit}`
   );
   const mapa = new Map<string, ConvExistente>();
   if (rows) {
@@ -431,6 +439,7 @@ async function mapaDeConversaciones(): Promise<Map<string, ConvExistente>> {
       for (const id of idsChatwootDe(row)) mapa.set(id, row);
     }
   }
+  cacheMapaConversaciones = { expira: ahora + 10_000, mapa };
   return mapa;
 }
 
@@ -1110,7 +1119,7 @@ export async function sincronizarTodo(opciones: OpcionesSync = {}): Promise<Resu
     // ------------------------------------------------------------------
     // El mapa de Supabase (1 consulta) decide qué chats tienen novedades en
     // CUALQUIER modo sondeo; en `completa` se repara todo igualmente.
-    const mapaSb = await mapaDeConversaciones();
+    const mapaSb = await mapaDeConversaciones(Boolean(opciones.rapido));
     let aProcesar: Array<{ convCw: any; existente: ConvExistente | null }> = [];
     for (const convCw of conversacionesCw) {
       const existente = mapaSb.get(String(convCw.id)) || null;

@@ -1,95 +1,40 @@
 import { supabaseAdmin } from "./supabase-admin";
+import { BUCKET_MEDIA, type OpcionesRuta, parsearDataUri, subirBytesAStorage } from "./media-format";
 
 /**
- * Subida de adjuntos del chat (notas de voz, imágenes, videos, documentos) a
- * Supabase Storage.
+ * Subida de adjuntos al bucket `media-mensajes` desde el SERVIDOR.
  *
  * Antes estos archivos se guardaban como data-URI base64 dentro de
  * `mensajes.url_archivo`, lo que multiplicaba el Egress: cada refetch del chat
  * y cada evento realtime volvía a transmitir los megabytes del adjunto. Con
  * Storage, en la tabla queda solo una URL corta y el archivo se descarga
  * únicamente cuando se reproduce/abre (y el navegador lo cachea).
+ *
+ * Los helpers puros (parsear data-URIs, rutas del bucket, detección de MIME)
+ * viven en `media-format.ts` porque el teléfono también los necesita y allí no
+ * hay ni `Buffer` ni service role.
  */
 
-export const BUCKET_MEDIA = "media-mensajes";
+export {
+  BUCKET_MEDIA,
+  CARPETA_MENSAJES,
+  CARPETA_RESPUESTAS_RAPIDAS,
+  esDataUri,
+  esUrlDeStorage,
+  extensionPorMime,
+  mimeDesdeUrl,
+  nombreDesdeUrl,
+  parsearDataUri,
+  rutaEnBucket,
+} from "./media-format";
 
-const EXT_POR_MIME: Record<string, string> = {
-  "audio/ogg": "ogg",
-  "audio/opus": "ogg",
-  "audio/mpeg": "mp3",
-  "audio/mp3": "mp3",
-  "audio/mp4": "m4a",
-  "audio/aac": "aac",
-  "audio/wav": "wav",
-  "audio/webm": "webm",
-  "image/jpeg": "jpg",
-  "image/jpg": "jpg",
-  "image/png": "png",
-  "image/gif": "gif",
-  "image/webp": "webp",
-  "image/bmp": "bmp",
-  "image/heic": "heic",
-  "video/mp4": "mp4",
-  "video/webm": "webm",
-  "application/pdf": "pdf",
-};
-
-export function extensionPorMime(mime: string): string {
-  const limpio = (mime || "").split(";")[0].trim().toLowerCase();
-  if (EXT_POR_MIME[limpio]) return EXT_POR_MIME[limpio];
-  const sufijo = limpio.split("/")[1] || "";
-  return /^[a-z0-9]{2,5}$/.test(sufijo) ? sufijo : "bin";
-}
-
-/** ¿La cadena es un data-URI base64 (adjunto incrustado)? */
-export function esDataUri(valor: unknown): valor is string {
-  return typeof valor === "string" && valor.startsWith("data:");
-}
-
-/** Separa un data-URI en mime + bytes. Devuelve null si no se puede parsear. */
-export function parsearDataUri(dataUri: string): { mime: string; bytes: Buffer } | null {
-  const coma = dataUri.indexOf(",");
-  if (!dataUri.startsWith("data:") || coma < 0) return null;
-  const cabecera = dataUri.slice(5, coma); // p. ej. "audio/ogg;base64"
-  const mime = (cabecera.split(";")[0] || "application/octet-stream").trim().toLowerCase();
-  try {
-    const bytes = Buffer.from(dataUri.slice(coma + 1), "base64");
-    return bytes.length > 0 ? { mime, bytes } : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Sube bytes al bucket y devuelve la URL pública, o null si falló (el llamador
- * decide el plan B, normalmente conservar el base64 para no perder el adjunto).
- */
 export async function subirMediaAStorage(
-  bytes: Buffer | Uint8Array,
+  bytes: Uint8Array,
   mime: string,
-  nombreBase = "adjunto"
+  nombreBase = "adjunto",
+  opciones: OpcionesRuta = {}
 ): Promise<string | null> {
-  try {
-    const ahora = new Date();
-    const yyyy = ahora.getFullYear();
-    const mm = String(ahora.getMonth() + 1).padStart(2, "0");
-    const limpio = nombreBase.replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40) || "adjunto";
-    const unico = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const ruta = `mensajes/${yyyy}-${mm}/${unico}-${limpio}.${extensionPorMime(mime)}`;
-
-    const { error } = await supabaseAdmin.storage
-      .from(BUCKET_MEDIA)
-      .upload(ruta, bytes, { contentType: mime.split(";")[0] || "application/octet-stream", upsert: false });
-    if (error) {
-      console.error("[media-storage] No se pudo subir el adjunto:", error.message);
-      return null;
-    }
-    const { data } = supabaseAdmin.storage.from(BUCKET_MEDIA).getPublicUrl(ruta);
-    return data?.publicUrl || null;
-  } catch (e: any) {
-    console.error("[media-storage] Error subiendo adjunto:", e?.message || e);
-    return null;
-  }
+  return subirBytesAStorage(supabaseAdmin, bytes, mime, { ...opciones, nombreBase });
 }
 
 /**
@@ -101,4 +46,39 @@ export async function dataUriAStorage(dataUri: string, nombreBase = "adjunto"): 
   if (!parseado) return dataUri;
   const url = await subirMediaAStorage(parseado.bytes, parseado.mime, nombreBase);
   return url || dataUri;
+}
+
+/**
+ * Descarga un adjunto que YA está en Storage, validando que la URL pertenezca
+ * al bucket público del proyecto (no se puede usar esta ruta para que el
+ * servidor le pida archivos a hosts ajenos).
+ *
+ * Se usa al enviar una respuesta rápida: el teléfono manda sólo la URL y el
+ * servidor lee los bytes dentro de la misma región de Supabase, en vez de
+ * bajar 6 MB al celular y volver a subirlos.
+ */
+export async function descargarAdjuntoDeStorage(
+  url: string
+): Promise<{ bytes: Uint8Array; mime: string } | null> {
+  try {
+    const destino = new URL(url);
+    const origenLocal = new URL(
+      process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "https://qrrkokfmbdtodrqbfehs.supabase.co"
+    );
+    if (destino.origin !== origenLocal.origin) return null;
+    if (!destino.pathname.startsWith(`/storage/v1/object/public/${BUCKET_MEDIA}/`)) return null;
+
+    const respuesta = await fetch(destino.toString());
+    if (!respuesta.ok) {
+      console.error(`[media] Storage respondió ${respuesta.status} al descargar el adjunto.`);
+      return null;
+    }
+    const bytes = new Uint8Array(await respuesta.arrayBuffer());
+    if (!bytes.length) return null;
+    const mime = (respuesta.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+    return { bytes, mime: mime || "application/octet-stream" };
+  } catch (e: any) {
+    console.error("[media] No se pudo descargar el adjunto de Storage:", e?.message || e);
+    return null;
+  }
 }

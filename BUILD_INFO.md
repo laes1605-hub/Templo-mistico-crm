@@ -4,6 +4,60 @@
 **Commit:** (ver git log)
 **Branch:** arena/01a04b9a-templo-mistico-crm
 
+## Build 2026-09-01: audios de respuestas rápidas a Supabase Storage
+
+**Problema:** los audios (e imágenes) de la biblioteca de respuestas rápidas vivían
+dentro de `respuestas_rapidas.contenido` como data-URI base64, hasta ~8 MB por nota de
+voz. Como la biblioteca se descarga COMPLETA en cada «Sincronizar con todos» y en cada
+evento de realtime de la tabla, cada teléfono volvía a bajar todos los megabytes cada
+vez — el mismo agujero de Egress que ya se tapó para los adjuntos del chat
+(`20260916_media_storage.sql`), pero multiplicado por todos los operadores.
+
+### Solución
+- `src/lib/media-format.ts` (nuevo): helpers puros (data-URI ↔ bytes, MIME/extensión,
+  rutas del bucket, subida) que usan TANTO el servidor como el teléfono. Antes la subida
+  sólo existía en `media-storage.ts`, que depende de la service role y de `Buffer`, así
+  que el navegador no podía usarla.
+- `src/lib/md5.ts` (nuevo): MD5 en JS puro. Hace falta que la huella del archivo sea la
+  MISMA en el navegador, en `node:crypto` y en `md5()` de Postgres; `crypto.subtle` sólo
+  trae SHA-256 y exige contexto seguro.
+- `src/lib/respuestas-rapidas.ts`: al publicar una respuesta pendiente, el binario se
+  sube al bucket `media-mensajes` (carpeta `respuestas-rapidas/AAAA-MM/`) y en la tabla
+  queda la URL pública. Detalles:
+  - El objeto se nombra con el MD5 del archivo → dos teléfonos que suben el mismo audio
+    escriben en la misma ruta y no dejan copias en el bucket.
+  - La deduplicación ya no puede hacerse sobre el texto (una URL no representa el
+    archivo): se guarda `hash_bytes` y la `huella` de la tabla pasa a ser
+    `md5(tipo + hash_bytes)`. Un teléfono que todavía tiene el base64 en caché reconoce
+    la copia publicada y no la vuelve a insertar.
+  - Si la subida falla se publica el base64 (plan B, no se pierde nada) y la migración
+    de Ajustes lo pasa a Storage después.
+  - Borrar una respuesta liberada del bucket sólo borra el objeto si ninguna otra
+    respuesta ni ningún mensaje del chat lo está usando.
+  - Sin la migración SQL aplicada la app sigue funcionando: si `hash_bytes` no existe,
+    reintenta sin esa columna.
+- `src/app/page.tsx`: `enviarRespuestaRapida` manda ahora la URL (a través de
+  `adjuntoParaEnviar`) en vez del base64 incrustado.
+- `src/app/api/send-message/route.ts`: acepta `fileUrl`. El servidor descarga el archivo
+  de Storage dentro de la misma región y lo envía; el teléfono no baja 6 MB para volver a
+  subirlos. El mensaje enviado apunta al MISMO objeto, así que no se duplica en el bucket.
+- `src/app/api/admin/migrar-respuestas-rapidas-storage/route.ts` (nuevo) + botón en
+  Ajustes («Ahorro de datos · Supabase → Migrar N audios de respuestas rápidas»): mueve
+  los `data:` históricos a Storage por lotes con presupuesto de tiempo, calcula la huella
+  y unifica las filas repetidas que aparezcan al recalcularla.
+- `supabase/migrations/20260917_respuestas_rapidas_a_storage.sql` (nueva): columna
+  `hash_bytes`, huella basada en el hash, recálculo y eliminación de duplicados y comentario
+  de las columnas. **Hay que ejecutarla antes de migrar.**
+
+### Verificación
+- `npm run test:rr-storage` (`scripts/prueba-respuestas-rapidas-storage.mjs`) — ✅ 32
+  pruebas, 0 fallos: vectores del RFC 1321 y coincidencia con `node:crypto`, subida al
+  bucket con la huella como nombre, URL (no base64) en la tabla, dos teléfonos con el
+  mismo audio = una sola fila, plan B sin Storage, envío por URL, borrado seguro del
+  objeto y tolerancia a la tabla sin `hash_bytes`.
+- `npx tsc --noEmit` ✅ · `npm run build` ✅ · `npm run check:luna` ✅ (no toca Luna,
+  pero es la otra suite del repo)
+
 ## Build 2026-08-29 (APK 1.3.2): barra de estado mimetizada con la app (pantalla uniforme)
 
 **Problema:** la franja superior del teléfono (donde Android muestra la hora,
@@ -155,7 +209,9 @@ de la ventana nativa (gris/blanco según el modo del teléfono).
 - supabase/migrations/20260904_eliminar_cliente_completo.sql (eliminación completa v1)
 - supabase/migrations/20260905_eliminar_cliente_total.sql   ← nueva (eliminación total v2)
 - supabase/migrations/20260907_llamadas_seguimiento_contactos.sql ← nueva (etapa En seguimiento + alerta diaria)
-- supabase/migrations/20260915_sincronizacion_respuestas_rapidas_unica.sql ← nueva (biblioteca compartida y elimina duplicados exactos)
+- supabase/migrations/20260915_sincronizacion_respuestas_rapidas_unica.sql (biblioteca compartida y elimina duplicados exactos)
+- supabase/migrations/20260916_media_storage.sql ← nueva (bucket media-mensajes para adjuntos del chat)
+- supabase/migrations/20260917_respuestas_rapidas_a_storage.sql ← nueva (audios/imágenes de respuestas rápidas a Storage + columna hash_bytes)
 
 ## Luna por etapas (nuevo)
 - Workflow importable: `n8n/IMPORTAR-EN-N8N.json` (generado localmente; docs en `n8n/05-README-luna-etapas.md`)

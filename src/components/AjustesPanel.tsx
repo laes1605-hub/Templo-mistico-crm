@@ -32,6 +32,10 @@ export default function AjustesPanel({ onClose }: { onClose: () => void }) {
   const [migrando, setMigrando] = useState(false);
   const [migraMsg, setMigraMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [migraPendientes, setMigraPendientes] = useState<number | null>(null);
+  // Respuestas rápidas: los audios/imágenes de la biblioteca compartida.
+  const [migrandoRR, setMigrandoRR] = useState(false);
+  const [migraRRMsg, setMigraRRMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [rrPendientes, setRrPendientes] = useState<number | null>(null);
 
   useEffect(() => {
     setMode(getSavedMode());
@@ -59,42 +63,85 @@ export default function AjustesPanel({ onClose }: { onClose: () => void }) {
       } catch {
         /* endpoint no disponible (p. ej. build estática): se oculta la sección */
       }
+      try {
+        const res = await fetch("/api/admin/migrar-respuestas-rapidas-storage");
+        const json = await res.json().catch(() => null);
+        if (res.ok && json && typeof json.pendientes === "number") setRrPendientes(json.pendientes);
+      } catch {
+        /* endpoint no disponible (p. ej. build estática): se oculta la sección */
+      }
     })();
   }, []);
 
-  // Migra por lotes los audios/imágenes guardados como base64 en la base de
-  // datos hacia Supabase Storage. Repite hasta terminar o no avanzar.
+  /**
+   * Migra por lotes los archivos guardados como base64 dentro de la tabla que
+   * atiende `endpoint`, hasta terminar o quedarse sin avance. Devuelve el
+   * recuento final para que cada sección muestre su propio mensaje.
+   */
+  async function correrMigracion(
+    endpoint: string
+  ): Promise<{ pendientes: number; migrados: number; duplicados: number }> {
+    let totalMigrados = 0;
+    let totalDuplicados = 0;
+    let pendientesPrevios = Infinity;
+    for (let ronda = 0; ronda < 50; ronda++) {
+      const res = await fetch(endpoint, { method: "POST" });
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json) {
+        throw new Error(json?.error || "El servidor no respondió a la migración.");
+      }
+      const pendientes = typeof json.pendientes === "number" ? json.pendientes : 0;
+      totalMigrados += typeof json.migrados === "number" ? json.migrados : 0;
+      totalDuplicados += typeof json.duplicados === "number" ? json.duplicados : 0;
+      if (pendientes <= 0) return { pendientes: 0, migrados: totalMigrados, duplicados: totalDuplicados };
+      if (pendientes >= pendientesPrevios) return { pendientes, migrados: totalMigrados, duplicados: totalDuplicados };
+      pendientesPrevios = pendientes;
+    }
+    return { pendientes: pendientesPrevios === Infinity ? 0 : pendientesPrevios, migrados: totalMigrados, duplicados: totalDuplicados };
+  }
+
+  // Notas de voz e imágenes antiguas del chat.
   async function migrarAdjuntos() {
     setMigrando(true);
     setMigraMsg(null);
     try {
-      let pendientesPrevios = Infinity;
-      for (let ronda = 0; ronda < 50; ronda++) {
-        const res = await fetch("/api/admin/migrar-media-storage", { method: "POST" });
-        const json = await res.json().catch(() => null);
-        if (!res.ok || !json) {
-          throw new Error(json?.error || "El servidor no respondió a la migración.");
-        }
-        const pendientes = typeof json.pendientes === "number" ? json.pendientes : 0;
-        setMigraPendientes(pendientes);
-        if (pendientes <= 0) {
-          setMigraMsg({ ok: true, text: "¡Listo! Todos los adjuntos ya están en Storage." });
-          return;
-        }
-        if (pendientes >= pendientesPrevios) {
-          setMigraMsg({
-            ok: false,
-            text: `Quedan ${pendientes} adjuntos sin migrar (revisá que la migración SQL del bucket esté aplicada).`,
-          });
-          return;
-        }
-        pendientesPrevios = pendientes;
-        setMigraMsg({ ok: true, text: `Migrando… quedan ${pendientes} adjuntos.` });
-      }
+      const r = await correrMigracion("/api/admin/migrar-media-storage");
+      setMigraPendientes(r.pendientes);
+      setMigraMsg(
+        r.pendientes <= 0
+          ? { ok: true, text: "¡Listo! Todos los adjuntos ya están en Storage." }
+          : {
+              ok: false,
+              text: `Quedan ${r.pendientes} adjuntos sin migrar (revisá que la migración SQL del bucket esté aplicada).`,
+            }
+      );
     } catch (e: any) {
       setMigraMsg({ ok: false, text: e?.message || "No se pudo migrar. Intentá de nuevo." });
     } finally {
       setMigrando(false);
+    }
+  }
+
+  // Audios e imágenes de la biblioteca de respuestas rápidas.
+  async function migrarAudiosRespuestasRapidas() {
+    setMigrandoRR(true);
+    setMigraRRMsg(null);
+    try {
+      const r = await correrMigracion("/api/admin/migrar-respuestas-rapidas-storage");
+      setRrPendientes(r.pendientes);
+      const detalleDuplicados = r.duplicados > 0 ? ` Se unificaron ${r.duplicados} copias repetidas.` : "";
+      setMigraRRMsg(
+        r.pendientes <= 0
+          ? { ok: true, text: `¡Listo! ${r.migrados} audios/imágenes en Storage y la biblioteca pesa muchísimo menos.${detalleDuplicados}` }
+          : {
+              ok: false,
+              text: `Quedan ${r.pendientes} sin migrar (revisá que estén aplicadas las migraciones 20260916 y 20260917 en Supabase).`,
+            }
+      );
+    } catch (e: any) {
+      setMigraRRMsg({ ok: false, text: e?.message || "No se pudo migrar. Intentá de nuevo." });
+    } finally {
+      setMigrandoRR(false);
     }
   }
 
@@ -322,7 +369,10 @@ export default function AjustesPanel({ onClose }: { onClose: () => void }) {
         </div>
 
         {/* MIGRACIÓN DE ADJUNTOS A STORAGE (ahorro de datos de Supabase) */}
-        {migraPendientes !== null && (migraPendientes > 0 || migraMsg) && (
+        {((migraPendientes !== null && migraPendientes > 0) ||
+          (rrPendientes !== null && rrPendientes > 0) ||
+          migraMsg ||
+          migraRRMsg) && (
           <>
             <p className="text-[11px] uppercase tracking-wider text-gray-500 font-bold mb-2 mt-5">
               Ahorro de datos · Supabase
@@ -331,14 +381,14 @@ export default function AjustesPanel({ onClose }: { onClose: () => void }) {
               <button
                 type="button"
                 onClick={migrarAdjuntos}
-                disabled={migrando || migraPendientes === 0}
+                disabled={migrando || (migraPendientes ?? 0) === 0}
                 className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold transition-colors"
               >
                 <HardDriveDownload className="w-4 h-4" />
                 {migrando
                   ? "Migrando adjuntos…"
-                  : migraPendientes === 0
-                    ? "Adjuntos migrados ✓"
+                  : (migraPendientes ?? 0) === 0
+                    ? "Adjuntos del chat migrados ✓"
                     : `Migrar ${migraPendientes} adjuntos a Storage`}
               </button>
               <p className="text-[10px] text-gray-500 leading-relaxed">
@@ -348,6 +398,30 @@ export default function AjustesPanel({ onClose }: { onClose: () => void }) {
               </p>
               {migraMsg && (
                 <p className={`text-[11px] ${migraMsg.ok ? "text-emerald-400" : "text-red-400"}`}>{migraMsg.text}</p>
+              )}
+
+              <button
+                type="button"
+                onClick={migrarAudiosRespuestasRapidas}
+                disabled={migrandoRR || (rrPendientes ?? 0) === 0}
+                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold transition-colors"
+              >
+                <HardDriveDownload className="w-4 h-4" />
+                {migrandoRR
+                  ? "Migrando respuestas rápidas…"
+                  : (rrPendientes ?? 0) === 0
+                    ? "Audios de respuestas rápidas en Storage ✓"
+                    : `Migrar ${rrPendientes} audios de respuestas rápidas`}
+              </button>
+              <p className="text-[10px] text-gray-500 leading-relaxed">
+                Los audios e imágenes de la biblioteca de respuestas rápidas aún viajan{" "}
+                <strong>dentro de la base de datos</strong>: cada «Sincronizar con todos» los vuelve a
+                bajar completos en base64. Al migrarlos, en la tabla queda solo la URL y el archivo se
+                lee únicamente al enviarlo. Cada respuesta guarda su huella (MD5 del archivo), así que
+                dos teléfonos que suben el mismo audio siguen compartiendo una sola copia.
+              </p>
+              {migraRRMsg && (
+                <p className={`text-[11px] ${migraRRMsg.ok ? "text-emerald-400" : "text-red-400"}`}>{migraRRMsg.text}</p>
               )}
             </div>
           </>

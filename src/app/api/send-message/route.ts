@@ -4,7 +4,7 @@ import { remuxWebmToOgg } from "../../../lib/webm-to-ogg";
 import { sendVoiceNoteViaMeta, obtenerCredencialesMeta } from "../../../lib/meta-voice-note";
 import { sendEvolutionVoiceNote } from "../../../lib/evolution-audio";
 import { buscarOCrearConversacionChatwoot } from "../../../lib/chatwoot";
-import { esDataUri, dataUriAStorage } from "../../../lib/media-storage";
+import { esDataUri, dataUriAStorage, descargarAdjuntoDeStorage } from "../../../lib/media-storage";
 
 const cleanBase64 = (value: unknown) => {
   if (!value) return null;
@@ -28,9 +28,9 @@ const isWebmBuffer = (bytes: Buffer | null) =>
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const { conversacionId, clienteId, numeroWhatsApp, texto, fileBase64, fileMime, fileName, cuentaResponsable } = body;
+    const { conversacionId, clienteId, numeroWhatsApp, texto, fileBase64, fileMime, fileName, fileUrl, cuentaResponsable } = body;
 
-    if (!numeroWhatsApp || (!texto?.trim() && !fileBase64)) {
+    if (!numeroWhatsApp || (!texto?.trim() && !fileBase64 && !fileUrl)) {
       return NextResponse.json({ error: "Faltan parámetros requeridos" }, { status: 400 });
     }
 
@@ -39,8 +39,27 @@ export async function POST(req: Request) {
     const chatwootToken = process.env.CHATWOOT_API_TOKEN || "";
     const chatwootUrl = (process.env.CHATWOOT_URL || "https://crmesteban.duckdns.org").replace(/\/$/, "");
     const cleanNumber = String(numeroWhatsApp).replace(/[^\d]/g, "");
-    const pureBase64 = cleanBase64(fileBase64);
-    const mime = String(fileMime || "application/octet-stream").split(";")[0];
+
+    // ADJUNTO DESDE STORAGE: las respuestas rápidas (y cualquier archivo que ya
+    // esté en el bucket) viajan como URL. El servidor la lee dentro de la misma
+    // región de Supabase y la convierte a base64 para enviarla, así el teléfono
+    // no descarga el archivo para volver a subirlo en cada envío.
+    let base64Recibido: string | null = typeof fileBase64 === "string" ? fileBase64 : null;
+    let mimeRecibido = String(fileMime || "").trim();
+    let urlAdjunto: string | null = null;
+    if (!base64Recibido && typeof fileUrl === "string" && /^https?:\/\//i.test(fileUrl)) {
+      const descargado = await descargarAdjuntoDeStorage(fileUrl);
+      if (!descargado) {
+        return NextResponse.json({ error: "No se pudo descargar el archivo desde Storage. Intenta sincronizar la respuesta rápida." }, { status: 502 });
+      }
+      if (!mimeRecibido) mimeRecibido = descargado.mime;
+      base64Recibido = `data:${mimeRecibido || "application/octet-stream"};base64,${Buffer.from(descargado.bytes).toString("base64")}`;
+      // El mensaje enviado apunta al MISMO objeto: no se duplica el archivo.
+      urlAdjunto = fileUrl;
+    }
+
+    const pureBase64 = cleanBase64(base64Recibido);
+    const mime = String(mimeRecibido || "application/octet-stream").split(";")[0];
     const isAudio = Boolean(
       pureBase64 && (
         mime.startsWith("audio/") ||
@@ -49,7 +68,7 @@ export async function POST(req: Request) {
       )
     );
 
-    let storedFileBase64: string | null = typeof fileBase64 === "string" ? fileBase64 : null;
+    let storedFileBase64: string | null = urlAdjunto ?? base64Recibido;
 
     let fuente = "meta_business";
     let chatwootConvId: string | number | null = null;

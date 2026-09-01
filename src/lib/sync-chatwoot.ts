@@ -660,28 +660,52 @@ async function sincronizarMensajes(
   if (mapeados.length === 0) return { nuevos: 0, vinculados: 0, entrantes: [] };
 
   let existentes: MensajeExistente[] = [];
-  const SEL_MSG = "id,chatwoot_message_id,tipo,tipo_contenido,contenido,url_archivo,creado_en";
+  // AHORRO DE EGRESS: url_archivo puede contener adjuntos base64 de varios MB
+  // (notas de voz, imágenes). Para deduplicar no hace falta descargarlos: se
+  // consultan las columnas ligeras y, por separado, solo las URLs cortas y un
+  // marcador de presencia para las filas con base64.
+  const SEL_MSG_LIGERO = "id,chatwoot_message_id,tipo,tipo_contenido,contenido,creado_en";
+  const MARCADOR_BASE64 = "data:archivo-omitido";
+  async function traerExistentesLigero(filtro: string, sufijo = ""): Promise<MensajeExistente[]> {
+    const [ligeros, urls, pesados] = await Promise.all([
+      sbFetch(`/mensajes?${filtro}&select=${SEL_MSG_LIGERO}${sufijo}`),
+      sbFetch(`/mensajes?${filtro}&url_archivo=not.is.null&url_archivo=not.like.data:*&select=id,url_archivo${sufijo}`),
+      sbFetch(`/mensajes?${filtro}&url_archivo=like.data:*&select=id${sufijo}`),
+    ]);
+    const mapaUrl = new Map<string, string>();
+    for (const r of Array.isArray(urls.json) ? urls.json : []) mapaUrl.set(String(r.id), r.url_archivo);
+    const conBase64 = new Set<string>(
+      (Array.isArray(pesados.json) ? pesados.json : []).map((r: any) => String(r.id))
+    );
+    const filas: MensajeExistente[] = [];
+    for (const row of Array.isArray(ligeros.json) ? ligeros.json : []) {
+      filas.push({
+        ...row,
+        url_archivo: mapaUrl.get(String(row.id)) ?? (conBase64.has(String(row.id)) ? MARCADOR_BASE64 : null),
+      });
+    }
+    return filas;
+  }
   if (opciones.ventana) {
     const tMin = Math.min(...mapeados.map((m) => Date.parse(m.creado_en)));
     const desde = new Date((Number.isFinite(tMin) ? tMin : Date.now()) - 5 * 60_000).toISOString();
     const ids = mapeados.map((m) => m.chatwoot_message_id);
     const tieneId = (await columnasDe("mensajes"))?.has("chatwoot_message_id");
     const [porVentana, porId] = await Promise.all([
-      sbFetch(
-        `/mensajes?conversacion_id=eq.${convSupabaseId}&creado_en=gte.${encodeURIComponent(
-          desde
-        )}&select=${SEL_MSG}&order=creado_en.asc&limit=300`
+      traerExistentesLigero(
+        `conversacion_id=eq.${convSupabaseId}&creado_en=gte.${encodeURIComponent(desde)}`,
+        `&order=creado_en.asc&limit=300`
       ),
       ids.length > 0 && tieneId !== false
-        ? sbFetch(
-            `/mensajes?conversacion_id=eq.${convSupabaseId}&chatwoot_message_id=in.(${ids
+        ? traerExistentesLigero(
+            `conversacion_id=eq.${convSupabaseId}&chatwoot_message_id=in.(${ids
               .map((x) => encodeURIComponent(String(x)))
-              .join(",")})&select=${SEL_MSG}`
+              .join(",")})`
           )
-        : Promise.resolve(null as SbResp | null),
+        : Promise.resolve([] as MensajeExistente[]),
     ]);
     const vistos = new Set<string>();
-    for (const lista of [porVentana.json, porId?.json]) {
+    for (const lista of [porVentana, porId]) {
       for (const row of Array.isArray(lista) ? lista : []) {
         if (!vistos.has(row.id)) {
           vistos.add(row.id);
@@ -690,10 +714,10 @@ async function sincronizarMensajes(
       }
     }
   } else {
-    const existentesResp = await sbFetch(
-      `/mensajes?conversacion_id=eq.${convSupabaseId}&select=${SEL_MSG}&order=creado_en.desc&limit=400`
+    existentes = await traerExistentesLigero(
+      `conversacion_id=eq.${convSupabaseId}`,
+      `&order=creado_en.desc&limit=400`
     );
-    existentes = Array.isArray(existentesResp.json) ? existentesResp.json : [];
   }
 
   const porInsertar: MensajeMapeado[] = [];

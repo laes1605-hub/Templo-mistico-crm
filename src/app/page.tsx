@@ -182,6 +182,11 @@ export default function CRMApp() {
   const [conversaciones, setConversaciones] = useState<any[]>([]);
   const [selectedConv, setSelectedConv] = useState<any | null>(null);
   const [mensajes, setMensajes] = useState<any[]>([]);
+  // Espejo del estado para consultas incrementales (ahorra Egress de Supabase:
+  // en vez de re-descargar toda la conversación, solo se piden los mensajes
+  // nuevos desde el último que ya tenemos en pantalla).
+  const mensajesRef = useRef<any[]>([]);
+  useEffect(() => { mensajesRef.current = mensajes; }, [mensajes]);
   const [clienteActual, setClienteActual] = useState<any | null>(null);
   
   const [todosPagos, setTodosPagos] = useState<any[]>([]);
@@ -362,7 +367,7 @@ export default function CRMApp() {
       refrescoTimer = setTimeout(() => {
         refrescoTimer = null;
         fetchConversaciones(false);
-      }, 250);
+      }, 1000);
     };
 
     const convSub = supabase.channel("r-conv").on("postgres_changes", { event: "*", schema: "public", table: "conversaciones" }, () => refrescarLista()).subscribe();
@@ -1200,8 +1205,34 @@ export default function CRMApp() {
         // Si hay un chat abierto, refrescar sus mensajes con lo nuevo.
         const convAbierta = selectedConvRef.current;
         if (convAbierta && (!opciones.conversacionId || String(opciones.conversacionId) === String(convAbierta.chatwoot_conversation_id))) {
-          const { data: msgs } = await supabase.from("mensajes").select("*").eq("conversacion_id", convAbierta.id).order("creado_en", { ascending: true });
-          if (msgs) setMensajes(msgs);
+          // AHORRO DE EGRESS: antes se re-descargaba la conversación completa
+          // (con audios/imágenes en base64) en cada tic con novedades. Ahora
+          // solo se piden los mensajes desde ~5 min antes del último conocido
+          // y se fusionan por id con los que ya están en pantalla.
+          const idsConv = convAbierta.all_conv_ids || [convAbierta.id];
+          const actuales = mensajesRef.current;
+          const ultimoTs = actuales.length > 0
+            ? Math.max(...actuales.map((m: any) => Date.parse(m.creado_en) || 0))
+            : 0;
+          let q = supabase.from("mensajes").select("*").in("conversacion_id", idsConv).order("creado_en", { ascending: true });
+          if (ultimoTs > 0) q = q.gt("creado_en", new Date(ultimoTs - 5 * 60_000).toISOString());
+          const { data: msgs } = await q;
+          if (msgs && msgs.length > 0) {
+            setMensajes((prev) => {
+              const porId = new Map<string, any>(prev.map((m: any) => [String(m.id), m]));
+              let cambio = false;
+              for (const n of msgs) {
+                const clave = String(n.id);
+                const previo = porId.get(clave);
+                if (!previo || JSON.stringify(previo) !== JSON.stringify(n)) cambio = true;
+                porId.set(clave, n);
+              }
+              if (!cambio) return prev;
+              return Array.from(porId.values()).sort(
+                (a: any, b: any) => (Date.parse(a.creado_en) || 0) - (Date.parse(b.creado_en) || 0)
+              );
+            });
+          }
         }
       }
     } catch (e) {

@@ -39,6 +39,20 @@ y número maestro), lo que es un motivo probable de la restricción.
 - Saneo: no quedan llaves reales en archivos versionados (sólo el proyecto ref
   en el doc de emergencia).
 
+## Build 2026-09-03: migración a otro Supabase (motivo: límites)
+
+- `scripts/migrar-supabase.mjs` (nuevo): copia esquema + datos de un Supabase
+  ORIGEN a otro DESTINO vía REST, con `--schema`, `--datos`, `--todo`,
+  `--dry-run` y `--auto-sql`. Útil cuando el proyecto actual sigue respondiendo
+  por REST aunque esté limitado.
+- `MIGRAR-OTRO-SUPABASE.md` (nuevo): guía paso a paso (pg_dump como ruta ideal,
+  REST como plan B, ajustes de Storage/Realtime/RLS y apuntado de Vercel+n8n).
+- `package.json`: script `migrar:supabase`.
+
+### Verificación
+- `node --check scripts/migrar-supabase.mjs` ✅
+- Prueba con servidor mock: `--schema` genera el SQL y `--datos` copia filas ✅
+
 ## Build 2026-09-01: audios de respuestas rápidas a Supabase Storage
 
 **Problema:** los audios (e imágenes) de la biblioteca de respuestas rápidas vivían

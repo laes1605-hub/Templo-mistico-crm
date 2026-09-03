@@ -1,5 +1,8 @@
 # Urgencia / migración: Supabase restringido y CRM caído
 
+> **Atajo:** si solo querés la guía práctica para moverte a otro Supabase (motivo
+> límites), usá **`MIGRAR-OTRO-SUPABASE.md`** y `scripts/migrar-supabase.mjs`.
+
 **Estado al revisar el repo (2026-09-02):** la app sigue en línea, pero la base
 `https://qrrkokfmbdtodrqbfehs.supabase.co` ya no responde (el DNS resuelve, pero el
 TLS se corta). Eso es típico de un proyecto **pausado/suspendido/limitado**,

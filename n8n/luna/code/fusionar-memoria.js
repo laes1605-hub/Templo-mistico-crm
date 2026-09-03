@@ -6,8 +6,8 @@
 //   C) Vision (foto de este turno) -> se asigna sola al hueco correcto
 // Regla de oro: lo guardado NUNCA se sobreescribe ni se vuelve a pedir.
 // =====================================================
-const SUPABASE_URL = "https://qrrkokfmbdtodrqbfehs.supabase.co";
-const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFycmtva2ZtYmR0b2RycWJmZWhzIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NzE5NTU0NSwiZXhwIjoyMTAyNzcxNTQ1fQ.bFwt6pAidvSEEuv3UNuKeZYwkfB-d2OPgMHM8MmwcD8";
+const SUPABASE_URL = "https://zcljlddtcoyfyvshlyfk.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpjbGpsZGR0Y295Znl2c2hseWZrIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4ODQ0NTQ4NCwiZXhwIjoyMTA0MDIxNDg0fQ._iG5UHv6fUc4QvhA56WbJ_P7WhIg1vyz1R3B5EWUU90";
 const CHATWOOT_URL = "https://crmesteban.duckdns.org";
 const CHATWOOT_TOKEN = "KKaF2gF4bJZvnSkqKnR42zD8";
 const ACCOUNT_ID = "1";

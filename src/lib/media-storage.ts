@@ -63,7 +63,7 @@ export async function descargarAdjuntoDeStorage(
   try {
     const destino = new URL(url);
     const origenLocal = new URL(
-      process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "https://qrrkokfmbdtodrqbfehs.supabase.co"
+      process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "https://zcljlddtcoyfyvshlyfk.supabase.co"
     );
     if (destino.origin !== origenLocal.origin) return null;
     if (!destino.pathname.startsWith(`/storage/v1/object/public/${BUCKET_MEDIA}/`)) return null;

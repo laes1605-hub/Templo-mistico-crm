@@ -17,6 +17,8 @@
     "lint": "next lint",
     "build:luna": "node n8n/build-luna-workflow.mjs",
     "check:luna": "node scripts/validar-workflow-luna.mjs",
+    "dump:esquema": "node scripts/dump-esquema-supabase.mjs",
+    "redactar:secretos": "node scripts/redactar-secretos.mjs",
     "test:eliminar": "sucrase-node scripts/prueba-eliminar-cliente.ts",
     "test:eliminar:sql": "node scripts/prueba-eliminar-cliente-sql.mjs",
     "test:rr-storage": "node --conditions=import scripts/prueba-respuestas-rapidas-storage.mjs"

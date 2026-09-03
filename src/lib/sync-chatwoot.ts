@@ -25,27 +25,15 @@
  */
 
 import { chatwootConfig } from "./chatwoot";
+import { supabaseRestCredentials, mensajeAdminFaltante } from "./supabase-config";
 
 // ---------------------------------------------------------------------------
 // Supabase por REST (mismo patrón que el workflow de n8n)
 // ---------------------------------------------------------------------------
 
-const SUPABASE_URL = (
-  process.env.SUPABASE_URL ||
-  process.env.NEXT_PUBLIC_SUPABASE_URL ||
-  "https://qrrkokfmbdtodrqbfehs.supabase.co"
-).replace(/\/$/, "");
-
-// Service role: env en Vercel → si no está, la misma llave que ya usa el
-// workflow de n8n (ya vive en este repo) → si tampoco, anon.
-const SERVICE_ROLE_N8N =
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFycmtva2ZtYmR0b2RycWJmZWhzIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NzE5NTU0NSwiZXhwIjoyMTAyNzcxNTQ1fQ.bFwt6pAidvSEEuv3UNuKeZYwkfB-d2OPgMHM8MmwcD8";
-
-const SUPABASE_KEY = (
-  process.env.SUPABASE_SERVICE_ROLE_KEY ||
-  process.env.SUPABASE_SERVICE_KEY ||
-  SERVICE_ROLE_N8N
-).trim();
+const credenciales = supabaseRestCredentials();
+const SUPABASE_URL = credenciales.url;
+const SUPABASE_KEY = credenciales.key;
 
 function sbHeaders(extra: Record<string, string> = {}): Record<string, string> {
   return {
@@ -63,6 +51,14 @@ async function sbFetch(
   init: RequestInit = {},
   timeoutMs = 15000
 ): Promise<SbResp> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) {
+    return {
+      status: 0,
+      ok: false,
+      json: null,
+      texto: mensajeAdminFaltante() || "Supabase sin configurar.",
+    };
+  }
   const controlador = new AbortController();
   const temporizador = setTimeout(() => controlador.abort(), timeoutMs);
   try {

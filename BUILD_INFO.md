@@ -1,8 +1,43 @@
 # Build Info - Templo Místico CRM
 
-**Fecha:** Fri Aug 29 (rama `arena/01a04b9a-templo-mistico-crm`)
+**Fecha:** Wed Sep 02 (rama `arena/01a06498-templo-mistico-crm`)
 **Commit:** (ver git log)
-**Branch:** arena/01a04b9a-templo-mistico-crm
+**Branch:** arena/01a06498-templo-mistico-crm
+
+## Build 2026-09-02: preparación de emergencia/migración de Supabase + saneo de secretos
+
+**Contexto:** el proyecto de Supabase `qrrkokfmbdtodrqbfehs` quedó suspendido y
+el CRM dejó de leer/escribir datos. Además el repo es PÚBLICO y contenía llaves
+reales (service role de Supabase, Chatwoot, Evolution, Fish, secreto del Cerebro
+y número maestro), lo que es un motivo probable de la restricción.
+
+### Cambios
+- `src/lib/supabase-config.ts` (nuevo): configuración central de Supabase. Ya no
+  hay URL ni llaves incrustadas; todo viene de variables de entorno.
+- `src/lib/supabase.ts` y `src/lib/supabase-admin.ts`: si falta la configuración
+  exportan clientes que fallan con un mensaje claro en el primer uso (no rompen
+  el build).
+- `src/lib/sync-chatwoot.ts`, `src/lib/media-storage.ts`: leen URL/llaves del
+  config central; sin config devuelven error legible en vez de llamar a
+  `qrrkokfmbdtodrqbfehs`.
+- `src/lib/chatwoot.ts`, rutas de media/send-message: se quitó el token de
+  Chatwoot y las URLs reales; requieren `CHATWOOT_URL`/`CHATWOOT_API_TOKEN` y
+  `EVOLUTION_API_URL`/`EVOLUTION_API_KEY`.
+- Workflows n8n y snapshots: se reemplazaron los secretos por marcadores
+  `AQUI_*` / URLs `TU-*`. El builder (`n8n/build-luna-workflow.mjs`) sustituye
+  marcadores desde `n8n/luna/secrets.local.json` (no versionado).
+- `scripts/redactar-secretos.mjs` (nuevo): saneador de secretos; NO guarda las
+  llaves en el repo (las lee de un archivo local gitignoreado).
+- `scripts/dump-esquema-supabase.mjs` (nuevo): reconstruye `0000_reconstruir_*`
+  desde el OpenAPI/PostgREST de un proyecto accesible (recupera el esquema que
+  no estaba versionado).
+- `.env.example` (nuevo) y `MIGRAR-SUPABASE-EMERGENCIA.md` (nuevo): guía paso a
+  paso de recuperación / rotación / migración a otro proyecto.
+
+### Verificación
+- `npx tsc --noEmit` ✅ · `npm run build` ✅ · `npm run check:luna` ✅ · `npm run test:rr-storage` ✅
+- Saneo: no quedan llaves reales en archivos versionados (sólo el proyecto ref
+  en el doc de emergencia).
 
 ## Build 2026-09-01: audios de respuestas rápidas a Supabase Storage
 

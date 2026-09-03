@@ -43,10 +43,10 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Faltan parámetros requeridos" }, { status: 400 });
     }
 
-    const evoUrl = (process.env.EVOLUTION_API_URL || "https://evo.crmesteban.duckdns.org").replace(/\/$/, "");
+    const evoUrl = (process.env.EVOLUTION_API_URL || "https://TU-EVOLUTION.duckdns.org").replace(/\/$/, "");
     const evoKey = process.env.EVOLUTION_API_KEY || "";
     const chatwootToken = process.env.CHATWOOT_API_TOKEN || "";
-    const chatwootUrl = (process.env.CHATWOOT_URL || "https://crmesteban.duckdns.org").replace(/\/$/, "");
+    const chatwootUrl = (process.env.CHATWOOT_URL || "https://TU-CHATWOOT.duckdns.org").replace(/\/$/, "");
     const cleanNumber = String(numeroWhatsApp).replace(/[^\d]/g, "");
 
     // ADJUNTO DESDE STORAGE: las respuestas rápidas (y cualquier archivo que ya

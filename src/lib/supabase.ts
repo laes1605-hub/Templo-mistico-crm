@@ -1,6 +1,38 @@
 import { createClient } from "@supabase/supabase-js";
+import { supabaseConfig, mensajeConfigFaltante } from "./supabase-config";
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://qrrkokfmbdtodrqbfehs.supabase.co";
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFycmtva2ZtYmR0b2RycWJmZWhzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODcxOTU1NDUsImV4cCI6MjEwMjc3MTU0NX0.pPbrwPjodbOg8xstoDekDHedQyZNQgmqLX4LShX0t2M";
+/**
+ * Cliente Supabase del navegador / cliente.
+ *
+ * Requiere `NEXT_PUBLIC_SUPABASE_URL` y `NEXT_PUBLIC_SUPABASE_ANON_KEY`.
+ * Si faltan, se exporta un cliente "trampa" que lanza un error claro al primer
+ * uso (`.from`, `.rpc`, etc.) en lugar de hacer peticiones a una URL vacía.
+ */
+function clienteSinConfigurar() {
+  const error = () => {
+    throw new Error(mensajeConfigFaltante() || "Supabase sin configurar.");
+  };
+  const trampa: any = {
+    from: () => {
+      error();
+    },
+    rpc: () => {
+      error();
+    },
+    channel: () => {
+      error();
+    },
+    auth: new Proxy({}, { get: () => error }),
+    storage: new Proxy({}, { get: () => error }),
+  };
+  return new Proxy(trampa, {
+    get(_objetivo, propiedad) {
+      if (propiedad in trampa) return trampa[propiedad];
+      return error();
+    },
+  });
+}
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+export const supabase = supabaseConfig.ready
+  ? createClient(supabaseConfig.url, supabaseConfig.anonKey)
+  : clienteSinConfigurar();

@@ -1,4 +1,5 @@
 import { supabaseAdmin } from "./supabase-admin";
+import { supabaseRestUrl } from "./supabase-config";
 import { BUCKET_MEDIA, type OpcionesRuta, parsearDataUri, subirBytesAStorage } from "./media-format";
 
 /**
@@ -62,9 +63,7 @@ export async function descargarAdjuntoDeStorage(
 ): Promise<{ bytes: Uint8Array; mime: string } | null> {
   try {
     const destino = new URL(url);
-    const origenLocal = new URL(
-      process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "https://qrrkokfmbdtodrqbfehs.supabase.co"
-    );
+    const origenLocal = new URL(supabaseRestUrl() || "https://TU-PROYECTO.supabase.co");
     if (destino.origin !== origenLocal.origin) return null;
     if (!destino.pathname.startsWith(`/storage/v1/object/public/${BUCKET_MEDIA}/`)) return null;
 

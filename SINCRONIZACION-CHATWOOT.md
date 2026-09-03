@@ -69,14 +69,20 @@ archivo importable lleva **toda la configuración por dentro**:
 
 1. Descarga **`n8n/IMPORTAR-EN-N8N.RELLENAR.json`** (está en el repo).
 2. Ábrelo con un editor de texto (Bloc de notas / VS Code) y reemplaza
-   (**Ctrl+H**, "Reemplazar todo"):
-   - `AQUI_OPENAI_API_KEY` → tu llave de OpenAI (`sk-...`). Es la misma que
-     tiene hoy tu nodo "OpenAI Respuesta" del workflow viejo (ábrelo, copia el
-     valor del header `Authorization` sin la palabra "Bearer ", o consíguela en
-     platform.openai.com).
-   - `AQUI_GROQ_API_KEY` → tu llave de Groq (la del nodo "Transcribir Audio";
-     consíguela en console.groq.com).
-   - Guarda. (La llave del audio de Luna, `sk-fish-...`, ya va embebida.)
+   (**Ctrl+H**, "Reemplazar todo") los marcadores que tengas:
+   - `AQUI_OPENAI_API_KEY` → tu llave de OpenAI (`sk-...`).
+   - `AQUI_GROQ_API_KEY` → tu llave de Groq (nodo "Transcribir Audio").
+   - `AQUI_SUPABASE_URL` → la URL del proyecto Supabase nuevo.
+   - `AQUI_SUPABASE_SERVICE_ROLE_KEY` → service role del proyecto nuevo.
+   - `AQUI_CHATWOOT_URL` → URL de tu Chatwoot.
+   - `AQUI_CHATWOOT_API_TOKEN` → token de Chatwoot (administrador).
+   - `AQUI_EVOLUTION_URL` → URL de Evolution.
+   - `AQUI_EVOLUTION_API_KEY` → API key de Evolution.
+   - `AQUI_FISH_AUDIO_API_KEY` → API key de Fish Audio.
+   - `AQUI_CEREBRO_API_SECRET` → secreto del endpoint Cerebro (debe ser el mismo
+     que `CEREBRO_API_SECRET` en Vercel).
+   - `AQUI_MASTER_NUMBER` → número maestro de WhatsApp (con `+` y código país).
+   - Guarda antes de importar.
 3. En n8n: **Workflows → ⋯ (o "..." del menú) → Import from File** → elige el
    archivo. Se crea como workflow nuevo con los 61 nodos ya conectados.
 4. **Desactiva el workflow viejo de Luna** (toggle Off). Importante: los dos

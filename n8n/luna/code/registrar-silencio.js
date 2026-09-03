@@ -6,8 +6,8 @@
 //  • Si la etapa NO se reconoce: ademas deja nota privada en la conversacion,
 //    porque eso significa que falta mapear una clave del CRM.
 // =====================================================
-const CHATWOOT_URL = "https://crmesteban.duckdns.org";
-const CHATWOOT_TOKEN = "KKaF2gF4bJZvnSkqKnR42zD8";
+const CHATWOOT_URL = "https://TU-CHATWOOT.duckdns.org";
+const CHATWOOT_TOKEN = "AQUI_CHATWOOT_API_TOKEN";
 const ACCOUNT_ID = "1";
 
 const estado = $input.first().json || {};

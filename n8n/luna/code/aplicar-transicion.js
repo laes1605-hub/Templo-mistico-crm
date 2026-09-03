@@ -10,13 +10,13 @@
 // agente_activo=false, custom_attribute luna_pausada=true y etiqueta
 // bot-pausado. El operador puede continuar manualmente la conversacion.
 // =====================================================
-const SUPABASE_URL = "https://qrrkokfmbdtodrqbfehs.supabase.co";
-const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFycmtva2ZtYmR0b2RycWJmZWhzIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NzE5NTU0NSwiZXhwIjoyMTAyNzcxNTQ1fQ.bFwt6pAidvSEEuv3UNuKeZYwkfB-d2OPgMHM8MmwcD8";
-const CHATWOOT_URL = "https://crmesteban.duckdns.org";
-const CHATWOOT_TOKEN = "KKaF2gF4bJZvnSkqKnR42zD8";
+const SUPABASE_URL = "https://TU-PROYECTO.supabase.co";
+const SUPABASE_KEY = "AQUI_SUPABASE_SERVICE_ROLE_KEY";
+const CHATWOOT_URL = "https://TU-CHATWOOT.duckdns.org";
+const CHATWOOT_TOKEN = "AQUI_CHATWOOT_API_TOKEN";
 const ACCOUNT_ID = "1";
-const EVOLUTION_URL = "https://evo.crmesteban.duckdns.org";
-const EVOLUTION_KEY = "25bbc50b8bfeb365633899951d2b9a6c4110f94e08535133d0953da151b4a1d3";
+const EVOLUTION_URL = "https://TU-EVOLUTION.duckdns.org";
+const EVOLUTION_KEY = "AQUI_EVOLUTION_API_KEY";
 const NUMERO_MAESTRO = "573054021111";
 const INSTANCIA_MAESTRO = "personal";
 

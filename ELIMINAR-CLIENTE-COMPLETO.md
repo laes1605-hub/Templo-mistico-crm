@@ -50,12 +50,13 @@ nuevo, una conversación nueva y el lead arranca en **Lead Nuevo**. Con los
 
    | Variable | Valor |
    | --- | --- |
-   | `CHATWOOT_URL` | `https://crmesteban.duckdns.org` (ya es el valor por defecto) |
+   | `CHATWOOT_URL` | URL de tu Chatwoot (ej. `https://tu-chatwoot.duckdns.org`) |
    | `CHATWOOT_API_TOKEN` | Token de un usuario **administrador** de Chatwoot |
    | `CHATWOOT_ACCOUNT_ID` | `1` |
    | `SUPABASE_SERVICE_ROLE_KEY` | La service role key del proyecto |
 
-   Sin `CHATWOOT_API_TOKEN` se usa el mismo token que ya está en
+   Ya NO hay token de respaldo en el código. Sin `CHATWOOT_API_TOKEN` el botón de borrado
+   no autentica contra Chatwoot, así que configuralo en Vercel.
    `n8n/luna/code/*.js`. Si ese token no tiene rol administrador, Chatwoot no
    deja borrar la conversación: el CRM entonces **vacía la memoria de Luna**
    (atributos + fichas privadas + etiquetas) y deja el historial del chat, y te lo

@@ -22,8 +22,8 @@ function extraHeadersFor(target: URL): Record<string, string> {
       if (target.origin === new URL(rawBase).origin) headers[header] = value;
     } catch {}
   };
-  addIfSameOrigin(process.env.CHATWOOT_URL || "https://crmesteban.duckdns.org", "api_access_token", process.env.CHATWOOT_API_TOKEN || "");
-  addIfSameOrigin(process.env.EVOLUTION_API_URL || "https://evo.crmesteban.duckdns.org", "apikey", process.env.EVOLUTION_API_KEY || "");
+  addIfSameOrigin(process.env.CHATWOOT_URL || "https://TU-CHATWOOT.duckdns.org", "api_access_token", process.env.CHATWOOT_API_TOKEN || "");
+  addIfSameOrigin(process.env.EVOLUTION_API_URL || "https://TU-EVOLUTION.duckdns.org", "apikey", process.env.EVOLUTION_API_KEY || "");
   return headers;
 }
 

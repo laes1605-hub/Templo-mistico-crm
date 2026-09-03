@@ -1,30 +1,50 @@
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
+import { supabaseConfig, mensajeAdminFaltante } from "./supabase-config";
 
 /**
- * Cliente de Supabase para uso EXCLUSIVO en el servidor (route handlers).
+ * Cliente de Supabase para uso EXCLUSIVO en el servidor (route handlers) y en
+ * procesos de Node.
  *
- * Si existe SUPABASE_SERVICE_ROLE_KEY usa la service role (ignora RLS), que es
- * lo recomendado para que el Cerebro pueda escribir reglas aunque la tabla esté
- * protegida. Si no existe, cae a la anon key para no romper el despliegue.
+ * Utiliza SUPABASE_SERVICE_ROLE_KEY (ignora RLS), que es lo recomendado para
+ * que el Cerebro pueda escribir reglas aunque la tabla esté protegida. Si
+ * falta la service role usa la anon key; si no hay ninguna, exporta una
+ * trampa que falla con un mensaje claro.
  */
-const supabaseUrl =
-  process.env.SUPABASE_URL ||
-  process.env.NEXT_PUBLIC_SUPABASE_URL ||
-  "https://qrrkokfmbdtodrqbfehs.supabase.co";
+export const usingServiceRole = Boolean(supabaseConfig.serviceRoleKey);
 
-const serviceRoleKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
+function clienteSinConfigurar(): SupabaseClient {
+  const error = () => {
+    throw new Error(
+      mensajeAdminFaltante() || "Supabase sin configurar en el servidor."
+    );
+  };
+  const trampa: any = {
+    from: () => {
+      error();
+    },
+    rpc: () => {
+      error();
+    },
+    channel: () => {
+      error();
+    },
+    auth: new Proxy({}, { get: () => error }),
+    storage: new Proxy({}, { get: () => error }),
+  };
+  return new Proxy(trampa, {
+    get(_objetivo, propiedad) {
+      if (propiedad in trampa) return trampa[propiedad];
+      return error();
+    },
+  });
+}
 
-const anonKey = (
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFycmtva2ZtYmR0b2RycWJmZWhzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODcxOTU1NDUsImV4cCI6MjEwMjc3MTU0NX0.pPbrwPjodbOg8xstoDekDHedQyZNQgmqLX4LShX0t2M"
-).trim();
-
-export const usingServiceRole = Boolean(serviceRoleKey);
-
-export const supabaseAdmin: SupabaseClient = createClient(
-  supabaseUrl,
-  serviceRoleKey || anonKey,
-  {
-    auth: { persistSession: false, autoRefreshToken: false },
-  }
-);
+export const supabaseAdmin: SupabaseClient = supabaseConfig.adminReady
+  ? createClient(supabaseConfig.url, supabaseConfig.serviceRoleKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    })
+  : supabaseConfig.url && supabaseConfig.anonKey
+    ? createClient(supabaseConfig.url, supabaseConfig.anonKey, {
+        auth: { persistSession: false, autoRefreshToken: false },
+      })
+    : clienteSinConfigurar();

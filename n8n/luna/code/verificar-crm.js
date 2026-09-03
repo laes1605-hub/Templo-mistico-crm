@@ -5,10 +5,10 @@
 // =====================================================
 // Luna debe estar ACTIVA y responder en etapas "Nuevo Lead" y "Datos",
 // validando por el NOMBRE visible, no por la clave (etapa_xxx_timestamp).
-const SUPABASE_URL = "https://qrrkokfmbdtodrqbfehs.supabase.co";
-const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFycmtva2ZtYmR0b2RycWJmZWhzIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NzE5NTU0NSwiZXhwIjoyMTAyNzcxNTQ1fQ.bFwt6pAidvSEEuv3UNuKeZYwkfB-d2OPgMHM8MmwcD8";
-const CHATWOOT_URL = "https://crmesteban.duckdns.org";
-const CHATWOOT_TOKEN = "KKaF2gF4bJZvnSkqKnR42zD8";
+const SUPABASE_URL = "https://TU-PROYECTO.supabase.co";
+const SUPABASE_KEY = "AQUI_SUPABASE_SERVICE_ROLE_KEY";
+const CHATWOOT_URL = "https://TU-CHATWOOT.duckdns.org";
+const CHATWOOT_TOKEN = "AQUI_CHATWOOT_API_TOKEN";
 const ACCOUNT_ID = "1";
 
 const headers = {

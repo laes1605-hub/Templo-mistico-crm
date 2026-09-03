@@ -16,11 +16,6 @@
  *      se quitan las etiquetas. Con eso Luna arranca de cero igual.
  */
 
-// Mismo token que ya está publicado en n8n/luna/code/*.js y en el workflow
-// exportable. Se usa únicamente si no defines CHATWOOT_API_TOKEN en Vercel,
-// para que el botón funcione sin configuración extra.
-const TOKEN_RESPALDO = "KKaF2gF4bJZvnSkqKnR42zD8";
-
 export type ChatwootConfig = {
   url: string;
   token: string;
@@ -32,8 +27,8 @@ export type ChatwootConfig = {
 export function chatwootConfig(): ChatwootConfig {
   const tokenEntorno = (process.env.CHATWOOT_API_TOKEN || "").trim();
   return {
-    url: (process.env.CHATWOOT_URL || "https://crmesteban.duckdns.org").replace(/\/$/, ""),
-    token: tokenEntorno || TOKEN_RESPALDO,
+    url: (process.env.CHATWOOT_URL || "https://TU-CHATWOOT.duckdns.org").replace(/\/$/, ""),
+    token: tokenEntorno,
     accountId: (process.env.CHATWOOT_ACCOUNT_ID || "1").trim() || "1",
     tokenDeEntorno: Boolean(tokenEntorno),
   };

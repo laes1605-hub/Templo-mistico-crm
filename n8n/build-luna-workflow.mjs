@@ -113,7 +113,7 @@ renombrarNodo("chatwoot1", "Enviar Mensaje Chatwoot");
 
 // El nodo de historial no depende del item anterior
 porNombre.get("Historial").parameters.url =
-  "=https://crmesteban.duckdns.org/api/v1/accounts/1/conversations/{{ $('Webhook').first().json.body.conversation.id }}/messages?per_page=50";
+  "=https://TU-CHATWOOT.duckdns.org/api/v1/accounts/1/conversations/{{ $('Webhook').first().json.body.conversation.id }}/messages?per_page=50";
 porNombre.get("Historial").position = [6480, -1776];
 
 // La clasificacion de lead leia un campo que no existe
@@ -350,7 +350,43 @@ wf.connections = {
 };
 
 const base = JSON.stringify(wf, null, 2) + "\n";
-const MARCAS_LLAVES = ["sk-" + "proj-", "gs" + "k_"];
+const MARCAS_LLAVES = ["sk-" + "proj-", "sk-" + "fish-", "gs" + "k_"];
+
+// Marcadores que existen en base-workflow / codigo Luna. En el repo nunca hay
+// valores reales. La version github conserva estos marcadores (o expresiones
+// $env) y la version importable los reemplaza por los valores del archivo local
+// n8n/luna/secrets.local.json (o por marcadores AQUI_* si falta).
+const MARCADORES = [
+  { marcador: "https://TU-PROYECTO.supabase.co", env: "SUPABASE_URL", relleno: "AQUI_SUPABASE_URL" },
+  { marcador: "AQUI_SUPABASE_SERVICE_ROLE_KEY", env: "SUPABASE_SERVICE_ROLE_KEY", relleno: "AQUI_SUPABASE_SERVICE_ROLE_KEY" },
+  { marcador: "AQUI_SUPABASE_ANON_KEY", env: "SUPABASE_ANON_KEY", relleno: "AQUI_SUPABASE_ANON_KEY" },
+  { marcador: "https://TU-CHATWOOT.duckdns.org", env: "CHATWOOT_URL", relleno: "AQUI_CHATWOOT_URL" },
+  { marcador: "AQUI_CHATWOOT_API_TOKEN", env: "CHATWOOT_API_TOKEN", relleno: "AQUI_CHATWOOT_API_TOKEN" },
+  { marcador: "https://TU-EVOLUTION.duckdns.org", env: "EVOLUTION_URL", relleno: "AQUI_EVOLUTION_URL" },
+  { marcador: "AQUI_EVOLUTION_API_KEY", env: "EVOLUTION_API_KEY", relleno: "AQUI_EVOLUTION_API_KEY" },
+  { marcador: "AQUI_FISH_AUDIO_API_KEY", env: "FISH_AUDIO_API_KEY", relleno: "AQUI_FISH_AUDIO_API_KEY" },
+  { marcador: "AQUI_CEREBRO_API_SECRET", env: "CEREBRO_API_SECRET", relleno: "AQUI_CEREBRO_API_SECRET" },
+  { marcador: "AQUI_MASTER_NUMBER", env: "MASTER_NUMBER", relleno: "AQUI_MASTER_NUMBER" },
+];
+
+/**
+ * Reemplaza $env.* (sólo OPENAI/GROQ, que el builder usaba con expresiones) y
+ * los marcadores literales AQUI_ prefijo y TU-prefijo por el valor resultante
+ * de `fn(clave, relleno)`.
+ */
+function aplicarMarcadores(texto, fn) {
+  let salida = texto;
+  for (const clave of ["OPENAI_API_KEY", "GROQ_API_KEY"]) {
+    salida = salida
+      .split("={{ 'Bearer ' + $env." + clave + " }}")
+      .join("Bearer " + fn(clave, "AQUI_" + clave));
+    salida = salida.split("={{ $env." + clave + " }}").join(fn(clave, "AQUI_" + clave));
+  }
+  for (const m of MARCADORES) {
+    salida = salida.split(m.marcador).join(fn(m.env, m.relleno));
+  }
+  return salida;
+}
 
 // 1) Version del repo: jamas puede llevar llaves (GitHub push protection).
 if (MARCAS_LLAVES.some((marca) => base.includes(marca))) {
@@ -363,11 +399,7 @@ fs.writeFileSync(SALIDA_GITHUB, base, "utf8");
 const RUTA_SECRETS = path.join(__dirname, "luna", "secrets.local.json");
 if (fs.existsSync(RUTA_SECRETS)) {
   const secretos = JSON.parse(fs.readFileSync(RUTA_SECRETS, "utf8"));
-  let importable = base;
-  for (const [clave, valor] of Object.entries(secretos)) {
-    if (!valor) continue;
-    importable = importable.split("={{ 'Bearer ' + $env." + clave + " }}").join("Bearer " + valor);
-  }
+  const importable = aplicarMarcadores(base, (clave, relleno) => secretos[clave] || relleno);
   if (importable.includes("$env.")) {
     throw new Error("El archivo importable quedo con $env y fallaria con N8N_BLOCK_ENV_ACCESS_IN_NODE");
   }
@@ -380,18 +412,13 @@ if (fs.existsSync(RUTA_SECRETS)) {
   // El usuario reemplaza los marcadores en un editor de texto y el archivo
   // queda EXACTAMENTE igual al importable con llaves (misma configuración
   // interna, nada que tocar dentro de n8n).
-  let plantilla = base;
-  for (const clave of ["OPENAI_API_KEY", "GROQ_API_KEY"]) {
-    plantilla = plantilla
-      .split("={{ 'Bearer ' + $env." + clave + " }}")
-      .join("Bearer AQUI_" + clave);
-  }
+  const plantilla = aplicarMarcadores(base, (_clave, relleno) => relleno);
   if (plantilla.includes("$env.")) {
     throw new Error("La plantilla quedo con $env y fallaria con N8N_BLOCK_ENV_ACCESS_IN_NODE");
   }
   fs.writeFileSync(SALIDA_RELLENAR, plantilla, "utf8");
   console.log("! Falta n8n/luna/secrets.local.json: se genero " + path.relative(raiz, SALIDA_RELLENAR));
-  console.log("  Reemplaza AQUI_OPENAI_API_KEY y AQUI_GROQ_API_KEY en un editor de texto antes de importar en n8n.");
+  console.log("  Reemplaza los marcadores AQUI_* / AQUI_CHATWOOT_URL / AQUI_SUPABASE_URL en un editor de texto antes de importar en n8n.");
 }
 
 const nombres = wf.nodes.map((n) => n.name);

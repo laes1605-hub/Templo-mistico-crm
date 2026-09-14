@@ -2,6 +2,7 @@
   "appId": "com.templomistico.crm",
   "appName": "Templo Místico CRM",
   "webDir": "out",
+  "backgroundColor": "#090d16",
   "server": {
     "url": "https://templo-mistico-crm.vercel.app",
     "cleartext": false,

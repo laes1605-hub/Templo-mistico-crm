@@ -1,0 +1,14 @@
+# Assets web copiados (se regeneran con `npx cap sync ios`)
+App/App/public
+
+# Copias generadas de la configuración
+App/App/capacitor.config.json
+App/App/config.xml
+
+# Plugins Cordova para Capacitor (generados)
+capacitor-cordova-ios-plugins
+
+# Salidas de compilación
+*.ipa
+App/build/
+DerivedData/

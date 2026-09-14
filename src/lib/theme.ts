@@ -4,6 +4,7 @@
 // Modo: dark | light | system  ·  Acento: purple | blue | emerald | rose | amber | cyan
 
 import { Capacitor, registerPlugin } from "@capacitor/core";
+import { StatusBar, Style as StatusBarStyle } from "@capacitor/status-bar";
 
 export type ThemeMode = "dark" | "light" | "system";
 export type ThemeAccent = "purple" | "blue" | "emerald" | "rose" | "amber" | "cyan";
@@ -31,14 +32,26 @@ const SystemBars = registerPlugin<SystemBarsPlugin>("SystemBars");
 
 /**
  * Lleva el color de la barra de estado (y de navegación) al mismo fondo del
- * CRM. Es un no-op en navegador: sólo actúa dentro de la APK Android.
+ * CRM. Es un no-op en navegador: sólo actúa dentro de las apps nativas
+ * (APK Android e IPA iOS/iPad).
  */
 function syncBarrasSistema(isLight: boolean): void {
+  let platform = "";
   try {
-    if (!Capacitor.isNativePlatform() || Capacitor.getPlatform() !== "android") return;
+    if (!Capacitor.isNativePlatform()) return;
+    platform = Capacitor.getPlatform();
   } catch {
     return;
   }
+  // iOS/iPad: la web se dibuja bajo la barra de estado (fondo uniforme) y
+  // sólo hay que alinear el estilo del texto (hora/batería) con el tema.
+  // Requiere UIViewControllerBasedStatusBarAppearance=false en Info.plist.
+  if (platform === "ios") {
+    // Style.Dark = texto oscuro sobre fondo claro; Style.Light = texto claro sobre fondo oscuro.
+    StatusBar.setStyle({ style: isLight ? StatusBarStyle.Dark : StatusBarStyle.Light }).catch(() => {});
+    return;
+  }
+  if (platform !== "android") return;
   const color = isLight ? BACKGROUND_LIGHT : BACKGROUND_DARK;
   const lightIcons = !isLight;
   // Android 14 y anteriores: pinta la franja con el color exacto.

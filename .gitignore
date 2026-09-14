@@ -11,9 +11,10 @@ android/.gradle
 android/app/release
 android/capacitor.config.json
 android/build
-# APK
+# APK / IPA (el CI los genera y los añade con git add -f)
 *.apk
 *.aab
+*.ipa
 # Capacitor
 .capacitor
 

@@ -18,6 +18,17 @@ export interface GuardarContactoResult {
   verificadoEnAgenda: boolean;
 }
 
+/** Cómo terminó el envío del contacto hacia la cuenta de Google. */
+export type ViaGuardadoGoogle = "compartir_nativo" | "compartir_web" | "descarga";
+
+export interface GuardarContactoGoogleResult {
+  /** compartir_nativo = menú de Android · compartir_web = hoja del navegador · descarga = .vcf */
+  metodo: ViaGuardadoGoogle;
+  fileName: string;
+  nombreGuardado: string;
+  telefono: string;
+}
+
 function esPlataformaNativa(): boolean {
   try {
     return Capacitor.isNativePlatform();
@@ -53,6 +64,48 @@ function nombreArchivo(nombre: string, telefono: string): string {
     .replace(/^_+|_+$/g, "")
     .slice(0, 60);
   return `${base || "contacto"}.vcf`;
+}
+
+/**
+ * Ficha vCard 3.0 del contacto. Es el formato que entienden Contactos de
+ * Android, Google Contacts, iPhone y Outlook, así que sirve tanto para la
+ * descarga en web/PWA como para compartirla y guardarla en la cuenta Google.
+ */
+function construirVCard(nombre: string, telefono: string): { vcard: string; nombreArchivo: string } {
+  const { dado, familia } = separarNombre(nombre.trim() || telefono.trim() || "Cliente");
+  const vcard = [
+    "BEGIN:VCARD",
+    "VERSION:3.0",
+    `N:${escaparVCard(familia || "")};${escaparVCard(dado)};;;`,
+    `FN:${escaparVCard(nombre.trim() || telefono.trim() || "Cliente")}`,
+    `TEL;TYPE=CELL,VOICE:${escaparVCard(telefono.trim())}`,
+    "END:VCARD",
+    "",
+  ].join("\r\n");
+  return { vcard, nombreArchivo: nombreArchivo(nombre, telefono) };
+}
+
+/** base64 de un texto UTF-8 (lo que espera Filesystem.writeFile para un archivo). */
+function textoABase64(texto: string): string {
+  const bytes = new TextEncoder().encode(texto);
+  let binario = "";
+  for (let i = 0; i < bytes.length; i++) binario += String.fromCharCode(bytes[i]);
+  return btoa(binario);
+}
+
+/** Descarga clásica del .vcf (navegador sin hoja de compartir). */
+function descargarVCard(vcard: string, fileName: string) {
+  const blob = new Blob([vcard], { type: "text/vcard;charset=utf-8" });
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = fileName;
+  anchor.rel = "noopener";
+  anchor.style.display = "none";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 4000);
 }
 
 function normalizarNombre(nombre: string): string {
@@ -214,28 +267,8 @@ export async function guardarContactoEnTelefono(nombre: string, telefono: string
   }
 
   const nombreUnico = crearNombreUnico(nombreLimpio, leerNombresWeb());
-  const { dado, familia } = separarNombre(nombreUnico.nombre);
-  const vcard = [
-    "BEGIN:VCARD",
-    "VERSION:3.0",
-    `N:${escaparVCard(familia || "")};${escaparVCard(dado)};;;`,
-    `FN:${escaparVCard(nombreUnico.nombre)}`,
-    `TEL;TYPE=CELL,VOICE:${escaparVCard(telefonoLimpio)}`,
-    "END:VCARD",
-    "",
-  ].join("\r\n");
-  const blob = new Blob([vcard], { type: "text/vcard;charset=utf-8" });
-  const objectUrl = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  const fileName = nombreArchivo(nombreUnico.nombre, telefonoLimpio);
-  anchor.href = objectUrl;
-  anchor.download = fileName;
-  anchor.rel = "noopener";
-  anchor.style.display = "none";
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 4000);
+  const { vcard, nombreArchivo: fileName } = construirVCard(nombreUnico.nombre, telefonoLimpio);
+  descargarVCard(vcard, fileName);
   recordarNombreWeb(nombreUnico.nombre);
 
   return {
@@ -245,4 +278,86 @@ export async function guardarContactoEnTelefono(nombre: string, telefono: string
     nombreAjustado: nombreUnico.ajustado,
     verificadoEnAgenda: false,
   };
+}
+
+/**
+ * Guarda el contacto en la CUENTA DE GOOGLE del teléfono (Google Contacts).
+ *
+ * No se puede escribir en otra cuenta desde el plugin de contactos sin
+ * permisos extra (la APK crea el contacto en la agenda general), así que el
+ * camino corto y sin configuración es entregar la ficha .vcf al sistema:
+ *
+ *   · APK Android → se escribe el .vcf y se abre el menú de compartir; al
+ *     elegir Contactos/Google Contacts, el contacto se importa en la cuenta
+ *     Google y queda sincronizado (también aparece en el teléfono).
+ *   · Navegador con hoja de compartir (Chrome Android) → igual, pero con la
+ *     hoja del propio navegador.
+ *   · Sin hoja de compartir → se descarga el .vcf para abrirlo y elegir la
+ *     cuenta Google en el teléfono.
+ *
+ * El nombre NO lleva consecutivo aquí: Google Contacts resuelve los repetidos
+ * por su cuenta y así no se crean "Pedro 2" innecesarios en la nube.
+ */
+export async function guardarContactoEnGoogle(nombre: string, telefono: string): Promise<GuardarContactoGoogleResult> {
+  const nombreLimpio = (nombre || telefono || "Cliente").trim();
+  const telefonoLimpio = (telefono || "").trim();
+  if (!telefonoLimpio) throw new Error("El cliente no tiene un número de teléfono válido.");
+
+  const { vcard, nombreArchivo: fileName } = construirVCard(nombreLimpio, telefonoLimpio);
+  const titulo = `Contacto: ${nombreLimpio}`;
+
+  // 1) APK Android: archivo + menú de compartir nativo.
+  if (esPlataformaNativa()) {
+    try {
+      const { Filesystem, FilesystemDirectory } = await import("@capacitor/filesystem");
+      const { Share } = await import("@capacitor/share");
+      // Un archivo por contacto (se sobrescribe al repetir): queda también en
+      // Documentos › contactos por si hay que abrirlo desde Archivos.
+      const { uri } = await Filesystem.writeFile({
+        path: `contactos/${fileName}`,
+        data: textoABase64(vcard),
+        directory: FilesystemDirectory.Documents,
+      });
+      await Share.share({
+        files: [uri],
+        title: titulo,
+        dialogTitle: "Guardar contacto en…",
+      });
+      return { metodo: "compartir_nativo", fileName, nombreGuardado: nombreLimpio, telefono: telefonoLimpio };
+    } catch (e: any) {
+      // Si el usuario cierra el menú de compartir no es un error: no reintentar.
+      if (esCancelacion(e)) {
+        return { metodo: "compartir_nativo", fileName, nombreGuardado: nombreLimpio, telefono: telefonoLimpio };
+      }
+      console.warn("No se pudo compartir el vCard, se intenta la descarga:", e);
+    }
+  }
+
+  // 2) Navegador con hoja de compartir (permite elegir Contactos/Google).
+  if (typeof navigator !== "undefined" && typeof navigator.canShare === "function" && typeof File !== "undefined") {
+    try {
+      const file = new File([new Blob([vcard], { type: "text/vcard" })], fileName, { type: "text/vcard" });
+      if (navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: titulo });
+        return { metodo: "compartir_web", fileName, nombreGuardado: nombreLimpio, telefono: telefonoLimpio };
+      }
+    } catch (e: any) {
+      if (esCancelacion(e)) {
+        return { metodo: "compartir_web", fileName, nombreGuardado: nombreLimpio, telefono: telefonoLimpio };
+      }
+      console.warn("La hoja de compartir del navegador falló:", e);
+    }
+  }
+
+  // 3) Respaldo: descarga del .vcf.
+  if (typeof document === "undefined" || typeof URL === "undefined") {
+    throw new Error("No se puede exportar el contacto desde esta plataforma.");
+  }
+  descargarVCard(vcard, fileName);
+  return { metodo: "descarga", fileName, nombreGuardado: nombreLimpio, telefono: telefonoLimpio };
+}
+
+function esCancelacion(error: any): boolean {
+  const nombre = String(error?.name || error?.message || "").toLowerCase();
+  return nombre.includes("abort") || nombre.includes("cancel");
 }

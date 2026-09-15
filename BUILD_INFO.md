@@ -1,8 +1,117 @@
 # Build Info - Templo Místico CRM
 
-**Fecha:** Fri Aug 29 (rama `arena/01a04b9a-templo-mistico-crm`)
+**Fecha:** 2026-09-15 (rama `arena/01a0a6cd-templo-mistico-crm`)
 **Commit:** (ver git log)
-**Branch:** arena/01a04b9a-templo-mistico-crm
+**Branch:** arena/01a0a6cd-templo-mistico-crm
+
+## Build 2026-09-15: ventana de 24 h, fechas en el chat, guardado en Google y etapa Vencidos
+
+Cuatro cosas pedidas: (1) ver cuánto queda de la ventana de 24 h en los chats del
+WhatsApp API, (2) marcas horizontales de fecha dentro de TODOS los chats,
+(3) guardar los contactos también en la cuenta de Google y (4) que los chats que
+vencen en el WhatsApp API se vayan solos a la etapa «Vencidos», que se responde
+desde el WhatsApp Personal.
+
+### 1. Ventana de 24 h (WhatsApp API / Meta)
+
+- El contador se calcula desde el **último mensaje del CLIENTE**, que es la regla real
+  de Meta (no desde el último mensaje propio). Dentro de la ventana se puede responder
+  con texto libre; fuera, WhatsApp API solo acepta plantillas aprobadas.
+- Se muestra en tres sitios, solo en los chats del WhatsApp API (fuente `meta_business`):
+  - **Lista de chats**: chip junto a la hora (`⏳ 21 h 32 min`).
+  - **Cabecera del chat abierto**: pastilla con el tiempo restante.
+  - **Barra "Responde desde ..."** sobre el compositor, siempre visible al escribir.
+  - El tooltip de los tres explica a qué hora se cierra la ventana y cuándo escribió
+    el cliente por última vez.
+- Colores por urgencia: verde (más de 6 h) → ámbar (≤ 6 h) → naranja parpadeante
+  (≤ 1 h) → rojo cuando ya cerró, con el tiempo transcurrido (`cerrada hace 3 h`).
+- Los chats de WhatsApp Personal (Evolution, `👤`) no muestran ventana: esa regla es
+  exclusiva del WhatsApp API.
+- Datos: `conversaciones.ultimo_entrante_en`, mantenida por un trigger con cada
+  mensaje (aunque la app esté cerrada). Si la migración todavía no está aplicada, el
+  dashboard calcula la marca con una consulta corta (una vez por minuto, solo chats
+  del API con mensajes de los últimos 8 días) y en cuanto exista la columna deja de
+  consultar.
+- Archivos: `src/lib/tiempo-chat.ts` (lógica pura), `src/components/VentanaWhatsApp.tsx`
+  (chip/pastilla/barra), `src/app/page.tsx` (cálculo, respaldo y pintado).
+
+### 2. Marcas de fecha en el historial
+
+- Línea horizontal con la fecha centrada cada vez que cambia el día, en todos los
+  chats (API y Personal), y el chat continúa debajo como siempre.
+- Textos estilo WhatsApp: `Hoy` · `Ayer` · día de la semana (últimos 7 días, `Sábado`)
+  · `17 de julio` · con año si es de otro año (`20 de diciembre de 2025`). El tooltip
+  lleva la fecha larga (`sábado, 20 de diciembre de 2025`).
+- La marca se dibuja solo cuando el mensaje cambia de día respecto al anterior (el
+  primero del historial también la lleva), así que un chat con meses de historial no
+  repite la fecha en cada mensaje.
+- Archivos: `src/components/DivisorFecha.tsx` + `src/lib/tiempo-chat.ts`.
+
+### 3. Contactos en la cuenta de Google
+
+- Nuevo botón **"Guardar en cuenta Google"** en la ficha del cliente, junto al de
+  "Guardar en teléfono".
+- Flujo sin configuración: se genera la ficha `.vcf` y se abre el menú de compartir
+  (Share de Capacitor en la APK, Web Share en el navegador; si no hay hoja de
+  compartir, se descarga el `.vcf`). Al elegir **Contactos / Google Contacts** y la
+  cuenta de Google, el contacto queda en la nube y también en el teléfono.
+- El guardado nativo de la APK (`Contacts.createContact`) sigue igual y no cambia.
+- Detalle y camino alternativo (escritura directa en la cuenta Google con plugin
+  nativo) en `GUARDAR-CONTACTOS-GOOGLE.md`.
+- Archivos: `src/lib/contacts.ts` (`construirVCard`, `descargarVCard`,
+  `guardarContactoEnGoogle`) y `src/app/page.tsx` (botón y avisos).
+
+### 4. Etapa «Vencidos» (WhatsApp API → WhatsApp Personal)
+
+- Cuando la ventana de 24 h de un chat del WhatsApp API se cierra, ese número ya no
+  permite responder con texto libre: el CRM lo pasa solo a la etapa **Vencidos**
+  (cuenta `evolution` = WhatsApp Personal) para continuar la conversación ahí.
+- Reglas:
+  - Solo se mueven los chats cuya etapa responde el **WhatsApp API**
+    (`cuenta_responsable = 'meta_business'`). Los que ya estaban en una etapa del
+    **WhatsApp Personal** nunca se tocan.
+  - Sin margen de cortesía: se mueven en cuanto la ventana vence.
+  - Se ejecuta al abrir el CRM, así que también traspasa de una vez el historial que
+    ya estaba vencido, y luego cada minuto (los que vencen en el momento se van solos).
+  - Si el cliente vuelve a escribir **por el API** y la ventana se reabre, el chat
+    **regresa solo** a la etapa donde estaba antes de vencer (memoria en
+    `clientes.estado_antes_vencido`, que también se guarda al mover a mano).
+  - Los chats spam y archivados no se mueven; la etapa Vencidos no se puede borrar.
+  - Si una escritura falla (por ejemplo, migración pendiente), el CRM espera 5 minutos
+    antes de reintentar, en vez de repetir el error cada 15 segundos.
+  - Seguridad: la etapa Vencidos **no se inventa** si no está en la base. Sin la
+    migración 20260919 el motor no mueve nada (y avisa en la consola): mover un chat a
+    una etapa inexistente lo haría desaparecer del pipeline y del listado.
+- Interruptor en **Ajustes → «Traspaso automático a Vencidos»** (`config_general.vencidos_auto`,
+  `true` por defecto); avisa al dashboard al instante para no esperar la recarga.
+- Archivos: `src/lib/tiempo-chat.ts` (reglas puras: `decidirTraspasoVencidos`,
+  `tieneChatApi`, `ultimoEntranteApiDeConversacion`), `src/app/page.tsx` (motor de
+  traspaso, chips con el canal del API), `src/components/AjustesPanel.tsx` (interruptor),
+  `src/lib/sync-chatwoot.ts` (mantiene `ultimo_entrante_api_en`).
+- Detalle completo en `VENCIDOS-WHATSAPP-API.md`.
+
+### Verificación
+
+- `npm run test:tiempo` (`scripts/prueba-tiempo-chat.mjs`) — ✅ 60 pruebas, 0 fallos:
+  umbrales y textos de la ventana, duraciones, último entrante (ignora los enviados),
+  etiquetas de fecha por día/semana/mes/año, coherencia entre la marca de la base de
+  datos y los mensajes en pantalla, y las cuatro reglas de Vencidos (mover, no tocar
+  etapas del Personal, volver a la etapa anterior, sin margen).
+- `npx tsc --noEmit` ✅ · `npm run build` ✅
+- Vista previa del diseño sin tocar datos: `preview-ventana-24h.html`.
+- **Todo es web**: se publica con el deploy de Vercel y NO necesita APK nueva.
+
+### Migración nueva
+
+- `supabase/migrations/20260918_ventana_24h_whatsapp_api.sql` — columna
+  `conversaciones.ultimo_entrante_en`, índice parcial de entrantes, relleno del
+  historial, trigger por mensaje y RPC `recalcular_ultimos_entrantes()` para reparar
+  todo de una vez. Sin ella la app funciona (respaldo), pero el contador es menos
+  exacto en los chats viejos.
+- `supabase/migrations/20260919_vencidos_a_whatsapp_personal.sql` — etapa `vencidos`
+  (cuenta `evolution`), columna `clientes.estado_antes_vencido`, índice parcial y
+  función de consulta `clientes_vencidos_whatsapp_api()`. Sin ella el traspaso
+  funciona, pero se pierde el regreso automático a la etapa anterior.
 
 ## Build 2026-09-01: audios de respuestas rápidas a Supabase Storage
 
@@ -191,17 +300,24 @@ de la ventana nativa (gris/blanco según el modo del teléfono).
 - Estado: ✅ compilación verificada (sin errores)
 
 ## APK (automática en GitHub Actions)
-- Workflow listo: `ci/build-apk.yml` (hay que copiarlo a `.github/workflows/build-apk.yml`
-  para activarlo — el token del agente no tiene permiso `workflows` en GitHub)
+- Workflow activo en `.github/workflows/build-apk.yml` (el token del agente no tiene
+  permiso `workflows` en GitHub, así que no puede modificarlo: los cambios de CI se
+  aplican desde el navegador, ver `ARREGLAR-BUILD-APK.md`)
+- **Build APK en rojo desde el 14/09/2026 — arreglo pendiente de aplicar** (2 líneas):
+  Google retiró el paquete `tools` del Android SDK y `android-actions/setup-android@v3`
+  lo pide por defecto. Instrucciones exactas en `ARREGLAR-BUILD-APK.md`
+  (ojo: solo subir a `@v4` NO basta, hay que añadir `packages: 'platform-tools'`)
 - Una vez activo, en cada push a `arena/**` o `main`: compila el APK debug en la
   nube, lo sube como artefacto y lo commitea en `apk/templo-mistico-crm-debug.apk`
 - App ID: com.templomistico.crm
 - App Name: Templo Místico CRM
-- Version: 1.3.1 (definida en `package.json` y usada por Android; `versionCode` 5)
+- Version: 1.3.2 (definida en `package.json` y usada por Android; `versionCode` 6)
 - WebDir: out · La APK carga https://templo-mistico-crm.vercel.app (server.url)
   → los cambios web van live con el deploy de Vercel, sin rebuild del APK
 
 ## Migraciones pendientes (Supabase SQL Editor)
+- supabase/migrations/20260918_ventana_24h_whatsapp_api.sql ← **nueva** (ventana de 24 h del WhatsApp API; si ya la aplicaste, vuelve a aplicarla: ahora también crea `ultimo_entrante_api_en`)
+- supabase/migrations/20260919_vencidos_a_whatsapp_personal.sql ← **nueva** (etapa Vencidos + memoria de la etapa anterior)
 - supabase/migrations/20260829_nombre_manual_prioridad_telefono.sql
 - supabase/migrations/20260830_enrutar_leads_por_numero.sql
 - supabase/migrations/20260902_luna_etapas_expediente.sql  ← nueva (Luna por etapas)

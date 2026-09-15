@@ -578,8 +578,8 @@ export default function CerebroPanel() {
 
       {/* ------------------------------------------------- MODAL: MEMORIA */}
       {showMemoria && (
-        <div className="fixed inset-0 z-50 bg-scrim flex items-center justify-center p-4 backdrop-blur-md">
-          <div className="w-full max-w-3xl bg-surface border border-border rounded-2xl p-6 space-y-4 shadow-2xl max-h-[90vh] flex flex-col">
+        <div className="fixed inset-0 z-50 bg-scrim flex justify-center overflow-y-auto p-3 sm:p-4 pt-[calc(0.75rem_+_var(--safe-area-inset-top))] pb-[calc(0.75rem_+_var(--safe-area-inset-bottom))] backdrop-blur-md">
+          <div className="w-full max-w-3xl my-auto max-h-[92dvh] bg-surface border border-border rounded-2xl p-6 space-y-4 shadow-2xl flex flex-col">
             <div className="flex items-center justify-between border-b border-border pb-3">
               <div className="flex items-center gap-2 text-emerald-400">
                 <ShieldCheck className="w-5 h-5" />
@@ -611,8 +611,8 @@ export default function CerebroPanel() {
 
       {/* ------------------------------------------ MODAL: LECCIÓN MANUAL */}
       {showNueva && (
-        <div className="fixed inset-0 z-50 bg-scrim flex items-center justify-center p-4 backdrop-blur-md">
-          <div className="w-full max-w-lg bg-surface border border-border rounded-2xl p-6 space-y-4 shadow-2xl">
+        <div className="fixed inset-0 z-50 bg-scrim flex justify-center overflow-y-auto p-3 sm:p-4 pt-[calc(0.75rem_+_var(--safe-area-inset-top))] pb-[calc(0.75rem_+_var(--safe-area-inset-bottom))] backdrop-blur-md">
+          <div className="w-full max-w-lg my-auto max-h-[92dvh] overflow-y-auto overscroll-contain bg-surface border border-border rounded-2xl p-6 space-y-4 shadow-2xl">
             <div className="flex items-center justify-between border-b border-border pb-3">
               <div className="flex items-center gap-2 text-purple-400"><Plus className="w-5 h-5" /><h3 className="text-lg font-bold text-gray-100">Enseñarle algo a Luna</h3></div>
               <button onClick={() => setShowNueva(false)} className="text-gray-400 hover:text-white"><X className="w-5 h-5" /></button>

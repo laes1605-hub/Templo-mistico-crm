@@ -72,17 +72,19 @@ export default function VentanaWhatsApp({ estado, variante = "lista" }: {
       <span
         title={titulo}
         aria-label={titulo}
-        className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium ${tono.fondo} ${tono.borde} ${tono.texto}`}
-      >
-        {abierta ? (
-          <Clock className={`w-3.5 h-3.5 flex-shrink-0 ${tono.icono}`} />
-        ) : (
-          <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
-        )}
-        <span className="whitespace-nowrap">
-          <span className="hidden lg:inline">{estado.largo}</span>
-          <span className="lg:hidden">{abierta ? estado.corto : "Cerrada"}</span>
-        </span>
+      className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium min-w-0 ${tono.fondo} ${tono.borde} ${tono.texto}`}
+    >
+      {abierta ? (
+        <Clock className={`w-3.5 h-3.5 flex-shrink-0 ${tono.icono}`} />
+      ) : (
+        <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+      )}
+      <span className="min-w-0 truncate">
+        {/* El texto largo solo en pantallas muy anchas: así la pastilla no
+            empuja los botones de la cabecera fuera de la ventana del cliente. */}
+        <span className="hidden 2xl:inline">{estado.largo}</span>
+        <span className="2xl:hidden">{abierta ? estado.corto : "Cerrada"}</span>
+      </span>
       </span>
     );
   }
@@ -92,15 +94,18 @@ export default function VentanaWhatsApp({ estado, variante = "lista" }: {
     <span
       title={titulo}
       aria-label={titulo}
-      className={`flex items-center gap-1 text-[11px] font-semibold flex-shrink-0 ${tono.texto}`}
+      // min-w-0 + truncate: si la columna del chat queda estrecha, este texto
+      // se recorta con "…" en vez de ensanchar la ventana del cliente y sacar
+      // de la pantalla el panel de la ficha.
+      className={`flex items-center gap-1 text-[11px] font-semibold min-w-0 ${tono.texto}`}
     >
       {abierta ? (
         <Clock className={`w-3 h-3 flex-shrink-0 ${tono.icono}`} />
       ) : (
         <AlertTriangle className="w-3 h-3 flex-shrink-0" />
       )}
-      <span className="hidden sm:inline">{abierta ? `Ventana: ${estado.corto}` : estado.largo}</span>
-      <span className="sm:hidden">{abierta ? estado.corto : "Cerrada"}</span>
+      <span className="hidden sm:inline truncate">{abierta ? `Ventana: ${estado.corto}` : estado.largo}</span>
+      <span className="sm:hidden flex-shrink-0">{abierta ? estado.corto : "Cerrada"}</span>
     </span>
   );
 }

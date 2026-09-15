@@ -29,7 +29,7 @@ function fallaSupabase(error: any, contexto: string) {
   return NextResponse.json(
     {
       error: faltaTabla
-        ? "La tabla 'cerebro_reglas' no existe todavía en Supabase. Ejecutá supabase/migrations/20260824_fase3_cerebro_ia.sql en el SQL Editor."
+        ? "La tabla 'cerebro_reglas' no existe todavía en Supabase. Ejecutá supabase/migrations/20260824000002_fase3_cerebro_ia.sql en el SQL Editor."
         : `${contexto}: ${msg}`,
       needsMigration: faltaTabla,
     },

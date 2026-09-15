@@ -311,7 +311,7 @@ export async function POST(req: Request) {
         return NextResponse.json(
           {
             error: faltaTabla
-              ? "La tabla 'cerebro_reglas' no existe. Ejecutá supabase/migrations/20260824_fase3_cerebro_ia.sql."
+              ? "La tabla 'cerebro_reglas' no existe. Ejecutá supabase/migrations/20260824000002_fase3_cerebro_ia.sql."
               : error.message,
             needsMigration: faltaTabla,
           },

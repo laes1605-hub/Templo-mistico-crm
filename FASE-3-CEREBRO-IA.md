@@ -8,7 +8,7 @@ Luna deja de depender de un prompt estático. Ahora **analiza las conversaciones
 
 | Archivo | Qué es |
 |---|---|
-| `supabase/migrations/20260824_fase3_cerebro_ia.sql` | Tablas `cerebro_reglas` + `cerebro_ejecuciones`, vista, RPCs, RLS y realtime |
+| `supabase/migrations/20260824000002_fase3_cerebro_ia.sql` | Tablas `cerebro_reglas` + `cerebro_ejecuciones`, vista, RPCs, RLS y realtime |
 | `src/lib/cerebro.ts` | Tipos, normalización, hash anti-duplicados, constructor del prompt |
 | `src/lib/supabase-admin.ts` | Cliente Supabase de servidor (service role) |
 | `src/lib/cerebro-auth.ts` | Auth por secreto compartido para n8n |
@@ -28,7 +28,7 @@ Luna deja de depender de un prompt estático. Ahora **analiza las conversaciones
 ## PASO 1 · Supabase — Crear las tablas
 
 1. Entrá a **Supabase → tu proyecto → SQL Editor → New query**.
-2. Abrí el archivo `supabase/migrations/20260824_fase3_cerebro_ia.sql` del repositorio.
+2. Abrí el archivo `supabase/migrations/20260824000002_fase3_cerebro_ia.sql` del repositorio.
 3. **Copiá TODO el contenido**, pegalo en el editor y tocá **Run**.
 4. Deberías ver `Success. No rows returned`.
 

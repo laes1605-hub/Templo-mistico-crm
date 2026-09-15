@@ -8,15 +8,18 @@
 --   3. Pulsa RUN (o Ctrl+Enter)
 --   4. Si aparece algún error al final, avísanos y revisamos.
 --
--- Este archivo concatena las 26 migraciones del proyecto EN ORDEN.
+-- Este archivo concatena las 29 migraciones (actualizado a formato 14 dígitos) del proyecto EN ORDEN.
 -- Todas son idempotentes: si algo falla a mitad, se puede volver a correr
 -- completo sin romper lo que ya se aplicó.
 -- ============================================================================
 
+-- NOTA 2026-09-15: versiones renombradas a formato YYYYMMDDHHMMSS (14 dígitos) para evitar
+-- duplicate key "schema_migrations_pkey" en Supabase. Ver scripts/reparar-historial-migraciones.sql
+
 BEGIN;
 
 -- ############################################################################
--- [01/26] 20260824_archivado_eliminado.sql
+-- [01/26] 20260824000001_archivado_eliminado.sql
 -- ############################################################################
 
 -- ============================================================================
@@ -61,7 +64,7 @@ END; $$;
 
 
 -- ############################################################################
--- [02/26] 20260824_fase3_cerebro_ia.sql
+-- [02/26] 20260824000002_fase3_cerebro_ia.sql
 -- ############################################################################
 
 -- ============================================================================
@@ -432,7 +435,7 @@ on conflict (hash_regla) do nothing;
 
 
 -- ############################################################################
--- [03/26] 20260825_fix_all.sql
+-- [03/26] 20260825000001_fix_all.sql
 -- ############################################################################
 
 -- ============================================================================
@@ -623,7 +626,7 @@ COMMENT ON TABLE public.config_general IS 'Configuraciones globales del CRM';
 
 
 -- ############################################################################
--- [04/26] 20260825_recordatorios_whatsapp_etapa.sql
+-- [04/26] 20260825000002_recordatorios_whatsapp_etapa.sql
 -- ############################################################################
 
 -- Recordatorios automáticos de WhatsApp por etapa.
@@ -665,7 +668,7 @@ COMMENT ON TABLE public.recordatorios_whatsapp IS
 
 
 -- ############################################################################
--- [05/26] 20260826_mejoras_luna_grupos_colores.sql
+-- [05/26] 20260826000001_mejoras_luna_grupos_colores.sql
 -- ############################################################################
 
 -- ============================================================================
@@ -868,7 +871,7 @@ END $$;
 
 
 -- ############################################################################
--- [06/26] 20260827_cartera_proximos_pagos.sql
+-- [06/26] 20260827000001_cartera_proximos_pagos.sql
 -- ############################################################################
 
 -- ============================================================================
@@ -923,7 +926,7 @@ COMMENT ON VIEW public.v_cartera_por_cobrar IS
 
 
 -- ############################################################################
--- [07/26] 20260828_no_leidos_atendidos_spam_negro.sql
+-- [07/26] 20260828000001_no_leidos_atendidos_spam_negro.sql
 -- ############################################################################
 
 -- ============================================================================
@@ -1035,7 +1038,7 @@ WHERE es_spam = true;
 
 
 -- ############################################################################
--- [08/26] 20260829_nombre_manual_prioridad_telefono.sql
+-- [08/26] 20260829000001_nombre_manual_prioridad_telefono.sql
 -- ############################################################################
 
 -- ============================================================================
@@ -1057,7 +1060,7 @@ WHERE es_spam = true;
 --
 -- La pestaña "Por leer" (chats con mensajes sin leer de todas las categorías)
 -- NO requiere cambios en la base de datos: usa el contador "no_leidos" de la
--- migración 20260828_no_leidos_atendidos_spam_negro.sql
+-- migración 20260828000001_no_leidos_atendidos_spam_negro.sql
 -- ============================================================================
 
 -- 1. COLUMNA nombre_manual EN CLIENTES
@@ -1074,7 +1077,7 @@ COMMENT ON COLUMN public.clientes.nombre_manual IS 'Nombre puesto manualmente po
 CREATE INDEX IF NOT EXISTS clientes_nombre_manual_idx ON public.clientes (nombre_manual) WHERE nombre_manual IS NOT NULL;
 
 -- RLS: clientes ya tiene políticas públicas de lectura/escritura
--- (ver migración 20260826_mejoras_luna_grupos_colores.sql), y las políticas
+-- (ver migración 20260826000001_mejoras_luna_grupos_colores.sql), y las políticas
 -- "FOR ALL" cubren automáticamente la columna nueva. Nada que hacer aquí.
 
 -- ============================================================================
@@ -1088,7 +1091,7 @@ CREATE INDEX IF NOT EXISTS clientes_nombre_manual_idx ON public.clientes (nombre
 
 
 -- ############################################################################
--- [09/26] 20260830_enrutar_leads_por_numero.sql
+-- [09/26] 20260830000001_enrutar_leads_por_numero.sql
 -- ############################################################################
 
 -- ============================================================================
@@ -1256,7 +1259,7 @@ SELECT public.enrutar_cliente_por_numero(id) FROM public.clientes;
 
 
 -- ############################################################################
--- [10/26] 20260831_fix_no_leidos_realtime.sql
+-- [10/26] 20260831000001_fix_no_leidos_realtime.sql
 -- ############################################################################
 
 -- Corrige el contador rojo de mensajes pendientes.
@@ -1296,7 +1299,7 @@ SELECT public.sincronizar_no_leidos();
 
 
 -- ############################################################################
--- [11/26] 20260901_unificar_whatsapp_personal_templo.sql
+-- [11/26] 20260901000001_unificar_whatsapp_personal_templo.sql
 -- ############################################################################
 
 -- Unifica automáticamente las conversaciones del mismo cliente.
@@ -1383,7 +1386,7 @@ GRANT EXECUTE ON FUNCTION public.unificar_conversaciones_whatsapp() TO anon, aut
 
 
 -- ############################################################################
--- [12/26] 20260902_luna_etapas_expediente.sql
+-- [12/26] 20260902000001_luna_etapas_expediente.sql
 -- ############################################################################
 
 -- ============================================================================
@@ -1461,7 +1464,7 @@ END $$;
 
 
 -- ############################################################################
--- [13/26] 20260903_mensajes_id_chatwoot.sql
+-- [13/26] 20260903000001_mensajes_id_chatwoot.sql
 -- ############################################################################
 
 -- ============================================================================
@@ -1489,7 +1492,7 @@ CREATE INDEX IF NOT EXISTS mensajes_chatwoot_message_id_idx
 
 
 -- ############################################################################
--- [14/26] 20260904_eliminar_cliente_completo.sql
+-- [14/26] 20260904000001_eliminar_cliente_completo.sql
 -- ############################################################################
 
 -- ============================================================================
@@ -1595,13 +1598,13 @@ COMMENT ON FUNCTION public.eliminar_cliente_completo(uuid) IS
 
 
 -- ############################################################################
--- [15/26] 20260905_eliminar_cliente_total.sql
+-- [15/26] 20260905000001_eliminar_cliente_total.sql
 -- ############################################################################
 
 -- ============================================================================
 -- 🗑️ ELIMINAR CLIENTE TOTAL (versión 2)
 -- ----------------------------------------------------------------------------
--- Reemplaza la función de 20260904_eliminar_cliente_completo.sql por una que ya
+-- Reemplaza la función de 20260904000001_eliminar_cliente_completo.sql por una que ya
 -- no depende de una lista fija de tablas: recorre TODAS las tablas del esquema
 -- public que tengan columna `cliente_id` o `conversacion_id` y borra las filas
 -- de ese cliente. Así, aunque mañana agregues una tabla nueva (campañas,
@@ -1739,7 +1742,7 @@ COMMENT ON FUNCTION public.eliminar_cliente_completo(uuid) IS
 
 
 -- ############################################################################
--- [16/26] 20260906_sincronizacion_directa_chatwoot.sql
+-- [16/26] 20260906000001_sincronizacion_directa_chatwoot.sql
 -- ############################################################################
 
 -- ============================================================================
@@ -1797,7 +1800,7 @@ END $$;
 
 
 -- ############################################################################
--- [17/26] 20260907_llamadas_seguimiento_contactos.sql
+-- [17/26] 20260907000001_llamadas_seguimiento_contactos.sql
 -- ############################################################################
 
 -- ============================================================================
@@ -1854,7 +1857,7 @@ COMMENT ON TABLE public.pipeline_etapas IS
 
 
 -- ############################################################################
--- [18/26] 20260908_unificar_pipeline_cuentas_seguimiento.sql
+-- [18/26] 20260908000001_unificar_pipeline_cuentas_seguimiento.sql
 -- ############################################################################
 
 -- ============================================================================
@@ -2075,7 +2078,7 @@ SELECT public.unificar_conversaciones_whatsapp();
 
 
 -- ############################################################################
--- [19/26] 20260910_eliminar_etapas_pago_recibido_perdido.sql
+-- [19/26] 20260910000001_eliminar_etapas_pago_recibido_perdido.sql
 -- ############################################################################
 
 -- =====================================================================
@@ -2133,7 +2136,7 @@ ON CONFLICT (clave) DO UPDATE SET
 
 
 -- ############################################################################
--- [20/26] 20260911_luna_datos_nuevo_lead_por_nombre.sql
+-- [20/26] 20260911000001_luna_datos_nuevo_lead_por_nombre.sql
 -- ############################################################################
 
 -- ============================================================================
@@ -2288,7 +2291,7 @@ END $$;
 
 
 -- ############################################################################
--- [21/26] 20260912_deduplicar_etapas_luna_por_nombre.sql
+-- [21/26] 20260912000001_deduplicar_etapas_luna_por_nombre.sql
 -- ############################################################################
 
 -- ============================================================================
@@ -2518,7 +2521,7 @@ END $$;
 
 
 -- ############################################################################
--- [22/26] 20260913_respuestas_rapidas.sql
+-- [22/26] 20260913000001_respuestas_rapidas.sql
 -- ############################################################################
 
 -- ===========================================================================
@@ -2563,7 +2566,7 @@ COMMENT ON TABLE public.respuestas_rapidas IS
 
 
 -- ############################################################################
--- [23/26] 20260914_un_chat_por_cliente.sql
+-- [23/26] 20260914000001_un_chat_por_cliente.sql
 -- ############################################################################
 
 -- Un chat CRM por cliente: guarda todos los conversation_id de Chatwoot
@@ -2677,12 +2680,12 @@ GRANT EXECUTE ON FUNCTION public.unificar_conversaciones_whatsapp() TO anon, aut
 
 
 -- ############################################################################
--- [24/26] 20260915_sincronizacion_respuestas_rapidas_unica.sql
+-- [24/26] 20260915000001_sincronizacion_respuestas_rapidas_unica.sql
 -- ############################################################################
 
 -- ===========================================================================
 -- Biblioteca de respuestas rápidas: sincronización manual sin duplicados.
--- Ejecutar DESPUÉS de 20260913_respuestas_rapidas.sql en Supabase SQL Editor.
+-- Ejecutar DESPUÉS de 20260913000001_respuestas_rapidas.sql en Supabase SQL Editor.
 -- ===========================================================================
 --
 -- Conserva la copia más antigua de cada respuesta cuyo tipo y contenido son
@@ -2745,7 +2748,7 @@ COMMENT ON COLUMN public.respuestas_rapidas.huella IS
 
 
 -- ############################################################################
--- [25/26] 20260916_media_storage.sql
+-- [25/26] 20260916000001_media_storage.sql
 -- ############################################################################
 
 -- ============================================================================
@@ -2792,7 +2795,7 @@ create policy "media-mensajes borrar"
 
 
 -- ############################################################################
--- [26/26] 20260917_respuestas_rapidas_a_storage.sql
+-- [26/26] 20260917000001_respuestas_rapidas_a_storage.sql
 -- ############################################################################
 
 -- ============================================================================
@@ -2803,7 +2806,7 @@ create policy "media-mensajes borrar"
 -- imágenes vivían dentro de respuestas_rapidas.contenido en base64 (hasta ~8 MB
 -- por audio), cada teléfono volvía a bajar todos los megabytes cada vez que algún
 -- operador pulsaba «Sincronizar con todos». Es el mismo problema que ya se resolvió
--- para los adjuntos del chat en 20260916_media_storage.sql.
+-- para los adjuntos del chat en 20260916000001_media_storage.sql.
 --
 -- Solución: el archivo va al bucket público `media-mensajes` (carpeta
 -- `respuestas-rapidas/`) y en la tabla queda sólo la URL. La subida la hace el
@@ -2817,9 +2820,9 @@ create policy "media-mensajes borrar"
 -- con md5(tipo + contenido) sólo como plan B (respuestas en texto, o filas de
 -- clientes antiguos que aún no mandan la huella).
 --
--- Ejecutar DESPUÉS de 20260913_respuestas_rapidas.sql,
--- 20260915_sincronizacion_respuestas_rapidas_unica.sql y
--- 20260916_media_storage.sql.  Supabase → SQL Editor → New query → Run.
+-- Ejecutar DESPUÉS de 20260913000001_respuestas_rapidas.sql,
+-- 20260915000001_sincronizacion_respuestas_rapidas_unica.sql y
+-- 20260916000001_media_storage.sql.  Supabase → SQL Editor → New query → Run.
 -- ============================================================================
 
 ALTER TABLE public.respuestas_rapidas

@@ -5,6 +5,9 @@
  *   · Ventana de 24 h de WhatsApp API (Meta): se cuenta desde el último
  *     mensaje del CLIENTE y avisa cuando está por cerrarse o ya cerró.
  *   · Marcas de fecha del historial: "Hoy", "Ayer", "Lunes", "15 de septiembre".
+ *   · Traspaso a la etapa Vencidos: se mueven solo los chats del WhatsApp API
+ *     con la ventana cerrada, y regresan a su etapa si el cliente escribe otra
+ *     vez por el API.
  *
  * Uso:  npm run test:tiempo
  *
@@ -27,11 +30,15 @@ const {
   VENTANA_WHATSAPP_MS,
   calcularVentana,
   claveDia,
+  decidirTraspasoVencidos,
   duracionCorta,
   esChatWhatsAppApi,
+  esClaveVencidos,
   etiquetaDia,
   fechaCompletaDia,
   horaCorta,
+  tieneChatApi,
+  ultimoEntranteApiDeConversacion,
   ultimoEntranteDeMensajes,
 } = mod;
 
@@ -164,6 +171,113 @@ probar(
   calcularVentana("2026-09-15T11:30:00.000Z", ahora).corto,
 );
 
+// ---------------------------------------------------------------------------
+// 7. Traspaso a la etapa Vencidos (WhatsApp API → WhatsApp Personal)
+// ---------------------------------------------------------------------------
+console.log("\n— Vencidos —");
+const etapaApi = { clave: "nuevo_lead", cuenta_responsable: "meta_business" };
+const etapaPersonal = { clave: "trabajo_proceso", cuenta_responsable: "evolution" };
+const etapaVencidos = { clave: "vencidos", cuenta_responsable: "evolution" };
+const decidir = (extra) =>
+  decidirTraspasoVencidos({ ahoraMs: ahora, ...extra });
+
+probar(
+  "etapa del API + ventana vencida → mover",
+  decidir({ etapaActual: etapaApi, ultimoEntranteApi: fechaDentro(30 * HORA) }),
+  "mover",
+);
+probar(
+  "etapa del API + ventana abierta → no se toca",
+  decidir({ etapaActual: etapaApi, ultimoEntranteApi: fechaDentro(2 * HORA) }),
+  "nada",
+);
+probar(
+  "etapa del API + justo al vencer (24 h) → mover (sin margen)",
+  decidir({ etapaActual: etapaApi, ultimoEntranteApi: fechaDentro(DIA + 60_000) }),
+  "mover",
+);
+probar(
+  "etapa del API pero el cliente nunca escribió por el API → no se toca",
+  decidir({ etapaActual: etapaApi, ultimoEntranteApi: null }),
+  "nada",
+);
+probar(
+  "etapa ya del WhatsApp Personal → nunca se mueve a Vencidos",
+  decidir({ etapaActual: etapaPersonal, ultimoEntranteApi: fechaDentro(40 * HORA) }),
+  "nada",
+);
+probar(
+  "ya está en Vencidos → no se vuelve a mover (sin mensaje nuevo)",
+  decidir({ etapaActual: etapaVencidos, ultimoEntranteApi: fechaDentro(30 * HORA), estadoAntesVencido: "nuevo_lead" }),
+  "nada",
+);
+probar(
+  "en Vencidos y el cliente escribe otra vez por el API → volver a su etapa",
+  decidir({ etapaActual: etapaVencidos, ultimoEntranteApi: fechaDentro(1 * HORA), estadoAntesVencido: "datos" }),
+  "volver",
+);
+probar(
+  "en Vencidos con la marca aproximada (falta la migración 20260918) → no regresa",
+  decidir({ etapaActual: etapaVencidos, ultimoEntranteApi: fechaDentro(1 * HORA), estadoAntesVencido: "nuevo_lead", apiExacto: false }),
+  "nada",
+);
+probar(
+  "en Vencidos sin memoria de la etapa anterior → no se toca",
+  decidir({ etapaActual: etapaVencidos, ultimoEntranteApi: fechaDentro(1 * HORA), estadoAntesVencido: null }),
+  "nada",
+);
+probar(
+  "sin etapa (estado desconocido) → no se toca",
+  decidir({ etapaActual: null, ultimoEntranteApi: fechaDentro(30 * HORA) }),
+  "nada",
+);
+probar(
+  "una etapa sin cuenta asignada no se considera del API",
+  decidir({ etapaActual: { clave: "etapa_x", cuenta_responsable: null }, ultimoEntranteApi: fechaDentro(30 * HORA) }),
+  "nada",
+);
+
+console.log("\n— Detección de la etapa y del canal —");
+probar("clave vencidos", esClaveVencidos("vencidos"), true);
+probar("clave VENCIDOS", esClaveVencidos("VENCIDOS"), true);
+probar("nombre 'Vencido' (singular) o con acentos", esClaveVencidos(" Vencído "), true);
+probar("otra etapa", esClaveVencidos("trabajo_proceso"), false);
+
+probar(
+  "chat del API (fuente meta_business) → tiene ventana",
+  tieneChatApi({ fuente: "meta_business" }),
+  true,
+);
+probar(
+  "chat unificado con Personal pero con conversación del API → tiene ventana",
+  tieneChatApi({ fuente: "evolution", chatwoot_conversation_ids: ["1", "2"] }),
+  true,
+);
+probar(
+  "chat solo de WhatsApp Personal → sin ventana",
+  tieneChatApi({ fuente: "evolution", chatwoot_conversation_ids: ["1"] }),
+  false,
+);
+probar(
+  "la marca del API manda sobre la genérica",
+  ultimoEntranteApiDeConversacion({
+    fuente: "evolution",
+    ultimo_entrante_en: "2026-09-15T10:00:00.000Z",
+    ultimo_entrante_api_en: "2026-09-14T08:00:00.000Z",
+  }),
+  "2026-09-14T08:00:00.000Z",
+);
+probar(
+  "chat del API sin columna nueva: usa la marca genérica",
+  ultimoEntranteApiDeConversacion({ fuente: "meta_business", ultimo_entrante_en: "2026-09-15T10:00:00.000Z" }),
+  "2026-09-15T10:00:00.000Z",
+);
+probar(
+  "chat solo Personal: sin marca del API",
+  ultimoEntranteApiDeConversacion({ fuente: "evolution", chatwoot_conversation_ids: ["1"], ultimo_entrante_en: "2026-09-15T10:00:00.000Z" }),
+  null,
+);
+
 function capitalizar(texto) {
   return texto ? texto.charAt(0).toUpperCase() + texto.slice(1) : texto;
 }
@@ -173,4 +287,4 @@ if (fallos > 0) {
   console.log(`❌ ${fallos} prueba(s) con fallos\n`);
   process.exit(1);
 }
-console.log("✅ Ventana de 24 h y marcas de fecha verificadas\n");
+console.log("✅ Ventana de 24 h, marcas de fecha y traspaso a Vencidos verificados\n");

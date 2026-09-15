@@ -26,9 +26,14 @@ import { estaContactoGuardadoEnTelefono, guardarContactoEnTelefono, guardarConta
 import DivisorFecha from "../components/DivisorFecha";
 import VentanaWhatsApp from "../components/VentanaWhatsApp";
 import {
+  CLAVE_VENCIDOS,
   calcularVentana,
   claveDia,
+  decidirTraspasoVencidos,
   esChatWhatsAppApi,
+  esClaveVencidos,
+  tieneChatApi,
+  ultimoEntranteApiDeConversacion,
   ultimoEntranteDeMensajes,
 } from "../lib/tiempo-chat";
 import { abrirLlamadaWhatsAppPersonal, llamadasWhatsAppPersonalDisponibles } from "../lib/whatsapp-personal";
@@ -84,6 +89,9 @@ const ETAPAS_DEFAULT = [
   { clave: "consulta_hecha", nombre: "Consulta Hecha", orden: 4, color: "border-orange-500", bg_color: "bg-orange-500/10", text_color: "text-orange-300", cuenta_responsable: "evolution" },
   { clave: "trabajo_proceso", nombre: "Trabajo en Proceso", orden: 5, color: "border-purple-500", bg_color: "bg-purple-500/10", text_color: "text-purple-300", cuenta_responsable: "evolution" },
   { clave: "trabajo_completado", nombre: "Trabajo Completado", orden: 6, color: "border-green-500", bg_color: "bg-green-500/10", text_color: "text-green-300", cuenta_responsable: "evolution" },
+  // Etapa receptora del traspaso automático: los chats del WhatsApp API cuya
+  // ventana de 24 h venció se continúan desde el WhatsApp Personal.
+  { clave: CLAVE_VENCIDOS, nombre: "Vencidos", orden: 7, color: "border-red-500", bg_color: "bg-red-500/10", text_color: "text-red-300", cuenta_responsable: "evolution" },
 ];
 
 // Cuotas: límite y fechas por defecto (una cuota por mes desde la primera).
@@ -288,6 +296,9 @@ export default function CRMApp() {
 
   // SUBCATEGORÍAS CHATS: filtro por etapa del pipeline (Nuevo Lead por defecto)
   const [chatCategoria, setChatCategoria] = useState<string>("nuevo_lead");
+  // Traspaso automático a la etapa Vencidos (WhatsApp API → WhatsApp Personal).
+  // Se puede apagar desde Ajustes (config_general: vencidos_auto).
+  const [vencidosAuto, setVencidosAuto] = useState(true);
 
   // CARTERA POR COBRAR (control de próximos pagos)
   const [carteraGrupoFiltro, setCarteraGrupoFiltro] = useState<"personal" | "templo" | "todas">("personal");
@@ -432,6 +443,16 @@ export default function CRMApp() {
   useEffect(() => {
     const t = setInterval(() => setNowTick(Date.now()), 60_000);
     return () => clearInterval(t);
+  }, []);
+
+  // Ajustes → Vencidos: el interruptor avisa al dashboard al instante.
+  useEffect(() => {
+    const onCambio = (e: any) => {
+      const activo = e?.detail?.activo;
+      if (typeof activo === "boolean") setVencidosAuto(activo);
+    };
+    window.addEventListener("tm-vencidos-auto-changed", onCambio);
+    return () => window.removeEventListener("tm-vencidos-auto-changed", onCambio);
   }, []);
 
   // Si la subcategoría de chat seleccionada no existe en el pipeline, volver a nuevo_lead
@@ -682,6 +703,7 @@ export default function CRMApp() {
           }
           if (row.clave === "personal_label" && row.valor) setPersonalLabel(row.valor);
           if (row.clave === "templo_label" && row.valor) setTemploLabel(row.valor);
+          if (row.clave === "vencidos_auto") setVencidosAuto(row.valor !== "false");
         });
       }
     } catch (e) {
@@ -1407,12 +1429,25 @@ export default function CRMApp() {
           const ultimoEntrante = entrantes.length > 0
             ? entrantes.reduce((a, b) => (new Date(a).getTime() >= new Date(b).getTime() ? a : b))
             : undefined;
+          // La marca del WhatsApp API (la que mueve a Vencidos) también se toma de
+          // la más nueva de las dos: si el chat del API quedó como secundario, el
+          // traspaso no debe perder la fecha en que venció la ventana.
+          const apiEntrantes = [existente.ultimo_entrante_api_en, c.ultimo_entrante_api_en].filter(Boolean);
+          const ultimoApi = apiEntrantes.length > 0
+            ? apiEntrantes.reduce((a, b) => (new Date(a).getTime() >= new Date(b).getTime() ? a : b))
+            : undefined;
+          const idsUnidos = Array.from(new Set([
+            ...(existente.chatwoot_conversation_ids || []),
+            ...(c.chatwoot_conversation_ids || []),
+          ].map((x: any) => String(x)).filter(Boolean)));
           convsPorCliente.set(cid, {
             ...principal,
             chatwoot_conversation_id: cwId,
+            ...(idsUnidos.length > 0 ? { chatwoot_conversation_ids: idsUnidos } : {}),
             no_leidos: (principal.no_leidos || 0) + (secundaria.no_leidos || 0),
             all_conv_ids: [...(existente.all_conv_ids || [existente.id]), c.id],
             ...(ultimoEntrante ? { ultimo_entrante_en: ultimoEntrante } : {}),
+            ...(ultimoApi ? { ultimo_entrante_api_en: ultimoApi } : {}),
           });
         }
       });
@@ -1586,6 +1621,176 @@ export default function CRMApp() {
     void enrutarLeadsPorNumero();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversaciones, pipelineEtapas]);
+
+  // ===================== 🕐 VENCIDOS: WhatsApp API → WhatsApp Personal =====================
+  // Reglas (pedidas por el negocio):
+  //   1) Si un chat está en una etapa que responde el WhatsApp API y su ventana
+  //      de 24 h ya venció, pasa a la etapa "Vencidos" (la responde el WhatsApp
+  //      Personal) para poder continuar la conversación ahí.
+  //   2) Si la etapa ya la responde el WhatsApp Personal (evolution) no se toca:
+  //      no hay ventana que vencer.
+  //   3) Si el cliente vuelve a escribir POR EL WHATSAPP API y la ventana se
+  //      reabre, el chat regresa solo a la etapa donde estaba antes de vencer.
+  // Corre al abrir el CRM (mueve también el historial ya vencido) y en cada
+  // refresco de la bandeja / minuto, así los chats que vencen con la app abierta
+  // se traspasan solos. Se puede apagar desde Ajustes → Vencidos.
+  const vencidosEnCurso = useRef(false);
+  // Si una escritura falla (p. ej. migración pendiente y sin permisos), se
+  // espera antes de reintentar para no repetir la misma escritura cada 15 s.
+  const vencidosEsperaHasta = useRef(0);
+
+  function esEtapaVencidos(etapa: any): boolean {
+    return Boolean(etapa && (String(etapa.clave) === CLAVE_VENCIDOS || esClaveVencidos(etapa.nombre)));
+  }
+
+  function etapaVencidosDelPipeline(): any | null {
+    return pipelineEtapas.find((e: any) => !e.es_spam && !e.es_archivado && esEtapaVencidos(e)) || null;
+  }
+
+  /** Etapa válida para regresar al cliente: debe seguir existiendo en el pipeline. */
+  function etapaParaRegresar(clave: string | null | undefined): any | null {
+    if (!clave) return null;
+    const buscada = normalizarEstado(clave);
+    const etapa = pipelineEtapas.find((e: any) => normalizarEstado(e.clave) === buscada);
+    if (!etapa || etapa.es_spam || etapa.es_archivado || esEtapaVencidos(etapa)) return null;
+    return etapa;
+  }
+
+  /**
+   * Actualiza clientes en lote. Si la columna nueva (`estado_antes_vencido`) no
+   * existe todavía en Supabase, reintenta sin ella para no bloquear el traspaso.
+   */
+  async function actualizarClientesEnLote(ids: string[], cambios: Record<string, any>): Promise<boolean> {
+    if (ids.length === 0) return false;
+    try {
+      const { error } = await supabase.from("clientes").update(cambios).in("id", ids);
+      if (!error) return true;
+      if (/estado_antes_vencido/i.test(error.message || "")) {
+        const { estado_antes_vencido, ...resto } = cambios;
+        const reintento = await supabase.from("clientes").update(resto).in("id", ids);
+        if (!reintento.error) return true;
+        console.warn("Vencidos: no se pudo actualizar (reintento):", reintento.error.message);
+        return false;
+      }
+      console.warn("Vencidos: no se pudo actualizar:", error.message);
+      return false;
+    } catch (e) {
+      console.warn("Vencidos: error actualizando clientes:", e);
+      return false;
+    }
+  }
+
+  /** Refleja el cambio de etapa en pantalla sin esperar al realtime. */
+  function aplicarCambioEtapaLocal(cambios: Array<{ id: string; estado: string; estado_antes_vencido: string | null }>) {
+    if (cambios.length === 0) return;
+    const porId = new Map(cambios.map((c) => [c.id, c]));
+    setTodosClientes((prev) => prev.map((c) => (porId.has(c.id) ? { ...c, ...porId.get(c.id)! } : c)));
+    setConversaciones((prev) => prev.map((conv) => {
+      const cambio = conv.cliente_id ? porId.get(conv.cliente_id) : undefined;
+      return cambio ? { ...conv, clientes: { ...conv.clientes, ...cambio } } : conv;
+    }));
+    setClienteActual((prev: any) => (prev && porId.get(prev.id) ? { ...prev, ...porId.get(prev.id)! } : prev));
+  }
+
+  async function traspasarVencidos() {
+    if (vencidosEnCurso.current) return;
+    if (Date.now() < vencidosEsperaHasta.current) return;
+    if (pipelineEtapas.length === 0 || conversaciones.length === 0) return;
+    const destino = etapaVencidosDelPipeline();
+    if (!destino) return; // sin etapa receptora no se mueve nada
+
+    const ahoraMs = Date.now();
+    const aVencidos = new Map<string, any[]>(); // etapa anterior → clientes
+    const aRegresar = new Map<string, any[]>(); // etapa destino  → clientes
+
+    for (const conv of conversaciones) {
+      const cliente = conv?.clientes;
+      if (!cliente) continue;
+      if (cliente.es_spam || (conv as any).archivada) continue;
+
+      const claveCliente = normalizarEstado(cliente.estado);
+      // Sin fallback: si el estado no corresponde a una etapa real, no se toca.
+      const etapaActual = pipelineEtapas.find((e: any) => normalizarEstado(e.clave) === claveCliente);
+      if (!etapaActual) continue;
+
+      const decision = decidirTraspasoVencidos({
+        etapaActual: { clave: etapaActual.clave, cuenta_responsable: etapaActual.cuenta_responsable },
+        ultimoEntranteApi: ultimoEntranteApiDeConversacion(conv),
+        // Marca exacta del API (columna de la migración 20260918). Sin ella la
+        // fecha es una aproximación y un mensaje del WhatsApp Personal podría
+        // devolver el chat a una etapa del API: en ese caso no se regresa.
+        apiExacto: Boolean((conv as any).ultimo_entrante_api_en),
+        estadoAntesVencido: cliente.estado_antes_vencido,
+        ahoraMs,
+      });
+
+      if (decision === "mover") {
+        const lista = aVencidos.get(claveCliente) || [];
+        lista.push(cliente);
+        aVencidos.set(claveCliente, lista);
+      } else if (decision === "volver") {
+        const regreso = etapaParaRegresar(cliente.estado_antes_vencido);
+        if (!regreso) continue;
+        const lista = aRegresar.get(regreso.clave) || [];
+        lista.push(cliente);
+        aRegresar.set(regreso.clave, lista);
+      }
+    }
+
+    if (aVencidos.size === 0 && aRegresar.size === 0) return;
+
+    vencidosEnCurso.current = true;
+    const ahoraISO = new Date().toISOString();
+    const aplicados: Array<{ id: string; estado: string; estado_antes_vencido: string | null }> = [];
+    let huboFallo = false;
+    try {
+      // Se agrupa por etapa (de destino o de origen) para hacer una sola
+      // escritura por grupo y no una por cliente.
+      const grupos: Array<{ estado: string; previa: string | null; clientes: any[] }> = [
+        ...[...aVencidos.entries()].map(([previa, clientes]) => ({ estado: destino.clave, previa, clientes })),
+        ...[...aRegresar.entries()].map(([estado, clientes]) => ({ estado, previa: null as string | null, clientes })),
+      ];
+
+      for (const grupo of grupos) {
+        for (let i = 0; i < grupo.clientes.length; i += 50) {
+          const lote = grupo.clientes.slice(i, i + 50);
+          const ids = lote.map((c) => c.id);
+          const ok = await actualizarClientesEnLote(ids, {
+            estado: grupo.estado,
+            estado_antes_vencido: grupo.previa,
+            actualizado_en: ahoraISO,
+          });
+          if (ok) {
+            aplicados.push(...lote.map((c) => ({ id: c.id, estado: grupo.estado, estado_antes_vencido: grupo.previa })));
+          } else {
+            huboFallo = true;
+          }
+        }
+      }
+
+      if (aplicados.length > 0) {
+        aplicarCambioEtapaLocal(aplicados);
+        const deVuelta = aplicados.filter((c) => c.estado_antes_vencido === null).length;
+        const aVencidosTotal = aplicados.length - deVuelta;
+        console.log(
+          `🕐 Vencidos: ${aVencidosTotal} chat(s) movidos a "${destino.nombre}"` +
+          (deVuelta > 0 ? ` y ${deVuelta} devuelto(s) a su etapa del WhatsApp API.` : ".")
+        );
+        // La conversación de la lista lleva el estado del cliente: refrescar la
+        // bandeja deja la subcategoría de cada chat en su sitio.
+        void fetchConversaciones(false);
+      }
+    } finally {
+      vencidosEnCurso.current = false;
+      if (huboFallo) vencidosEsperaHasta.current = Date.now() + 5 * 60_000;
+    }
+  }
+
+  useEffect(() => {
+    if (!vencidosAuto) return;
+    void traspasarVencidos();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversaciones, pipelineEtapas, nowTick, vencidosAuto]);
 
   // ===================== META ADS =====================
   async function fetchCampanasAds() {
@@ -2311,14 +2516,23 @@ export default function CRMApp() {
   async function actualizarEstadoCliente(clienteId: string, nuevoEstado: string) {
     const estadoNorm = normalizarEstado(nuevoEstado);
     const pasaConsultaHecha = estadoNorm === "consulta_hecha";
-    await supabase.from("clientes").update({
+    // Memoria de la etapa anterior solo para la etapa Vencidos: permite devolver
+    // el chat a su sitio cuando el cliente vuelve a escribir por el WhatsApp API.
+    const cliente = todosClientes.find((c) => c.id === clienteId) || clienteActual;
+    const estadoPrevio = normalizarEstado(cliente?.estado);
+    const memoria = estadoNorm === CLAVE_VENCIDOS
+      ? (esClaveVencidos(estadoPrevio) ? cliente?.estado_antes_vencido ?? null : estadoPrevio)
+      : null;
+    await actualizarClientesEnLote([clienteId], {
       estado: estadoNorm,
+      estado_antes_vencido: memoria,
       ...(pasaConsultaHecha ? { atendido: true } : {}),
       actualizado_en: new Date().toISOString(),
-    }).eq("id", clienteId);
+    });
     if (clienteActual?.id === clienteId) setClienteActual({
       ...clienteActual,
       estado: estadoNorm,
+      estado_antes_vencido: memoria,
       ...(pasaConsultaHecha ? { atendido: true } : {}),
     });
     fetchConversaciones(false); fetchTodosClientes();
@@ -2783,6 +2997,13 @@ export default function CRMApp() {
       alert("No puedes eliminar la etapa inicial Nuevo Lead.");
       return;
     }
+    if (esEtapaVencidos(etapa)) {
+      alert(
+        "No puedes eliminar la etapa Vencidos: ahí llegan automáticamente los chats del WhatsApp API " +
+        "cuya ventana de 24 h venció, para continuarlos desde el WhatsApp Personal."
+      );
+      return;
+    }
     if (!confirm(`¿Eliminar la etapa "${etapa.nombre}"? Los clientes en esta etapa pasarán a "Nuevo Lead".`)) return;
     await supabase.from("clientes").update({ estado: "nuevo_lead" }).eq("estado", etapa.clave);
     await supabase.from("pipeline_etapas").delete().eq("id", id);
@@ -2935,15 +3156,20 @@ export default function CRMApp() {
   // con los mensajes ya cargados del chat —incluye los entrantes que llegan por
   // realtime— y se refresca con el ticker de cada minuto.
   const ultimoEntranteChatAbierto = React.useMemo(() => {
-    // Solo cuentan los mensajes del chat abierto (al cambiar de chat, los del
-    // anterior siguen en memoria hasta que responde la consulta).
+    if (!selectedConv) return null;
+    // La marca del API la mantiene la sincronización (sabe el canal real).
+    const almacenado = ultimoEntranteApiDeConversacion(selectedConv);
+    // En un chat que es solo del WhatsApp API, los mensajes en pantalla son de
+    // ese canal, así que sirven para refrescar el contador al instante.
+    if (!esChatWhatsAppApi(selectedConv)) return almacenado;
     const ids = new Set<string>(
-      ((selectedConv?.all_conv_ids || (selectedConv ? [selectedConv.id] : [])) as any[])
-        .filter(Boolean)
-        .map(String)
+      ((selectedConv.all_conv_ids || [selectedConv.id]) as any[]).filter(Boolean).map(String)
     );
     const propios = ids.size > 0 ? mensajes.filter((m: any) => ids.has(String(m.conversacion_id))) : mensajes;
-    return ultimoEntranteDeMensajes(propios) || (selectedConv?.ultimo_entrante_en as string | undefined) || null;
+    const enVivo = ultimoEntranteDeMensajes(propios);
+    if (!enVivo) return almacenado;
+    if (!almacenado) return enVivo;
+    return Date.parse(enVivo) > Date.parse(almacenado) ? enVivo : almacenado;
   }, [mensajes, selectedConv]);
   const estadoVentanaAbierto = React.useMemo(
     () => calcularVentana(ultimoEntranteChatAbierto, nowTick),
@@ -3391,10 +3617,14 @@ export default function CRMApp() {
                                 <span className="text-[10px] text-gray-500">
                                   {isArchivada ? `${diasArchivado}d` : new Date(conv.ultimo_mensaje_en).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                                 </span>
-                                {/* Ventana de 24 h: solo en los chats del WhatsApp API (fuente meta_business).
-                                    Los de WhatsApp Personal (Evolution) no tienen esa regla. */}
-                                {!isArchivada && esChatWhatsAppApi(conv) && (
-                                  <VentanaWhatsApp estado={calcularVentana(conv.ultimo_entrante_en, nowTick)} variante="lista" />
+                                {/* Ventana de 24 h: en los chats con conversación del WhatsApp API
+                                    (incluidos los unificados con Personal). WhatsApp Personal puro no
+                                    tiene esa regla, así que ahí no aparece nada. */}
+                                {!isArchivada && tieneChatApi(conv) && (
+                                  <VentanaWhatsApp
+                                    estado={calcularVentana(ultimoEntranteApiDeConversacion(conv), nowTick)}
+                                    variante="lista"
+                                  />
                                 )}
                                 {conv.no_leidos > 0 && !isArchivada && (
                                   <span className="bg-red-600 text-white text-[9px] min-w-[18px] h-[18px] px-1 rounded-full flex items-center justify-center font-bold" title={`${conv.no_leidos} mensaje(s) sin revisar`}>
@@ -3521,7 +3751,7 @@ export default function CRMApp() {
                       })()}
 
                       {/* Ventana de 24 h de WhatsApp API: tiempo restante desde el último mensaje del cliente */}
-                      {esChatWhatsAppApi(selectedConv) && (
+                      {tieneChatApi(selectedConv) && (
                         <span className="hidden md:flex">
                           <VentanaWhatsApp estado={estadoVentanaAbierto} variante="cabecera" />
                         </span>
@@ -3730,7 +3960,7 @@ export default function CRMApp() {
                         </span>
                       )}
                       {/* Ventana de 24 h del WhatsApp API, siempre visible al escribir */}
-                      {esChatWhatsAppApi(selectedConv) && (
+                      {tieneChatApi(selectedConv) && (
                         <VentanaWhatsApp estado={estadoVentanaAbierto} variante="barra" />
                       )}
                     </div>

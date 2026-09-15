@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { X, Moon, Sun, MonitorSmartphone, Bell, BellOff, Check, Palette, Mic, Save, HardDriveDownload } from "lucide-react";
+import { X, Moon, Sun, MonitorSmartphone, Bell, BellOff, Check, Palette, Mic, Save, HardDriveDownload, Clock } from "lucide-react";
 import { supabase } from "../lib/supabase";
 import {
   ACCENTS, ThemeAccent, ThemeMode,
@@ -36,6 +36,9 @@ export default function AjustesPanel({ onClose }: { onClose: () => void }) {
   const [migrandoRR, setMigrandoRR] = useState(false);
   const [migraRRMsg, setMigraRRMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [rrPendientes, setRrPendientes] = useState<number | null>(null);
+  // Traspaso automático del WhatsApp API a la etapa Vencidos (WhatsApp Personal).
+  const [vencidosAuto, setVencidosAuto] = useState(true);
+  const [vencidosMsg, setVencidosMsg] = useState("");
 
   useEffect(() => {
     setMode(getSavedMode());
@@ -48,10 +51,11 @@ export default function AjustesPanel({ onClose }: { onClose: () => void }) {
         const { data } = await supabase
           .from("config_general")
           .select("clave, valor")
-          .in("clave", ["meta_voice_token", "meta_voice_phone_number_id"]);
+          .in("clave", ["meta_voice_token", "meta_voice_phone_number_id", "vencidos_auto"]);
         (data || []).forEach((row: any) => {
           if (row.clave === "meta_voice_token") setMetaToken(String(row.valor || ""));
           if (row.clave === "meta_voice_phone_number_id") setMetaPhoneId(String(row.valor || ""));
+          if (row.clave === "vencidos_auto") setVencidosAuto(row.valor !== "false");
         });
       } catch {
         /* config_general no disponible: se puede escribir igual al guardar */
@@ -181,6 +185,31 @@ export default function AjustesPanel({ onClose }: { onClose: () => void }) {
     }
   }
 
+  /**
+   * Activa o pausa el traspaso automático a la etapa Vencidos. Se guarda en
+   * config_general y el dashboard se entera al instante por un evento.
+   */
+  async function toggleVencidosAuto() {
+    const nuevo = !vencidosAuto;
+    setVencidosAuto(nuevo);
+    setVencidosMsg("");
+    try {
+      const { error } = await supabase
+        .from("config_general")
+        .upsert([{ clave: "vencidos_auto", valor: nuevo ? "true" : "false" }]);
+      if (error) throw new Error(error.message);
+      window.dispatchEvent(new CustomEvent("tm-vencidos-auto-changed", { detail: { activo: nuevo } }));
+      setVencidosMsg(
+        nuevo
+          ? "Activado: los chats vencidos del WhatsApp API pasan a la etapa Vencidos."
+          : "En pausa: los chats se quedan en la etapa donde están (puedes moverlos a mano)."
+      );
+    } catch (e: any) {
+      setVencidosAuto(!nuevo);
+      setVencidosMsg("No se pudo guardar: " + (e?.message || "error desconocido"));
+    }
+  }
+
   function cambiarModo(m: ThemeMode) {
     setMode(m);
     saveTheme(m, accent);
@@ -305,6 +334,41 @@ export default function AjustesPanel({ onClose }: { onClose: () => void }) {
           {isNative() ? " Funciona con la app abierta o en segundo plano. En Ajustes del teléfono podrás administrar por separado Mensajes de clientes, Recordatorios de tareas, Seguimientos de clientes y Avisos del CRM." : ""}
         </p>
         {notifError && <p className="text-[11px] text-red-400 mt-2">{notifError}</p>}
+
+        {/* VENCIDOS: WHATSAPP API → WHATSAPP PERSONAL */}
+        <p className="text-[11px] uppercase tracking-wider text-gray-500 font-bold mb-2 mt-5">
+          Vencidos · WhatsApp API → Personal
+        </p>
+        <button
+          onClick={toggleVencidosAuto}
+          className={`w-full flex items-center justify-between px-4 py-3 rounded-xl border transition-all ${
+            vencidosAuto
+              ? "bg-red-950/20 border-red-800/40 text-red-300"
+              : "bg-background border-border text-gray-400 hover:text-gray-200"
+          }`}
+        >
+          <span className="flex items-center gap-2 text-sm font-medium">
+            <Clock className="w-4 h-4" />
+            Traspaso automático a Vencidos
+          </span>
+          <span
+            className={`w-10 rounded-full p-0.5 transition-colors ${vencidosAuto ? "bg-red-600" : "bg-gray-700"}`}
+            style={{ height: 22 }}
+          >
+            <span
+              className={`block w-[18px] h-[18px] rounded-full bg-white shadow ring-1 ring-gray-950/10 transition-transform ${vencidosAuto ? "translate-x-[18px]" : ""}`}
+            />
+          </span>
+        </button>
+        <p className="text-[10px] text-gray-500 mt-2 leading-relaxed">
+          Cuando la ventana de 24 h de un chat del WhatsApp API vence, ya no se puede responder
+          con texto libre por ese canal: el chat pasa solo a la etapa <strong>Vencidos</strong>,
+          que se responde desde el <strong>WhatsApp Personal</strong>, para continuar la conversación.
+          Si el cliente vuelve a escribir por el WhatsApp API, el chat regresa a la etapa donde estaba.
+          Los chats que ya estaban en etapas del WhatsApp Personal no se mueven. Al abrir el CRM se
+          traspasa también el historial que ya estaba vencido.
+        </p>
+        {vencidosMsg && <p className="text-[11px] text-emerald-400 mt-2">{vencidosMsg}</p>}
 
         {/* NOTAS DE VOZ NATIVAS (WhatsApp API) */}
         <p className="text-[11px] uppercase tracking-wider text-gray-500 font-bold mb-2 mt-5">

@@ -12,12 +12,21 @@
 -- Es idempotente: se puede correr las veces que sea sin romper nada.
 -- ============================================================================
 
--- 1) Marca del último mensaje del cliente por conversación
+-- 1) Marcas del último mensaje del cliente por conversación
+--    · ultimo_entrante_en       → cualquier canal (WhatsApp API o Personal)
+--    · ultimo_entrante_api_en   → solo mensajes que entraron POR EL WHATSAPP API
+--      (es el que decide la ventana de 24 h y el traspaso a la etapa Vencidos)
 ALTER TABLE public.conversaciones
   ADD COLUMN IF NOT EXISTS ultimo_entrante_en timestamptz;
 
+ALTER TABLE public.conversaciones
+  ADD COLUMN IF NOT EXISTS ultimo_entrante_api_en timestamptz;
+
 COMMENT ON COLUMN public.conversaciones.ultimo_entrante_en IS
-  'Fecha del último mensaje RECIBIDO del cliente. Base de la ventana de 24 h de WhatsApp API.';
+  'Fecha del último mensaje RECIBIDO del cliente (cualquier canal).';
+
+COMMENT ON COLUMN public.conversaciones.ultimo_entrante_api_en IS
+  'Fecha del último mensaje del cliente que entró por el WhatsApp API (meta_business). Base de la ventana de 24 h y del traspaso a Vencidos.';
 
 -- 2) Índice que hace barato el MAX(creado_en) por conversación (solo entrantes)
 CREATE INDEX IF NOT EXISTS mensajes_conv_entrante_idx
@@ -36,7 +45,24 @@ FROM (
 WHERE m.conversacion_id = c.id
   AND (c.ultimo_entrante_en IS NULL OR c.ultimo_entrante_en < m.ultimo);
 
--- 4) Trigger: cada mensaje mantiene la marca de su conversación
+-- La marca del API solo se puede rellenar donde la fila es de un único chat del
+-- WhatsApp API: los mensajes no guardan su canal. En los chats unificados (API +
+-- Personal en la misma fila) la completa /api/chatwoot/sync, que sí conoce el
+-- canal de cada conversación de Chatwoot.
+UPDATE public.conversaciones c
+SET ultimo_entrante_api_en = c.ultimo_entrante_en
+WHERE c.fuente = 'meta_business'
+  AND cardinality(c.chatwoot_conversation_ids) <= 1
+  AND c.ultimo_entrante_en IS NOT NULL
+  AND (c.ultimo_entrante_api_en IS NULL OR c.ultimo_entrante_api_en < c.ultimo_entrante_en);
+
+-- 4) Trigger: cada mensaje mantiene la marca de su conversación.
+--    La marca del API solo se adelanta en las filas de UN solo chat del API: en
+--    los chats unificados (varios ids en chatwoot_conversation_ids) los mensajes
+--    pueden venir del WhatsApp Personal y el trigger no sabe distinguirlo, así
+--    que ahí la mantiene /api/chatwoot/sync, que sí conoce el canal. Sin esto, una
+--    respuesta del cliente por el WhatsApp Personal parecería «reabrir» la
+--    ventana del API y sacaría el chat de la etapa Vencidos.
 CREATE OR REPLACE FUNCTION public.actualizar_ultimo_entrante()
 RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
 DECLARE
@@ -49,7 +75,15 @@ BEGIN
          SET ultimo_entrante_en = GREATEST(
                COALESCE(ultimo_entrante_en, 'epoch'::timestamptz),
                COALESCE(NEW.creado_en, now())
-             )
+             ),
+             -- Solo las filas del WhatsApp API adelantan la marca del API, y solo
+             -- si son de un único chat del API (las unificadas las mantiene la
+             -- sincronización, que conoce el canal real de cada mensaje).
+             ultimo_entrante_api_en = CASE
+               WHEN fuente = 'meta_business' AND cardinality(chatwoot_conversation_ids) <= 1
+                 THEN GREATEST(COALESCE(ultimo_entrante_api_en, 'epoch'::timestamptz), COALESCE(NEW.creado_en, now()))
+               ELSE ultimo_entrante_api_en
+             END
        WHERE id = NEW.conversacion_id
          AND (ultimo_entrante_en IS NULL OR ultimo_entrante_en < COALESCE(NEW.creado_en, now()));
     END IF;
@@ -64,7 +98,14 @@ BEGIN
        SET ultimo_entrante_en = (
              SELECT max(m.creado_en) FROM public.mensajes m
               WHERE m.conversacion_id = v_conv AND COALESCE(m.tipo, '') <> 'enviado'
-           )
+           ),
+           ultimo_entrante_api_en = CASE
+             WHEN c.fuente = 'meta_business' AND cardinality(c.chatwoot_conversation_ids) <= 1 THEN (
+               SELECT max(m.creado_en) FROM public.mensajes m
+                WHERE m.conversacion_id = v_conv AND COALESCE(m.tipo, '') <> 'enviado'
+             )
+             ELSE c.ultimo_entrante_api_en
+           END
      WHERE c.id = v_conv;
   END IF;
 
@@ -74,7 +115,14 @@ BEGIN
        SET ultimo_entrante_en = (
              SELECT max(m.creado_en) FROM public.mensajes m
               WHERE m.conversacion_id = OLD.conversacion_id AND COALESCE(m.tipo, '') <> 'enviado'
-           )
+           ),
+           ultimo_entrante_api_en = CASE
+             WHEN c.fuente = 'meta_business' AND cardinality(c.chatwoot_conversation_ids) <= 1 THEN (
+               SELECT max(m.creado_en) FROM public.mensajes m
+                WHERE m.conversacion_id = OLD.conversacion_id AND COALESCE(m.tipo, '') <> 'enviado'
+             )
+             ELSE c.ultimo_entrante_api_en
+           END
      WHERE c.id = OLD.conversacion_id;
   END IF;
 
@@ -95,7 +143,11 @@ DECLARE
   v_filas integer;
 BEGIN
   UPDATE public.conversaciones c
-     SET ultimo_entrante_en = m.ultimo
+     SET ultimo_entrante_en = m.ultimo,
+         ultimo_entrante_api_en = CASE
+           WHEN c.fuente = 'meta_business' AND cardinality(c.chatwoot_conversation_ids) <= 1 THEN m.ultimo
+           ELSE c.ultimo_entrante_api_en
+         END
   FROM (
     SELECT conversacion_id, max(creado_en) AS ultimo
     FROM public.mensajes
@@ -103,7 +155,14 @@ BEGIN
     GROUP BY conversacion_id
   ) m
   WHERE m.conversacion_id = c.id
-    AND c.ultimo_entrante_en IS DISTINCT FROM m.ultimo;
+    AND (
+      c.ultimo_entrante_en IS DISTINCT FROM m.ultimo
+      OR (
+        c.fuente = 'meta_business'
+        AND cardinality(c.chatwoot_conversation_ids) <= 1
+        AND c.ultimo_entrante_api_en IS DISTINCT FROM m.ultimo
+      )
+    );
 
   GET DIAGNOSTICS v_filas = ROW_COUNT;
   RETURN v_filas;

@@ -364,17 +364,21 @@ type ConvExistente = {
   fuente?: string | null;
   chatwoot_conversation_id?: string | null;
   chatwoot_conversation_ids?: string[] | null;
+  /** Último mensaje del cliente POR EL WHATSAPP API (ventana de 24 h). */
+  ultimo_entrante_api_en?: string | null;
 };
 
 const SELECT_CONV =
-  "id,chatwoot_conversation_id,chatwoot_conversation_ids,ultimo_mensaje_en,no_leidos,ultimo_leido_en,cliente_id,ultimo_mensaje,numero_whatsapp,fuente";
+  "id,chatwoot_conversation_id,chatwoot_conversation_ids,ultimo_mensaje_en,no_leidos,ultimo_leido_en,cliente_id,ultimo_mensaje,numero_whatsapp,fuente,ultimo_entrante_api_en";
 
 async function fetchConversacionesSb(rutaBase: string): Promise<any[] | null> {
   const r = await sbFetch(rutaBase);
   if (r.ok && Array.isArray(r.json)) return r.json;
   // Columna ausente (migración pendiente): reintentar sin el array de ids.
-  if (/chatwoot_conversation_ids|pgrst204|does not exist/i.test(r.texto || "")) {
-    const sinArray = rutaBase.replace("chatwoot_conversation_ids,", "");
+  if (/chatwoot_conversation_ids|ultimo_entrante_api_en|pgrst204|does not exist/i.test(r.texto || "")) {
+    const sinArray = rutaBase
+      .replace("chatwoot_conversation_ids,", "")
+      .replace(",ultimo_entrante_api_en", "");
     const rAlt = await sbFetch(sinArray);
     if (rAlt.ok && Array.isArray(rAlt.json)) return rAlt.json;
   }
@@ -450,7 +454,9 @@ async function upsertConversacion(
   ultimoMensaje: string,
   ultimoMensajeEn: string,
   res: ResultadoSync,
-  existentePrevio?: ConvExistente | null
+  existentePrevio?: ConvExistente | null,
+  /** Fecha ISO del último mensaje del CLIENTE en esta conversación de Chatwoot. */
+  ultimoEntranteApi?: string | null
 ): Promise<ConvExistente | null> {
   // Un solo chat por cliente: API y Personal escriben en la misma fila.
   let existente = existentePrevio !== undefined ? existentePrevio : await buscarConversacion(convCw.id);
@@ -468,6 +474,17 @@ async function upsertConversacion(
   const cwId = convCw?.id != null ? String(convCw.id) : "";
   const idsUnidos = cwId ? Array.from(new Set([...idsChatwootDe(existente), cwId])) : idsChatwootDe(existente);
 
+  // Ventana de 24 h del WhatsApp API: la sincronización es la única que sabe el
+  // canal de cada conversación de Chatwoot, así que mantiene la marca del último
+  // mensaje del cliente que entró POR EL API —incluso cuando la fila del CRM
+  // está unificada con WhatsApp Personal—. Solo se adelanta, nunca se atrasa.
+  const entranteApiNuevo = fuenteNueva === "meta_business" && ultimoEntranteApi ? ultimoEntranteApi : null;
+  const subirEntranteApi = Boolean(
+    entranteApiNuevo &&
+      (!existente?.ultimo_entrante_api_en ||
+        Date.parse(entranteApiNuevo) > Date.parse(existente.ultimo_entrante_api_en))
+  );
+
   if (existente) {
     const idsIguales =
       idsUnidos.length === idsChatwootDe(existente).length &&
@@ -476,7 +493,8 @@ async function upsertConversacion(
       existente.ultimo_mensaje === ultimoMensaje &&
       existente.ultimo_mensaje_en === ultimoMensajeEn &&
       existente.numero_whatsapp === telefonoFinal &&
-      idsIguales;
+      idsIguales &&
+      !subirEntranteApi;
     if (sinCambios) return existente;
 
     const cambios = await depurar("conversaciones", {
@@ -484,6 +502,7 @@ async function upsertConversacion(
       ultimo_mensaje_en: ultimoMensajeEn,
       numero_whatsapp: telefonoFinal,
       chatwoot_conversation_ids: idsUnidos,
+      ...(subirEntranteApi ? { ultimo_entrante_api_en: entranteApiNuevo } : {}),
       // Sólo rellena el id principal si aún no había ninguno.
       ...(!existente.chatwoot_conversation_id && cwId ? { chatwoot_conversation_id: cwId } : {}),
       actualizado_en: new Date().toISOString(),
@@ -493,7 +512,12 @@ async function upsertConversacion(
       headers: { Prefer: "return=minimal" },
       body: JSON.stringify(cambios),
     });
-    return { ...existente, ultimo_mensaje_en: ultimoMensajeEn, ultimo_mensaje: ultimoMensaje };
+    return {
+      ...existente,
+      ultimo_mensaje_en: ultimoMensajeEn,
+      ultimo_mensaje: ultimoMensaje,
+      ...(subirEntranteApi ? { ultimo_entrante_api_en: entranteApiNuevo } : {}),
+    };
   }
 
   const datos = await depurar("conversaciones", {
@@ -504,6 +528,7 @@ async function upsertConversacion(
     fuente,
     ultimo_mensaje: ultimoMensaje,
     ultimo_mensaje_en: ultimoMensajeEn,
+    ...(entranteApiNuevo ? { ultimo_entrante_api_en: entranteApiNuevo } : {}),
     actualizado_en: new Date().toISOString(),
   });
 
@@ -865,7 +890,9 @@ async function recalcularNoLeidos(
   }
 }
 
-function resumenUltimoMensaje(mensajesCw: any[]): { contenido: string; en: string } | null {
+function resumenUltimoMensaje(
+  mensajesCw: any[]
+): { contenido: string; en: string; ultimoEntrante: string | null } | null {
   const mapeados = mensajesCw
     .map(mapMensajeCw)
     .filter((m): m is MensajeMapeado => Boolean(m))
@@ -878,7 +905,12 @@ function resumenUltimoMensaje(mensajesCw: any[]): { contenido: string; en: strin
       : ultimo.tipo_contenido === "imagen"
         ? (esMarcadorMultimedia(ultimo.contenido) ? "[imagen]" : `📷 ${ultimo.contenido}`)
         : ultimo.contenido;
-  return { contenido: vista, en: ultimo.creado_en };
+  // Último mensaje del CLIENTE dentro de esta conversación de Chatwoot: es la
+  // base de la ventana de 24 h del WhatsApp API.
+  const entrantes = mapeados.filter((m) => m.tipo === "recibido");
+  const ultimoEntrante = entrantes.length > 0 ? entrantes[entrantes.length - 1].creado_en : null;
+
+  return { contenido: vista, en: ultimo.creado_en, ultimoEntrante };
 }
 
 // ---------------------------------------------------------------------------
@@ -984,7 +1016,8 @@ async function sincronizarConversacionCw(
     ultimoTexto,
     ultimoEn,
     res,
-    existente
+    existente,
+    ultimo?.ultimoEntrante ?? null
   );
   if (!convRow) return { ok: false, nuevos: 0, actualizados: 0 };
 
@@ -1230,7 +1263,8 @@ export async function procesarEventoWebhook(
                 ultimoTexto,
                 mensaje.creado_en,
                 res,
-                existente
+                existente,
+                mensaje.tipo === "recibido" ? mensaje.creado_en : null
               )
             : Promise.resolve(null),
         ]);
@@ -1270,7 +1304,16 @@ export async function procesarEventoWebhook(
       : "";
     const ultimoEn = mensaje ? mensaje.creado_en : fechaISO(conv.last_non_activity_message_at || Date.now() / 1000);
 
-    const convRow = await upsertConversacion(conv, clienteId, telefono, ultimoTexto, ultimoEn, res);
+    const convRow = await upsertConversacion(
+      conv,
+      clienteId,
+      telefono,
+      ultimoTexto,
+      ultimoEn,
+      res,
+      undefined,
+      mensaje && mensaje.tipo === "recibido" ? mensaje.creado_en : null
+    );
     if (!convRow) throw new Error("no se pudo garantizar la conversación");
 
     if (mensaje) {

@@ -4,11 +4,13 @@
 **Commit:** (ver git log)
 **Branch:** arena/01a0a6cd-templo-mistico-crm
 
-## Build 2026-09-15: ventana de 24 h del WhatsApp API, fechas en el chat y guardado en Google
+## Build 2026-09-15: ventana de 24 h, fechas en el chat, guardado en Google y etapa Vencidos
 
-Tres cosas pedidas: (1) ver cuánto queda de la ventana de 24 h en los chats del
-WhatsApp API, (2) marcas horizontales de fecha dentro de TODOS los chats y
-(3) guardar los contactos también en la cuenta de Google.
+Cuatro cosas pedidas: (1) ver cuánto queda de la ventana de 24 h en los chats del
+WhatsApp API, (2) marcas horizontales de fecha dentro de TODOS los chats,
+(3) guardar los contactos también en la cuenta de Google y (4) que los chats que
+vencen en el WhatsApp API se vayan solos a la etapa «Vencidos», que se responde
+desde el WhatsApp Personal.
 
 ### 1. Ventana de 24 h (WhatsApp API / Meta)
 
@@ -59,12 +61,39 @@ WhatsApp API, (2) marcas horizontales de fecha dentro de TODOS los chats y
 - Archivos: `src/lib/contacts.ts` (`construirVCard`, `descargarVCard`,
   `guardarContactoEnGoogle`) y `src/app/page.tsx` (botón y avisos).
 
+### 4. Etapa «Vencidos» (WhatsApp API → WhatsApp Personal)
+
+- Cuando la ventana de 24 h de un chat del WhatsApp API se cierra, ese número ya no
+  permite responder con texto libre: el CRM lo pasa solo a la etapa **Vencidos**
+  (cuenta `evolution` = WhatsApp Personal) para continuar la conversación ahí.
+- Reglas:
+  - Solo se mueven los chats cuya etapa responde el **WhatsApp API**
+    (`cuenta_responsable = 'meta_business'`). Los que ya estaban en una etapa del
+    **WhatsApp Personal** nunca se tocan.
+  - Sin margen de cortesía: se mueven en cuanto la ventana vence.
+  - Se ejecuta al abrir el CRM, así que también traspasa de una vez el historial que
+    ya estaba vencido, y luego cada minuto (los que vencen en el momento se van solos).
+  - Si el cliente vuelve a escribir **por el API** y la ventana se reabre, el chat
+    **regresa solo** a la etapa donde estaba antes de vencer (memoria en
+    `clientes.estado_antes_vencido`, que también se guarda al mover a mano).
+  - Los chats spam y archivados no se mueven; la etapa Vencidos no se puede borrar.
+  - Si una escritura falla (por ejemplo, migración pendiente), el CRM espera 5 minutos
+    antes de reintentar, en vez de repetir el error cada 15 segundos.
+- Interruptor en **Ajustes → «Traspaso automático a Vencidos»** (`config_general.vencidos_auto`,
+  `true` por defecto); avisa al dashboard al instante para no esperar la recarga.
+- Archivos: `src/lib/tiempo-chat.ts` (reglas puras: `decidirTraspasoVencidos`,
+  `tieneChatApi`, `ultimoEntranteApiDeConversacion`), `src/app/page.tsx` (motor de
+  traspaso, chips con el canal del API), `src/components/AjustesPanel.tsx` (interruptor),
+  `src/lib/sync-chatwoot.ts` (mantiene `ultimo_entrante_api_en`).
+- Detalle completo en `VENCIDOS-WHATSAPP-API.md`.
+
 ### Verificación
 
-- `npm run test:tiempo` (`scripts/prueba-tiempo-chat.mjs`) — ✅ 39 pruebas, 0 fallos:
+- `npm run test:tiempo` (`scripts/prueba-tiempo-chat.mjs`) — ✅ 60 pruebas, 0 fallos:
   umbrales y textos de la ventana, duraciones, último entrante (ignora los enviados),
-  etiquetas de fecha por día/semana/mes/año y coherencia entre la marca de la base de
-  datos y los mensajes en pantalla.
+  etiquetas de fecha por día/semana/mes/año, coherencia entre la marca de la base de
+  datos y los mensajes en pantalla, y las cuatro reglas de Vencidos (mover, no tocar
+  etapas del Personal, volver a la etapa anterior, sin margen).
 - `npx tsc --noEmit` ✅ · `npm run build` ✅
 - Vista previa del diseño sin tocar datos: `preview-ventana-24h.html`.
 - **Todo es web**: se publica con el deploy de Vercel y NO necesita APK nueva.
@@ -76,6 +105,10 @@ WhatsApp API, (2) marcas horizontales de fecha dentro de TODOS los chats y
   historial, trigger por mensaje y RPC `recalcular_ultimos_entrantes()` para reparar
   todo de una vez. Sin ella la app funciona (respaldo), pero el contador es menos
   exacto en los chats viejos.
+- `supabase/migrations/20260919_vencidos_a_whatsapp_personal.sql` — etapa `vencidos`
+  (cuenta `evolution`), columna `clientes.estado_antes_vencido`, índice parcial y
+  función de consulta `clientes_vencidos_whatsapp_api()`. Sin ella el traspaso
+  funciona, pero se pierde el regreso automático a la etapa anterior.
 
 ## Build 2026-09-01: audios de respuestas rápidas a Supabase Storage
 
@@ -275,7 +308,8 @@ de la ventana nativa (gris/blanco según el modo del teléfono).
   → los cambios web van live con el deploy de Vercel, sin rebuild del APK
 
 ## Migraciones pendientes (Supabase SQL Editor)
-- supabase/migrations/20260918_ventana_24h_whatsapp_api.sql ← **nueva** (ventana de 24 h del WhatsApp API)
+- supabase/migrations/20260918_ventana_24h_whatsapp_api.sql ← **nueva** (ventana de 24 h del WhatsApp API; si ya la aplicaste, vuelve a aplicarla: ahora también crea `ultimo_entrante_api_en`)
+- supabase/migrations/20260919_vencidos_a_whatsapp_personal.sql ← **nueva** (etapa Vencidos + memoria de la etapa anterior)
 - supabase/migrations/20260829_nombre_manual_prioridad_telefono.sql
 - supabase/migrations/20260830_enrutar_leads_por_numero.sql
 - supabase/migrations/20260902_luna_etapas_expediente.sql  ← nueva (Luna por etapas)

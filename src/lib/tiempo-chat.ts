@@ -170,6 +170,115 @@ export function calcularVentana(
 }
 
 // ---------------------------------------------------------------------------
+// Traspaso a la etapa "Vencidos" (WhatsApp API → WhatsApp Personal)
+// ---------------------------------------------------------------------------
+//
+// Regla del CRM:
+//   · Un chat cuya etapa la controla el WhatsApp API (meta_business) y cuya
+//     ventana de 24 h ya venció pasa a la etapa "Vencidos", que responde desde
+//     el WhatsApp Personal: así la conversación se puede continuar.
+//   · Si la etapa ya la controla el WhatsApp Personal (evolution) no se mueve:
+//     no hay ventana que vencer.
+//   · Si el cliente vuelve a escribir POR EL WHATSAPP API (la ventana se
+//     reabre), el chat regresa solo a la etapa donde estaba antes de vencer.
+
+export const CLAVE_VENCIDOS = "vencidos";
+/** Margen de cortesía antes de mover: 0 = apenas vence la ventana. */
+export const MARGEN_VENCIDOS_MS = 0;
+
+/** ¿Esta clave/nombre corresponde a la etapa "Vencidos"? (acepta Vencido/Vencidos) */
+export function esClaveVencidos(valor: string | null | undefined): boolean {
+  const limpio = String(valor || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+  return limpio === "vencidos" || limpio === "vencido";
+}
+
+/** ¿El cliente tiene (o tuvo) chat en el WhatsApp API? */
+export function tieneChatApi(conv: any): boolean {
+  if (!conv) return false;
+  if (conv.fuente === "meta_business") return true;
+  if (conv.ultimo_entrante_api_en) return true;
+  // Un chat unificado (varios ids de Chatwoot) conserva la conversación del API
+  // dentro de la fila, aunque la fila quedó marcada como Personal.
+  const ids = conv.chatwoot_conversation_ids;
+  if (Array.isArray(ids) && ids.length > 1) return true;
+  return Number(conv.chatwoot_conversation_ids_count || 0) > 1;
+}
+
+/**
+ * Fecha del último mensaje del cliente POR EL WHATSAPP API.
+ * `ultimo_entrante_api_en` la mantiene la sincronización (sabe el canal de cada
+ * conversación de Chatwoot). Si todavía no está disponible pero el chat es del
+ * API, se usa la marca genérica como aproximación.
+ */
+export function ultimoEntranteApiDeConversacion(conv: any): string | null {
+  if (!conv) return null;
+  if (conv.ultimo_entrante_api_en) return String(conv.ultimo_entrante_api_en);
+  if (conv.fuente === "meta_business") {
+    return conv.ultimo_entrante_en ? String(conv.ultimo_entrante_en) : null;
+  }
+  return tieneChatApi(conv) && conv.ultimo_entrante_en ? String(conv.ultimo_entrante_en) : null;
+}
+
+export type DecisionVencidos = "mover" | "volver" | "nada";
+
+export interface EntradaVencidos {
+  /** Etapa actual del cliente (`cuenta_responsable` sale del pipeline). */
+  etapaActual: { clave?: string | null; cuenta_responsable?: string | null } | null | undefined;
+  /** Último mensaje del cliente por el WhatsApp API. */
+  ultimoEntranteApi: string | number | Date | null | undefined;
+  /**
+   * ¿`ultimoEntranteApi` viene de la columna exacta del API
+   * (`conversaciones.ultimo_entrante_api_en`)? Si es una aproximación (la
+   * migración todavía no está aplicada y se usó la marca genérica), NO se
+   * regresa desde Vencidos: un mensaje del WhatsApp Personal también movería esa
+   * marca y devolvería el chat a una etapa que responde por el API.
+   * `undefined` se interpreta como exacta.
+   */
+  apiExacto?: boolean;
+  /** Etapa donde estaba antes de pasar a Vencidos (columna estado_antes_vencido). */
+  estadoAntesVencido?: string | null;
+  ahoraMs?: number;
+}
+
+/**
+ * Decide qué hacer con un cliente según la regla de Vencidos:
+ *
+ *   "mover"  → su etapa es del WhatsApp API y la ventana de 24 h ya venció.
+ *   "volver" → está en Vencidos y el cliente volvió a escribir por el API
+ *              (la ventana está abierta otra vez) y sabemos a dónde regresarlo.
+ *   "nada"   → ya está en una etapa de WhatsApp Personal, la ventana sigue
+ *              abierta, no tiene chat del API o no hay a dónde volver.
+ */
+export function decidirTraspasoVencidos(entrada: EntradaVencidos): DecisionVencidos {
+  const etapa = entrada.etapaActual;
+  if (!etapa || !etapa.clave) return "nada";
+
+  const enVencidos = esClaveVencidos(etapa.clave);
+  const ventana = calcularVentana(entrada.ultimoEntranteApi, entrada.ahoraMs);
+
+  if (enVencidos) {
+    // Solo regresa si el cliente escribió por el API (dato real, no aproximado)
+    // y conocemos la etapa anterior. Así un mensaje del WhatsApp Personal no
+    // devuelve el chat a una etapa que responde por el API.
+    if (!entrada.estadoAntesVencido) return "nada";
+    if (!entrada.ultimoEntranteApi) return "nada";
+    if (entrada.apiExacto === false) return "nada";
+    return ventana.abierta && ventana.hayDato ? "volver" : "nada";
+  }
+
+  // Solo se mueven las etapas que responde el WhatsApp API.
+  if (etapa.cuenta_responsable !== "meta_business") return "nada";
+  if (!ventana.hayDato || ventana.abierta) return "nada";
+  if (ventana.cerradaHaceMs < MARGEN_VENCIDOS_MS) return "nada";
+  return "mover";
+}
+
+// ---------------------------------------------------------------------------
 // Divisores de fecha del historial
 // ---------------------------------------------------------------------------
 

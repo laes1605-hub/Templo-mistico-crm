@@ -68,6 +68,17 @@ Personal también parecería «reabrir» la ventana y el chat saltaría de vuelt
 etapa del API. Por eso el regreso solo se activa con la marca exacta
 (`ultimo_entrante_api_en`) que crea la 20260918.
 
+### Seguridad si falta la migración
+
+El traspaso **solo** mueve a la etapa Vencidos cuando esa etapa existe de verdad en
+`pipeline_etapas`. Si la migración 20260919 todavía no está aplicada:
+
+- La etapa Vencidos no aparece en el Pipeline ni en los filtros de Chats (no se
+  inventa una etapa fantasma).
+- El motor no mueve nada y deja un aviso en la consola del navegador
+  («falta la etapa en la base de datos»).
+- Así ningún chat puede quedar con un estado que no tenga columna en el pipeline.
+
 ### Vista previa desde SQL (opcional)
 
 ```sql

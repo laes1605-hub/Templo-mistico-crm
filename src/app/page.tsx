@@ -1505,7 +1505,9 @@ export default function CRMApp() {
   async function fetchPipelineEtapas() {
     const { data } = await supabase.from("pipeline_etapas").select("*").order("orden", { ascending: true });
     if (!data || data.length === 0) {
-      setPipelineEtapas(ETAPAS_DEFAULT);
+      // Sin etapas en la base el CRM queda degradado; la etapa Vencidos no se
+      // inventa porque el traspaso solo puede mover a etapas que existen.
+      setPipelineEtapas(ETAPAS_DEFAULT.filter((e) => e.clave !== CLAVE_VENCIDOS));
       return;
     }
 
@@ -1535,6 +1537,11 @@ export default function CRMApp() {
     // Garantizar que las etapas base siempre existan
     ETAPAS_DEFAULT.forEach((def) => {
       if (!limpias.some((e) => e.clave === def.clave)) {
+        // La etapa Vencidos NO se rellena: si no está en la base, el traspaso
+        // automático no la puede usar (mandaría el chat a una etapa inexistente,
+        // y el chat desaparecería del pipeline). Se crea con la migración
+        // supabase/migrations/20260919_vencidos_a_whatsapp_personal.sql.
+        if (def.clave === CLAVE_VENCIDOS) return;
         limpias.push({
           id: def.clave,
           ...def,
@@ -1638,9 +1645,24 @@ export default function CRMApp() {
   // Si una escritura falla (p. ej. migración pendiente y sin permisos), se
   // espera antes de reintentar para no repetir la misma escritura cada 15 s.
   const vencidosEsperaHasta = useRef(0);
+  // Aviso único (consola) cuando falta la migración de la etapa Vencidos.
+  const avisoVencidosFalta = useRef(false);
 
   function esEtapaVencidos(etapa: any): boolean {
     return Boolean(etapa && (String(etapa.clave) === CLAVE_VENCIDOS || esClaveVencidos(etapa.nombre)));
+  }
+
+  /**
+   * ¿La etapa existe de verdad en `pipeline_etapas`? Las etapas de relleno
+   * (`ETAPAS_DEFAULT`, cuando la tabla no las tiene) llevan `id` = su clave, así
+   * que solo las de la base traen un UUID. Es importante: si el traspaso moviera
+   * un cliente a una etapa que no existe en la base, ese chat desaparecería del
+   * pipeline y del listado. Sin la migración 20260919 no se mueve nada.
+   */
+  function esEtapaReal(etapa: any): boolean {
+    return Boolean(
+      etapa && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(etapa.id || ""))
+    );
   }
 
   function etapaVencidosDelPipeline(): any | null {
@@ -1653,7 +1675,9 @@ export default function CRMApp() {
     const buscada = normalizarEstado(clave);
     const etapa = pipelineEtapas.find((e: any) => normalizarEstado(e.clave) === buscada);
     if (!etapa || etapa.es_spam || etapa.es_archivado || esEtapaVencidos(etapa)) return null;
-    return etapa;
+    // Volver a una etapa que no está en la base dejaría el chat sin columna en el
+    // pipeline: mejor dejarlo en Vencidos y que el operador lo mueva a mano.
+    return esEtapaReal(etapa) ? etapa : null;
   }
 
   /**
@@ -1697,7 +1721,19 @@ export default function CRMApp() {
     if (Date.now() < vencidosEsperaHasta.current) return;
     if (pipelineEtapas.length === 0 || conversaciones.length === 0) return;
     const destino = etapaVencidosDelPipeline();
-    if (!destino) return; // sin etapa receptora no se mueve nada
+    // Sin etapa receptora REAL en la base no se mueve nada: mover a una etapa que
+    // no existe haría desaparecer el chat del pipeline. Pasa mientras no se aplique
+    // supabase/migrations/20260919_vencidos_a_whatsapp_personal.sql.
+    if (!destino || !esEtapaReal(destino)) {
+      if (!avisoVencidosFalta.current) {
+        avisoVencidosFalta.current = true;
+        console.warn(
+          "Vencidos: falta la etapa en la base de datos. Aplica " +
+            "supabase/migrations/20260919_vencidos_a_whatsapp_personal.sql para activar el traspaso."
+        );
+      }
+      return;
+    }
 
     const ahoraMs = Date.now();
     const aVencidos = new Map<string, any[]>(); // etapa anterior → clientes

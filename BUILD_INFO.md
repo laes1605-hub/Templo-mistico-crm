@@ -79,6 +79,9 @@ desde el WhatsApp Personal.
   - Los chats spam y archivados no se mueven; la etapa Vencidos no se puede borrar.
   - Si una escritura falla (por ejemplo, migración pendiente), el CRM espera 5 minutos
     antes de reintentar, en vez de repetir el error cada 15 segundos.
+  - Seguridad: la etapa Vencidos **no se inventa** si no está en la base. Sin la
+    migración 20260919 el motor no mueve nada (y avisa en la consola): mover un chat a
+    una etapa inexistente lo haría desaparecer del pipeline y del listado.
 - Interruptor en **Ajustes → «Traspaso automático a Vencidos»** (`config_general.vencidos_auto`,
   `true` por defecto); avisa al dashboard al instante para no esperar la recarga.
 - Archivos: `src/lib/tiempo-chat.ts` (reglas puras: `decidirTraspasoVencidos`,

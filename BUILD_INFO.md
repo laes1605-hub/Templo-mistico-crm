@@ -300,13 +300,18 @@ de la ventana nativa (gris/blanco según el modo del teléfono).
 - Estado: ✅ compilación verificada (sin errores)
 
 ## APK (automática en GitHub Actions)
-- Workflow listo: `ci/build-apk.yml` (hay que copiarlo a `.github/workflows/build-apk.yml`
-  para activarlo — el token del agente no tiene permiso `workflows` en GitHub)
+- Workflow activo en `.github/workflows/build-apk.yml` (el token del agente no tiene
+  permiso `workflows` en GitHub, así que no puede modificarlo: los cambios de CI se
+  aplican desde el navegador, ver `ARREGLAR-BUILD-APK.md`)
+- **Build APK en rojo desde el 14/09/2026 — arreglo pendiente de aplicar** (2 líneas):
+  Google retiró el paquete `tools` del Android SDK y `android-actions/setup-android@v3`
+  lo pide por defecto. Instrucciones exactas en `ARREGLAR-BUILD-APK.md`
+  (ojo: solo subir a `@v4` NO basta, hay que añadir `packages: 'platform-tools'`)
 - Una vez activo, en cada push a `arena/**` o `main`: compila el APK debug en la
   nube, lo sube como artefacto y lo commitea en `apk/templo-mistico-crm-debug.apk`
 - App ID: com.templomistico.crm
 - App Name: Templo Místico CRM
-- Version: 1.3.1 (definida en `package.json` y usada por Android; `versionCode` 5)
+- Version: 1.3.2 (definida en `package.json` y usada por Android; `versionCode` 6)
 - WebDir: out · La APK carga https://templo-mistico-crm.vercel.app (server.url)
   → los cambios web van live con el deploy de Vercel, sin rebuild del APK
 

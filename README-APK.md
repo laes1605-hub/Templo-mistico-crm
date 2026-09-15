@@ -281,7 +281,7 @@ npx cap add android
   notificaciones en Android 13+ (`POST_NOTIFICATIONS`).
 
 **Archivados no aparecen**
-- Ejecuta la migración SQL en Supabase: `supabase/migrations/20260824_archivado_eliminado.sql`
+- Ejecuta la migración SQL en Supabase: `supabase/migrations/20260824000001_archivado_eliminado.sql`
 - Ve a Supabase > SQL Editor > Pega el contenido > Run
 
 **Eliminar un cliente completamente**

@@ -301,7 +301,7 @@ export default function CerebroPanel() {
             <p className="font-bold mb-1">Falta crear la tabla en Supabase</p>
             <p className="text-amber-300/80">
               Abrí Supabase → SQL Editor y ejecutá el archivo
-              <code className="mx-1 px-1.5 py-0.5 rounded bg-gray-800/70 font-mono text-[10px]">supabase/migrations/20260824_fase3_cerebro_ia.sql</code>
+              <code className="mx-1 px-1.5 py-0.5 rounded bg-gray-800/70 font-mono text-[10px]">supabase/migrations/20260824000002_fase3_cerebro_ia.sql</code>
               del repositorio. Después tocá “Actualizar”.
             </p>
           </div>

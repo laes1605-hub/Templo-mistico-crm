@@ -22,7 +22,15 @@ import {
   prepararImagenRR,
   adjuntoParaEnviar,
 } from "../lib/respuestas-rapidas";
-import { estaContactoGuardadoEnTelefono, guardarContactoEnTelefono } from "../lib/contacts";
+import { estaContactoGuardadoEnTelefono, guardarContactoEnTelefono, guardarContactoEnGoogle } from "../lib/contacts";
+import DivisorFecha from "../components/DivisorFecha";
+import VentanaWhatsApp from "../components/VentanaWhatsApp";
+import {
+  calcularVentana,
+  claveDia,
+  esChatWhatsAppApi,
+  ultimoEntranteDeMensajes,
+} from "../lib/tiempo-chat";
 import { abrirLlamadaWhatsAppPersonal, llamadasWhatsAppPersonalDisponibles } from "../lib/whatsapp-personal";
 import { initTheme } from "../lib/theme";
 import {
@@ -190,6 +198,10 @@ export default function CRMApp() {
   // nuevos desde el último que ya tenemos en pantalla).
   const mensajesRef = useRef<any[]>([]);
   useEffect(() => { mensajesRef.current = mensajes; }, [mensajes]);
+  // Ventana de 24 h de WhatsApp API: si la migración 20260918 todavía no está
+  // aplicada en Supabase (no existe la columna conversaciones.ultimo_entrante_en),
+  // el dashboard rellena la marca con una consulta corta (máx. una por minuto).
+  const ventanaFallbackEnRef = useRef(0);
   const [clienteActual, setClienteActual] = useState<any | null>(null);
   
   const [todosPagos, setTodosPagos] = useState<any[]>([]);
@@ -327,6 +339,9 @@ export default function CRMApp() {
   const rrFileInputRef = useRef<HTMLInputElement>(null);
   const [guardandoContacto, setGuardandoContacto] = useState(false);
   const [contactoGuardado, setContactoGuardado] = useState<"nativo" | "vcf" | null>(null);
+  // Guardado del contacto en la cuenta de Google (ficha .vcf → menú de compartir).
+  const [guardandoContactoGoogle, setGuardandoContactoGoogle] = useState(false);
+  const [contactoGoogleNotice, setContactoGoogleNotice] = useState("");
   // null = comprobando / sin acceso a agenda; true = puede llamar; false = debe guardarlo primero.
   const [contactoEnTelefono, setContactoEnTelefono] = useState<boolean | null>(null);
   const [llamandoWhatsApp, setLlamandoWhatsApp] = useState(false);
@@ -904,6 +919,48 @@ export default function CRMApp() {
     }
   }
 
+  /**
+   * Guarda el contacto en la CUENTA DE GOOGLE (Google Contacts).
+   *
+   * La agenda donde escribe la APK no permite elegir cuenta, así que el camino
+   * sin configuración es exportar la ficha .vcf y abrir el menú de compartir
+   * del teléfono: ahí se elige Contactos/Google Contacts y la cuenta Google, y
+   * el contacto queda en la nube (y también visible en el teléfono).
+   */
+  async function guardarContactoClienteEnGoogle() {
+    if (!clienteActual || guardandoContactoGoogle) return;
+    const telefono = getTelefonoE164(clienteActual, selectedConv);
+    if (!telefono) {
+      alert("Este cliente no tiene un número de teléfono válido para guardarlo.");
+      return;
+    }
+
+    const nombre = getDisplayName(clienteActual, selectedConv);
+    setGuardandoContactoGoogle(true);
+    setContactoGoogleNotice("");
+    try {
+      const resultado = await guardarContactoEnGoogle(nombre, telefono);
+      if (resultado.metodo === "descarga") {
+        setContactoGoogleNotice(`Se descargó ${resultado.fileName}. Ábrelo en el teléfono y elige tu cuenta de Google.`);
+        alert(
+          `Se descargó ${resultado.fileName}.\n\n` +
+          "Ábrelo en el teléfono: Contactos te dejará elegir la cuenta de Google y ahí queda sincronizado."
+        );
+      } else if (resultado.metodo === "compartir_nativo") {
+        setContactoGoogleNotice(
+          'Elige "Contactos" y tu cuenta de Google. Si Contactos no aparece en el menú, la ficha quedó en Documentos › contactos para abrirla desde Archivos.'
+        );
+      } else {
+        setContactoGoogleNotice(`Elige "Contactos" y tu cuenta de Google en el menú que se abrió.`);
+      }
+    } catch (e: any) {
+      console.error("Error preparando el contacto para Google:", e);
+      alert(e?.message || "No se pudo preparar el contacto para la cuenta de Google.");
+    } finally {
+      setGuardandoContactoGoogle(false);
+    }
+  }
+
   async function llamarPorWhatsAppPersonal() {
     if (!selectedConv || !clienteActual || llamandoWhatsApp) return;
     if (!esConversacionWhatsAppPersonal(selectedConv)) {
@@ -1324,6 +1381,9 @@ export default function CRMApp() {
     }
     const { data } = await supabase.from("conversaciones").select("*, clientes(*)").order("ultimo_mensaje_en", { ascending: false });
     if (data) {
+      // ¿Ya está aplicada la migración de la ventana de 24 h? Si la columna no
+      // existe, Supabase no la devuelve y se usa el respaldo de abajo.
+      const hayColumnaVentana = data.some((fila: any) => Object.prototype.hasOwnProperty.call(fila, "ultimo_entrante_en"));
       // Unificar conversaciones por cliente_id para que haya una sola conversación por cliente
       const convsPorCliente = new Map<string, any>();
       data.forEach((c: any) => {
@@ -1341,17 +1401,70 @@ export default function CRMApp() {
           const tNuevo = new Date(c.ultimo_mensaje_en || 0).getTime();
           const principal = tNuevo > tExistente ? c : existente;
           const secundaria = tNuevo > tExistente ? existente : c;
+          // La ventana de 24 h se toma del chat unificado más reciente: si el
+          // cliente escribió en cualquiera de las dos conversaciones, cuenta.
+          const entrantes = [existente.ultimo_entrante_en, c.ultimo_entrante_en].filter(Boolean);
+          const ultimoEntrante = entrantes.length > 0
+            ? entrantes.reduce((a, b) => (new Date(a).getTime() >= new Date(b).getTime() ? a : b))
+            : undefined;
           convsPorCliente.set(cid, {
             ...principal,
             chatwoot_conversation_id: cwId,
             no_leidos: (principal.no_leidos || 0) + (secundaria.no_leidos || 0),
             all_conv_ids: [...(existente.all_conv_ids || [existente.id]), c.id],
+            ...(ultimoEntrante ? { ultimo_entrante_en: ultimoEntrante } : {}),
           });
         }
       });
-      setConversaciones(Array.from(convsPorCliente.values()));
+      const lista = Array.from(convsPorCliente.values());
+      if (!hayColumnaVentana) await completarVentanaSinMigracion(lista);
+      setConversaciones(lista);
     }
     setLoadingChats(false);
+  }
+
+  /**
+   * Respaldo de la ventana de 24 h mientras no se aplique la migración
+   * supabase/migrations/20260918_ventana_24h_whatsapp_api.sql: pide los mensajes
+   * ENTRANTES de los últimos 8 días de los chats del WhatsApp API visibles y
+   * guarda el más nuevo de cada uno. Sale barato (una consulta por minuto como
+   * máximo) y en cuanto la columna exista deja de ejecutarse.
+   */
+  async function completarVentanaSinMigracion(lista: any[]) {
+    const desde = Date.now() - 8 * 24 * 60 * 60 * 1000;
+    const pendientes = lista.filter((c) =>
+      esChatWhatsAppApi(c) &&
+      !c.ultimo_entrante_en &&
+      c.ultimo_mensaje_en &&
+      new Date(c.ultimo_mensaje_en).getTime() > desde
+    );
+    if (pendientes.length === 0) return;
+    if (Date.now() - ventanaFallbackEnRef.current < 60_000) return;
+    ventanaFallbackEnRef.current = Date.now();
+
+    const ids = pendientes.flatMap((c) => c.all_conv_ids || [c.id]).filter(Boolean);
+    try {
+      for (let i = 0; i < ids.length; i += 80) {
+        const { data } = await supabase
+          .from("mensajes")
+          .select("conversacion_id, creado_en")
+          .in("conversacion_id", ids.slice(i, i + 80))
+          .neq("tipo", "enviado")
+          .gte("creado_en", new Date(desde).toISOString())
+          .order("creado_en", { ascending: false })
+          .limit(400);
+        for (const msg of data || []) {
+          for (const conv of pendientes) {
+            if (!(conv.all_conv_ids || [conv.id]).includes(msg.conversacion_id)) continue;
+            if (!conv.ultimo_entrante_en || new Date(msg.creado_en).getTime() > new Date(conv.ultimo_entrante_en).getTime()) {
+              conv.ultimo_entrante_en = msg.creado_en;
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("Ventana de 24 h: cálculo de respaldo no disponible todavía:", e);
+    }
   }
 
   async function fetchPipelineEtapas() {
@@ -1768,6 +1881,7 @@ export default function CRMApp() {
     setSelectedConv(conv);
     setClienteActual(conv.clientes);
     setContactoGuardado(null);
+    setContactoGoogleNotice("");
     setContactoEnTelefono(null);
     setLlamandoWhatsApp(false);
     // Al abrir un chat, mantener la subcategoría si estamos en Por leer, En seguimiento o Archivados
@@ -2816,6 +2930,26 @@ export default function CRMApp() {
     return matchSearch;
   });
 
+  // ===== VENTANA DE 24 H DEL CHAT ABIERTO (WhatsApp API) =====
+  // Se cuenta desde el último mensaje del CLIENTE (regla de Meta). Se calcula
+  // con los mensajes ya cargados del chat —incluye los entrantes que llegan por
+  // realtime— y se refresca con el ticker de cada minuto.
+  const ultimoEntranteChatAbierto = React.useMemo(() => {
+    // Solo cuentan los mensajes del chat abierto (al cambiar de chat, los del
+    // anterior siguen en memoria hasta que responde la consulta).
+    const ids = new Set<string>(
+      ((selectedConv?.all_conv_ids || (selectedConv ? [selectedConv.id] : [])) as any[])
+        .filter(Boolean)
+        .map(String)
+    );
+    const propios = ids.size > 0 ? mensajes.filter((m: any) => ids.has(String(m.conversacion_id))) : mensajes;
+    return ultimoEntranteDeMensajes(propios) || (selectedConv?.ultimo_entrante_en as string | undefined) || null;
+  }, [mensajes, selectedConv]);
+  const estadoVentanaAbierto = React.useMemo(
+    () => calcularVentana(ultimoEntranteChatAbierto, nowTick),
+    [ultimoEntranteChatAbierto, nowTick],
+  );
+
   const ahora = new Date(); const inicioMes = new Date(ahora.getFullYear(), ahora.getMonth(), 1);
   
   function calcularCOP(pago: any) {
@@ -3257,6 +3391,11 @@ export default function CRMApp() {
                                 <span className="text-[10px] text-gray-500">
                                   {isArchivada ? `${diasArchivado}d` : new Date(conv.ultimo_mensaje_en).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                                 </span>
+                                {/* Ventana de 24 h: solo en los chats del WhatsApp API (fuente meta_business).
+                                    Los de WhatsApp Personal (Evolution) no tienen esa regla. */}
+                                {!isArchivada && esChatWhatsAppApi(conv) && (
+                                  <VentanaWhatsApp estado={calcularVentana(conv.ultimo_entrante_en, nowTick)} variante="lista" />
+                                )}
                                 {conv.no_leidos > 0 && !isArchivada && (
                                   <span className="bg-red-600 text-white text-[9px] min-w-[18px] h-[18px] px-1 rounded-full flex items-center justify-center font-bold" title={`${conv.no_leidos} mensaje(s) sin revisar`}>
                                     {conv.no_leidos > 99 ? "99+" : conv.no_leidos}
@@ -3381,6 +3520,13 @@ export default function CRMApp() {
                         );
                       })()}
 
+                      {/* Ventana de 24 h de WhatsApp API: tiempo restante desde el último mensaje del cliente */}
+                      {esChatWhatsAppApi(selectedConv) && (
+                        <span className="hidden md:flex">
+                          <VentanaWhatsApp estado={estadoVentanaAbierto} variante="cabecera" />
+                        </span>
+                      )}
+
                       {/* Check rápido de En seguimiento */}
                       <button
                         type="button"
@@ -3449,9 +3595,17 @@ export default function CRMApp() {
                       const isDocMsg = isFileMessage(msg);
                       const slug = slugFoto(getDisplayName(clienteActual, selectedConv));
                       const pieDeFoto = textoAdjuntoMultimedia(msg);
+                      // Marca horizontal de fecha: se dibuja solo cuando el
+                      // mensaje cambia de día respecto al anterior (o es el
+                      // primero del historial).
+                      const diaMsg = claveDia(msg.creado_en);
+                      const diaPrevio = idxMsg > 0 ? claveDia(mensajes[idxMsg - 1].creado_en) : "";
+                      const mostrarDivisorFecha = Boolean(diaMsg) && diaMsg !== diaPrevio;
 
                       return (
-                        <div key={msg.id} className={`flex ${isMe ? "justify-end" : "justify-start"}`}>
+                        <React.Fragment key={msg.id}>
+                        {mostrarDivisorFecha && <DivisorFecha fecha={msg.creado_en} />}
+                        <div className={`flex ${isMe ? "justify-end" : "justify-start"}`}>
                           <div className={`max-w-[85%] md:max-w-[70%] rounded-2xl px-3 py-2 shadow-sm ${isMe ? "bg-purple-600 text-white rounded-br-none" : "bg-surface border border-border text-gray-200 rounded-bl-none"}`}>
                             {(() => {
                               if (isAudioMsg && msg.url_archivo) {
@@ -3515,6 +3669,7 @@ export default function CRMApp() {
                             </div>
                           </div>
                         </div>
+                        </React.Fragment>
                       );
                     })}
                     <div ref={messagesEndRef} />
@@ -3573,6 +3728,10 @@ export default function CRMApp() {
                             {estaPendienteSeguimientoHoy(clienteActual) ? "Hoy" : "Hoy ✓"}
                           </span>
                         </span>
+                      )}
+                      {/* Ventana de 24 h del WhatsApp API, siempre visible al escribir */}
+                      {esChatWhatsAppApi(selectedConv) && (
+                        <VentanaWhatsApp estado={estadoVentanaAbierto} variante="barra" />
                       )}
                     </div>
 
@@ -3675,6 +3834,24 @@ export default function CRMApp() {
                         <UserPlus className="w-3.5 h-3.5" />
                         {guardandoContacto ? "Guardando contacto..." : contactoGuardado === "nativo" ? "Contacto guardado en el teléfono" : contactoGuardado === "vcf" ? "Contacto descargado (.vcf)" : "Guardar en teléfono"}
                       </button>
+                      {/* Cuenta de Google: la ficha .vcf se entrega al sistema para
+                          elegir Contactos/Google Contacts y la cuenta Google. */}
+                      <button
+                        onClick={guardarContactoClienteEnGoogle}
+                        disabled={guardandoContactoGoogle || !getTelefonoE164(clienteActual, selectedConv)}
+                        className="w-full mt-2 flex items-center justify-center gap-2 py-2 rounded-lg border text-xs font-semibold transition-all disabled:opacity-50 bg-emerald-950/20 border-emerald-800/50 text-emerald-300 hover:bg-emerald-900/40 hover:border-emerald-600"
+                        title="Exportar la ficha del contacto y guardarla en tu cuenta de Google (Google Contacts)"
+                      >
+                        <Globe className="w-3.5 h-3.5" />
+                        {guardandoContactoGoogle ? "Preparando contacto..." : "Guardar en cuenta Google"}
+                      </button>
+                      {contactoGoogleNotice && (
+                        <p className="text-[10px] text-emerald-300/90 mt-1.5 leading-relaxed">{contactoGoogleNotice}</p>
+                      )}
+                      <p className="text-[10px] text-gray-500 mt-1.5 leading-relaxed">
+                        Se abre el menú de compartir con la ficha lista: elige <span className="text-gray-300 font-semibold">Contactos</span> y tu cuenta
+                        de Google. Así el contacto queda en el teléfono y sincronizado en Google Contacts.
+                      </p>
                       {!clienteActual.es_spam && esConversacionWhatsAppPersonal(selectedConv) && (
                         <>
                           <button

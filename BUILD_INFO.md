@@ -1,8 +1,81 @@
 # Build Info - Templo Místico CRM
 
-**Fecha:** Fri Aug 29 (rama `arena/01a04b9a-templo-mistico-crm`)
+**Fecha:** 2026-09-15 (rama `arena/01a0a6cd-templo-mistico-crm`)
 **Commit:** (ver git log)
-**Branch:** arena/01a04b9a-templo-mistico-crm
+**Branch:** arena/01a0a6cd-templo-mistico-crm
+
+## Build 2026-09-15: ventana de 24 h del WhatsApp API, fechas en el chat y guardado en Google
+
+Tres cosas pedidas: (1) ver cuánto queda de la ventana de 24 h en los chats del
+WhatsApp API, (2) marcas horizontales de fecha dentro de TODOS los chats y
+(3) guardar los contactos también en la cuenta de Google.
+
+### 1. Ventana de 24 h (WhatsApp API / Meta)
+
+- El contador se calcula desde el **último mensaje del CLIENTE**, que es la regla real
+  de Meta (no desde el último mensaje propio). Dentro de la ventana se puede responder
+  con texto libre; fuera, WhatsApp API solo acepta plantillas aprobadas.
+- Se muestra en tres sitios, solo en los chats del WhatsApp API (fuente `meta_business`):
+  - **Lista de chats**: chip junto a la hora (`⏳ 21 h 32 min`).
+  - **Cabecera del chat abierto**: pastilla con el tiempo restante.
+  - **Barra "Responde desde ..."** sobre el compositor, siempre visible al escribir.
+  - El tooltip de los tres explica a qué hora se cierra la ventana y cuándo escribió
+    el cliente por última vez.
+- Colores por urgencia: verde (más de 6 h) → ámbar (≤ 6 h) → naranja parpadeante
+  (≤ 1 h) → rojo cuando ya cerró, con el tiempo transcurrido (`cerrada hace 3 h`).
+- Los chats de WhatsApp Personal (Evolution, `👤`) no muestran ventana: esa regla es
+  exclusiva del WhatsApp API.
+- Datos: `conversaciones.ultimo_entrante_en`, mantenida por un trigger con cada
+  mensaje (aunque la app esté cerrada). Si la migración todavía no está aplicada, el
+  dashboard calcula la marca con una consulta corta (una vez por minuto, solo chats
+  del API con mensajes de los últimos 8 días) y en cuanto exista la columna deja de
+  consultar.
+- Archivos: `src/lib/tiempo-chat.ts` (lógica pura), `src/components/VentanaWhatsApp.tsx`
+  (chip/pastilla/barra), `src/app/page.tsx` (cálculo, respaldo y pintado).
+
+### 2. Marcas de fecha en el historial
+
+- Línea horizontal con la fecha centrada cada vez que cambia el día, en todos los
+  chats (API y Personal), y el chat continúa debajo como siempre.
+- Textos estilo WhatsApp: `Hoy` · `Ayer` · día de la semana (últimos 7 días, `Sábado`)
+  · `17 de julio` · con año si es de otro año (`20 de diciembre de 2025`). El tooltip
+  lleva la fecha larga (`sábado, 20 de diciembre de 2025`).
+- La marca se dibuja solo cuando el mensaje cambia de día respecto al anterior (el
+  primero del historial también la lleva), así que un chat con meses de historial no
+  repite la fecha en cada mensaje.
+- Archivos: `src/components/DivisorFecha.tsx` + `src/lib/tiempo-chat.ts`.
+
+### 3. Contactos en la cuenta de Google
+
+- Nuevo botón **"Guardar en cuenta Google"** en la ficha del cliente, junto al de
+  "Guardar en teléfono".
+- Flujo sin configuración: se genera la ficha `.vcf` y se abre el menú de compartir
+  (Share de Capacitor en la APK, Web Share en el navegador; si no hay hoja de
+  compartir, se descarga el `.vcf`). Al elegir **Contactos / Google Contacts** y la
+  cuenta de Google, el contacto queda en la nube y también en el teléfono.
+- El guardado nativo de la APK (`Contacts.createContact`) sigue igual y no cambia.
+- Detalle y camino alternativo (escritura directa en la cuenta Google con plugin
+  nativo) en `GUARDAR-CONTACTOS-GOOGLE.md`.
+- Archivos: `src/lib/contacts.ts` (`construirVCard`, `descargarVCard`,
+  `guardarContactoEnGoogle`) y `src/app/page.tsx` (botón y avisos).
+
+### Verificación
+
+- `npm run test:tiempo` (`scripts/prueba-tiempo-chat.mjs`) — ✅ 39 pruebas, 0 fallos:
+  umbrales y textos de la ventana, duraciones, último entrante (ignora los enviados),
+  etiquetas de fecha por día/semana/mes/año y coherencia entre la marca de la base de
+  datos y los mensajes en pantalla.
+- `npx tsc --noEmit` ✅ · `npm run build` ✅
+- Vista previa del diseño sin tocar datos: `preview-ventana-24h.html`.
+- **Todo es web**: se publica con el deploy de Vercel y NO necesita APK nueva.
+
+### Migración nueva
+
+- `supabase/migrations/20260918_ventana_24h_whatsapp_api.sql` — columna
+  `conversaciones.ultimo_entrante_en`, índice parcial de entrantes, relleno del
+  historial, trigger por mensaje y RPC `recalcular_ultimos_entrantes()` para reparar
+  todo de una vez. Sin ella la app funciona (respaldo), pero el contador es menos
+  exacto en los chats viejos.
 
 ## Build 2026-09-01: audios de respuestas rápidas a Supabase Storage
 
@@ -202,6 +275,7 @@ de la ventana nativa (gris/blanco según el modo del teléfono).
   → los cambios web van live con el deploy de Vercel, sin rebuild del APK
 
 ## Migraciones pendientes (Supabase SQL Editor)
+- supabase/migrations/20260918_ventana_24h_whatsapp_api.sql ← **nueva** (ventana de 24 h del WhatsApp API)
 - supabase/migrations/20260829_nombre_manual_prioridad_telefono.sql
 - supabase/migrations/20260830_enrutar_leads_por_numero.sql
 - supabase/migrations/20260902_luna_etapas_expediente.sql  ← nueva (Luna por etapas)

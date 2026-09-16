@@ -21,11 +21,18 @@ function money(n: number | null | undefined, currency: string) {
  *      favor de la cuenta. Meta reporta el saldo como importe por cobrar, así
  *      que un saldo A FAVOR viene NEGATIVO (ej: -50000 = $500 de fondos).
  *      Si el saldo viene positivo, no hay fondos y ese valor es lo que se debe.
+ *      Si Meta no reporta el crédito a favor, se estima con
+ *      spend_cap − amount_spent (fondos cargados menos lo gastado).
  *   2. Cuenta POSPAGO con límite de gasto (spend_cap > 0):
  *      fondos = spend_cap − amount_spent (lo que queda disponible antes de que
  *      Meta detenga la entrega por alcanzar el límite).
  *   3. Si no hay ninguna de las dos cosas, los fondos quedan en null y se
  *      explica en el panel (facturación por umbral: no hay tope fijo).
+ *
+ * IMPORTANTE: el "crédito a favor" y el "spend_cap − amount_spent" NO son lo
+ * mismo y jamás se comparan con un "min()": el crédito a favor es el dinero
+ * precargado (lo que Meta Business llama "Fondos disponibles"), mientras que
+ * spend_cap − amount_spent ya descuenta todo el gasto y suele ser mucho menor.
  *
  * Cada dato opcional se pide aparte: si Meta rechaza un campo, la consulta
  * principal sigue funcionando.
@@ -149,32 +156,35 @@ export async function GET() {
     const disponibleBajoLimite = capNum !== null ? Math.max(0, capNum - spentNum) : null;
 
     // 3) FONDOS DISPONIBLES + de dónde salen.
-    //    Para prepago Meta puede reportar los fondos por dos vías:
-    //      a) crédito a favor (balance negativo)
-    //      b) lo cargado en la cuenta menos lo gastado, que Meta expone como
-    //         spend_cap − amount_spent
-    //    Si las dos existen y no coinciden, se toma la MENOR para no decir que
-    //    hay fondos cuando una de las señales dice que están por acabarse.
-    const fuentesPositivas: number[] = [];
-    if (creditoAFavor > 0) fuentesPositivas.push(creditoAFavor);
-    if (disponibleBajoLimite !== null && disponibleBajoLimite > 0) fuentesPositivas.push(disponibleBajoLimite);
-
+    //    El error clásico era mezclar dos señales que NO son lo mismo:
+    //      a) crédito a favor (balance negativo) = dinero precargado que se va
+    //         descontando del gasto. Es lo que Meta Business llama
+    //         "Fondos disponibles" y NO depende de cuánto se haya gastado.
+    //      b) spend_cap − amount_spent = lo que queda del tope/límite de gasto
+    //         configurado, que ya lleva descontado TODO lo gastado y puede ser
+    //         un número chico aunque queden $16.000 de fondos cargados.
+    //    Antes se tomaba la MENOR de las dos y por eso la app podía mostrar
+    //    $136 teniendo $16.000 de fondos. Ahora el "crédito a favor" (lo que
+    //    de verdad está precargado) manda cuando existe, y el margen del límite
+    //    se muestra aparte solo como dato informativo.
     let fondos: number | null = null;
     let fondosOrigen = "";
     let fondosDetalle = "";
 
     if (esPrepago) {
-      if (fuentesPositivas.length > 0) {
-        fondos = Math.min(...fuentesPositivas);
-        fondosOrigen = creditoAFavor > 0 && disponibleBajoLimite !== null
-          ? "crédito a favor y margen del límite (se usa el menor)"
-          : creditoAFavor > 0
-            ? "saldo prepago de la cuenta (crédito a favor que reporta Meta)"
-            : "fondos cargados menos lo gastado (según el límite de la cuenta)";
+      if (creditoAFavor > 0) {
+        // Dinero precargado a favor de la cuenta: el verdadero "Fondos disponibles".
+        fondos = creditoAFavor;
+        fondosOrigen = "saldo prepago de la cuenta (crédito a favor que reporta Meta)";
         fondosDetalle = "Cuenta prepago: estos fondos se descuentan solos con el gasto de las campañas y al agotarse la entrega se detiene.";
-        if (creditoAFavor > 0 && disponibleBajoLimite !== null && Math.abs(creditoAFavor - disponibleBajoLimite) > 1000) {
-          fondosDetalle += ` Meta reporta $${Math.round(creditoAFavor).toLocaleString("es-CO")} de crédito a favor y $${Math.round(disponibleBajoLimite).toLocaleString("es-CO")} de margen del límite: se muestra el menor.`;
+        if (disponibleBajoLimite !== null && disponibleBajoLimite >= 0 && Math.abs(creditoAFavor - disponibleBajoLimite) > 1000) {
+          fondosDetalle += ` El margen del límite de gasto (spend_cap − gastado) es aparte: ${money(disponibleBajoLimite, currency)}.`;
         }
+      } else if (disponibleBajoLimite !== null && disponibleBajoLimite > 0) {
+        // Meta no expone el crédito a favor; se cae al margen del límite cargado.
+        fondos = disponibleBajoLimite;
+        fondosOrigen = "fondos cargados menos lo gastado (según el límite de la cuenta)";
+        fondosDetalle = "Cuenta prepago: Meta no reportó crédito a favor, así que se estiman los fondos con el límite cargado menos lo gastado.";
       } else {
         fondos = 0;
         fondosOrigen = "saldo prepago de la cuenta (lo que reporta Meta)";
@@ -184,6 +194,11 @@ export async function GET() {
       fondos = disponibleBajoLimite;
       fondosOrigen = "límite de gasto de la cuenta − lo gastado";
       fondosDetalle = "La cuenta se factura por umbral; se muestra lo que queda antes de tocar el límite de gasto configurado.";
+      if (creditoAFavor > 0 && creditoAFavor > disponibleBajoLimite) {
+        fondos = creditoAFavor;
+        fondosOrigen = "crédito a favor de la cuenta";
+        fondosDetalle = "La cuenta tiene un crédito a favor (saldo negativo) que cubre la facturación; los fondos disponibles equivalen a ese crédito.";
+      }
     } else {
       fondos = null;
       fondosOrigen = "no disponible";

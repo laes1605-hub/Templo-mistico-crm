@@ -63,13 +63,27 @@ export const PRIORIDAD_FUENTE_COPY: Record<FuenteCopy, number> = {
 const RX_EXTENSION = /\.(mp4|mov|m4v|avi|mkv|webm|wmv|flv|3gp|mpeg|mpg|mts|jpg|jpeg|png|gif|webp|heic)\s*$/i;
 // URLs y rutas (un copy nunca es una ruta)
 const RX_RUTA = /^(https?:\/\/|file:|content:|blob:|\/|[a-z]:\\)/i;
-// Nombres técnicos típicos de edición/publicación
-const RX_TECNICO = /(auto[_\s-]?crop(?:ped)?|advideo|creative|creativo|version[_\s-]?\d|final[_\s-]?\d)/i;
+
+// Marca técnica FUERTE de edición de Meta: auto-crop y "advideo" son nombres
+// internos de la herramienta de edición/publicación, no del copy.
+const RX_MARCA_FUERTE = /(auto[_\s-]?crop(?:ped)?|advideo)/i;
+
+// Patrón de archivo con versión/recorte: "final_2", "v2", "DCO_1",
+// "AR_4_X_5". "final", "versión" o "creativo" como palabra SUELTA en un copy
+// NO se tratan como archivo: son palabras normales del español.
+const RX_PATRON_ARCHIVO = /(?:^|[_\s.-])(?:final|version|versi[oó]n|v|dco|ar|vertical|horizontal|square|story|feed|reels)[_\s-]?\d{1,2}(?:[_\s-]?(?:x|por)[_\s-]?\d{1,2})?(?:[_\s.-]|$)/i;
+
+// Recorte de proporción tipo "4x5", "9:16".
+const RX_RECORTE = /\b\d{1,2}\s?(?:[xX]|:)\s?\d{1,2}\b/;
 
 /**
  * ¿Este texto es el nombre de un archivo/asset y NO un copy publicable?
  * Ejemplos que devuelven true: "Auto_Cropped_AR_4_X_5_DCO_1.mp4",
  * "Auto_Cropped_AR_4_X_5_DCO_", "video_final_vertical_4x5.mp4".
+ *
+ * Ejemplos de COPY REAL que devuelven false (se conservan):
+ * "Ritual creativo para amarre de amor efectivo", "Trabajo final 1 de la serie",
+ * "AMARRE_DE_AMOR 100% GARANTIZADO".
  */
 export function esNombreDeArchivo(valor: unknown): boolean {
   const texto = String(valor ?? "").trim();
@@ -79,22 +93,36 @@ export function esNombreDeArchivo(valor: unknown): boolean {
 
   const palabras = texto.split(/\s+/).filter(Boolean);
 
-  // Una sola "palabra": se detecta por guiones/underscores o por ser técnico
+  // Una sola "palabra": se detecta por guiones/underscores o por patrón técnico
   if (palabras.length === 1) {
     const palabra = palabras[0];
     if (!/^[\w.\-()+]+$/.test(palabra)) return false;
     const separadores = (palabra.match(/[_-]/g) || []).length;
     // Auto_Cropped_AR_4_X_5_DCO_1 (varios separadores + números/marca técnica).
     // Se pide algo más que los guiones para no tumbar un copy tipo "AMARRE_DE_AMOR".
-    const numeroEntreGuiones = /_?\d+_/.test(palabra) || /\d+\s?[xX]\s?\d+/.test(palabra);
-    if (separadores >= 2 && (numeroEntreGuiones || RX_TECNICO.test(palabra))) return true;
+    const numeroEntreGuiones = /_?\d+_/.test(palabra) || RX_RECORTE.test(palabra);
+    if (separadores >= 2 && (numeroEntreGuiones || RX_MARCA_FUERTE.test(palabra) || RX_PATRON_ARCHIVO.test(palabra))) return true;
     if (/\d/.test(palabra) && /[a-z][A-Z]/.test(palabra)) return true; // VideoFinal4K
-    return RX_TECNICO.test(palabra);
+    // "final_2", "v2", "DCO_1": patrón de archivo + número de edición.
+    if (RX_PATRON_ARCHIVO.test(palabra) && /\d/.test(palabra)) return true;
+    return RX_MARCA_FUERTE.test(palabra);
   }
 
-  // Varias palabras: solo se descarta si es un nombre técnico corto y sin
-  // puntuación de oración (para no tumbar un copy real).
-  if (palabras.length <= 8 && RX_TECNICO.test(texto) && !/[.?!¿¡,]/.test(texto)) return true;
+  // Varias palabras: solo se descarta si TODO el texto es un nombre técnico real
+  // (marca de edición fuerte y/o patrón de recorte). Palabras sueltas como
+  // "creativo", "final" o "versión" en medio de un copy NO lo convierten en archivo.
+  if (palabras.length <= 8 && !/[.?!¿¡,]/.test(texto)) {
+    const marcaFuerte = RX_MARCA_FUERTE.test(texto);
+    const recorte = RX_RECORTE.test(texto);
+    const patron = RX_PATRON_ARCHIVO.test(texto);
+    // "Auto Cropped AR 4 X 5 DCO 1" → marca fuerte + recorte/patrón.
+    if (marcaFuerte && (recorte || patron || /\d/.test(texto))) return true;
+    if (recorte && patron) return true;
+    // "Video Final 1", "Foto 4x5" → empieza por tipo de asset + patrón técnico.
+    const empiezaPorAsset = /^(?:video|imagen|foto|audio|archivo|adjunto|clip)\b/i.test(texto);
+    if (empiezaPorAsset && (patron || recorte)) return true;
+    return false;
+  }
   return false;
 }
 

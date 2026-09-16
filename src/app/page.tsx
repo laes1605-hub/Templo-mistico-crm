@@ -250,13 +250,23 @@ export default function CRMApp() {
   const [guardandoCampana, setGuardandoCampana] = useState(false);
   const [nuevaCampNombre, setNuevaCampNombre] = useState("");
   const [nuevaCampPresupuesto, setNuevaCampPresupuesto] = useState("");
+  const [nuevaCampTipoPresupuesto, setNuevaCampTipoPresupuesto] = useState<"lifetime" | "daily">("lifetime");
+  const [nuevaCampDias, setNuevaCampDias] = useState<number>(4);
   const [nuevaCampObjetivo, setNuevaCampObjetivo] = useState("OUTCOME_LEADS");
   const [nuevaCampEstado, setNuevaCampEstado] = useState<"ACTIVE" | "PAUSED">("ACTIVE");
 
   const [campanaEditando, setCampanaEditando] = useState<any | null>(null);
   const [editCampNombre, setEditCampNombre] = useState("");
   const [editCampPresupuesto, setEditCampPresupuesto] = useState("");
+  const [editCampTipoPresupuesto, setEditCampTipoPresupuesto] = useState<"lifetime" | "daily">("lifetime");
+  const [editCampDias, setEditCampDias] = useState<number>(8);
   const [editCampEstado, setEditCampEstado] = useState<"ACTIVE" | "PAUSED">("ACTIVE");
+
+  // Memoria del Agente de Ads (Aprendizaje de campañas ganadoras y descarte de fallidas)
+  const [adsMemoriaModal, setAdsMemoriaModal] = useState(false);
+  const [generandoEstrategia, setGenerandoEstrategia] = useState(false);
+  const [topCampanasGuardadas, setTopCampanasGuardadas] = useState<any[]>([]);
+  const [campanasFallidasGuardadas, setCampanasFallidasGuardadas] = useState<any[]>([]);
 
   const [isEditingNombre, setIsEditingNombre] = useState(false);
   const [tempNombre, setTempNombre] = useState("");
@@ -390,6 +400,7 @@ export default function CRMApp() {
     fetchCampanasAds();
     cargarConfigDivisas();
     cargarConfigGeneral();
+    cargarMemoriaAds();
     void actualizarRespuestasRapidas().then(setRespuestasRapidas);
     // Recalcular mensajes no leídos (cubre los que llegaron con la app cerrada)
     sincronizarNoLeidos();
@@ -1850,6 +1861,71 @@ export default function CRMApp() {
     }
   }
 
+  // Cargar memoria de aprendizaje de Ads (Top 3 mejores y campañas fallidas)
+  function cargarMemoriaAds() {
+    if (typeof window === "undefined") return;
+    try {
+      const top = JSON.parse(localStorage.getItem("tm_ads_top_campanas") || "[]");
+      const fail = JSON.parse(localStorage.getItem("tm_ads_failed_campanas") || "[]");
+      setTopCampanasGuardadas(top);
+      setCampanasFallidasGuardadas(fail);
+    } catch (e) {
+      console.warn("Error leyendo memoria de Ads:", e);
+    }
+  }
+
+  // Guardar campaña en el Top 3 de mejores o en lo que no funciona
+  function marcarMemoriaAds(campana: any, tipo: "top" | "fail") {
+    if (typeof window === "undefined" || !campana) return;
+    try {
+      if (tipo === "top") {
+        let actual = [...topCampanasGuardadas].filter(c => c.id !== campana.id);
+        actual.unshift({
+          id: campana.id,
+          name: campana.name,
+          cpl: campana.cpl,
+          leads: campana.leads,
+          spend: campana.spend,
+          dailyBudget: campana.dailyBudget,
+          lifetimeBudget: campana.lifetimeBudget,
+          fecha: new Date().toLocaleDateString("es-CO")
+        });
+        actual = actual.slice(0, 3); // Mantener el Top 3
+        setTopCampanasGuardadas(actual);
+        localStorage.setItem("tm_ads_top_campanas", JSON.stringify(actual));
+        alert(`⭐ ¡Campaña "${campana.name}" guardada en el Top 3 de mejores para que el agente aprenda de ella!`);
+      } else {
+        let actual = [...campanasFallidasGuardadas].filter(c => c.id !== campana.id);
+        actual.unshift({
+          id: campana.id,
+          name: campana.name,
+          cpl: campana.cpl,
+          spend: campana.spend,
+          leads: campana.leads,
+          fecha: new Date().toLocaleDateString("es-CO")
+        });
+        actual = actual.slice(0, 5);
+        setCampanasFallidasGuardadas(actual);
+        localStorage.setItem("tm_ads_failed_campanas", JSON.stringify(actual));
+        alert(`🚫 Campaña "${campana.name}" registrada en la lista de lo que NO funcionó para no repetir sus fallos.`);
+      }
+    } catch (e) {
+      console.error("Error guardando en memoria de Ads:", e);
+    }
+  }
+
+  function eliminarDeMemoriaAds(id: string, tipo: "top" | "fail") {
+    if (tipo === "top") {
+      const actual = topCampanasGuardadas.filter(c => c.id !== id);
+      setTopCampanasGuardadas(actual);
+      localStorage.setItem("tm_ads_top_campanas", JSON.stringify(actual));
+    } else {
+      const actual = campanasFallidasGuardadas.filter(c => c.id !== id);
+      setCampanasFallidasGuardadas(actual);
+      localStorage.setItem("tm_ads_failed_campanas", JSON.stringify(actual));
+    }
+  }
+
   async function crearNuevaCampanaAds(e: React.FormEvent) {
     e.preventDefault();
     if (!nuevaCampNombre.trim()) {
@@ -1857,8 +1933,8 @@ export default function CRMApp() {
       return;
     }
     const presupuestoNum = Number(nuevaCampPresupuesto) || 0;
-    if (presupuestoNum < 0) {
-      alert("El presupuesto no puede ser negativo.");
+    if (presupuestoNum <= 0) {
+      alert("Por favor ingresa un presupuesto válido mayor a 0.");
       return;
     }
 
@@ -1869,7 +1945,9 @@ export default function CRMApp() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: nuevaCampNombre.trim(),
-          dailyBudget: presupuestoNum,
+          budgetType: nuevaCampTipoPresupuesto,
+          budgetAmount: presupuestoNum,
+          days: nuevaCampDias,
           objective: nuevaCampObjetivo,
           status: nuevaCampEstado
         }),
@@ -1897,7 +1975,10 @@ export default function CRMApp() {
     e?.stopPropagation();
     setCampanaEditando(c);
     setEditCampNombre(c.name || "");
-    setEditCampPresupuesto(String(c.dailyBudget || ""));
+    const valorPresupuesto = c.lifetimeBudget > 0 ? c.lifetimeBudget : c.dailyBudget;
+    setEditCampPresupuesto(String(valorPresupuesto || ""));
+    setEditCampTipoPresupuesto(c.lifetimeBudget > 0 ? "lifetime" : "daily");
+    setEditCampDias(8);
     setEditCampEstado(c.status === "ACTIVE" ? "ACTIVE" : "PAUSED");
   }
 
@@ -1919,7 +2000,7 @@ export default function CRMApp() {
     setCampanas(prev => prev.map(c => c.id === campanaEditando.id ? {
       ...c,
       name: editCampNombre.trim(),
-      dailyBudget: presupuestoNum,
+      ...(editCampTipoPresupuesto === "lifetime" ? { lifetimeBudget: presupuestoNum } : { dailyBudget: presupuestoNum }),
       status: editCampEstado
     } : c));
 
@@ -1930,7 +2011,9 @@ export default function CRMApp() {
         body: JSON.stringify({
           campaignId: campanaEditando.id,
           name: editCampNombre.trim(),
-          dailyBudget: presupuestoNum,
+          budgetType: editCampTipoPresupuesto,
+          budgetAmount: presupuestoNum,
+          days: editCampDias,
           status: editCampEstado
         }),
       });
@@ -1939,7 +2022,9 @@ export default function CRMApp() {
         alert(data.error || "No se pudo actualizar la campaña.");
         fetchCampanasAds();
       } else {
+        alert("¡Campaña y presupuesto actualizados en Meta Ads!");
         setCampanaEditando(null);
+        fetchCampanasAds();
       }
     } catch (err: any) {
       console.error("Error actualizando campaña:", err);
@@ -1948,6 +2033,34 @@ export default function CRMApp() {
     } finally {
       setGuardandoCampana(false);
     }
+  }
+
+  // Generar propuesta de nueva campaña con IA basada en las mejores
+  async function generarCampanaConIA() {
+    setGenerandoEstrategia(true);
+    setShowAiModal(true);
+    setAiRecommendation(null);
+    try {
+      const res = await fetch("/api/ads/ai-advisor", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "generate_strategy",
+          campaigns: campanas,
+          topCampaigns: topCampanasGuardadas,
+          failedCampaigns: campanasFallidasGuardadas
+        }),
+      });
+      const data = await res.json();
+      if (data.recommendation) {
+        setAiRecommendation(data.recommendation);
+      } else {
+        setAiRecommendation("Error: " + (data.error || "No se pudo generar la propuesta."));
+      }
+    } catch (e: any) {
+      setAiRecommendation("Error conectando con la IA: " + e.message);
+    }
+    setGenerandoEstrategia(false);
   }
 
   async function consultarAsesorIAAds() {
@@ -5229,6 +5342,13 @@ export default function CRMApp() {
                 >
                   <Plus className="w-3.5 h-3.5" /> Nueva Campaña
                 </button>
+                <button
+                  onClick={() => setAdsMemoriaModal(true)}
+                  className="bg-amber-950/60 hover:bg-amber-900/60 border border-amber-800 text-amber-300 px-3.5 py-2 rounded-xl text-xs font-bold shadow-lg shadow-amber-950/20 flex items-center gap-1.5 transition-all"
+                  title="Memoria de Top 3 Campañas y Errores descartados"
+                >
+                  <Brain className="w-3.5 h-3.5 text-amber-400" /> Memoria & Top 3 ({topCampanasGuardadas.length})
+                </button>
                 <button onClick={fetchCampanasAds} disabled={loadingAds} className="bg-surface hover:bg-surfaceHover border border-border text-gray-300 px-3 py-2 rounded-xl text-xs font-medium flex items-center gap-1.5 transition-all"><RefreshCw className={`w-3.5 h-3.5 ${loadingAds ? 'animate-spin' : ''}`} /> Actualizar</button>
                 <button onClick={consultarAsesorIAAds} className="bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white px-4 py-2 rounded-xl text-xs font-bold shadow-lg shadow-purple-900/30 flex items-center gap-2 transition-all"><Sparkles className="w-4 h-4" /> Analizar con IA</button>
               </div>
@@ -5306,13 +5426,29 @@ export default function CRMApp() {
                             <div><span className="text-gray-500 block text-[10px] uppercase font-bold">CTR aprox:</span> <span className="text-gray-200 font-semibold">{c.impressions ? ((c.clicks / c.impressions) * 100).toFixed(2) + "%" : "0%"}</span></div>
                             <div><span className="text-gray-500 block text-[10px] uppercase font-bold">ID Meta:</span> <span className="font-mono text-[10px] text-gray-400">{c.id}</span></div>
                           </div>
-                          <div className="flex items-center gap-2">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); marcarMemoriaAds(c, "top"); }}
+                              className="px-2.5 py-1.5 rounded-lg bg-amber-950/40 border border-amber-800/60 hover:bg-amber-900/40 text-amber-300 font-semibold text-xs flex items-center gap-1 transition-all"
+                              title="Guardar en el Top 3 para que el Agente replique su estrategia"
+                            >
+                              ⭐ Aprender (Top 3)
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); marcarMemoriaAds(c, "fail"); }}
+                              className="px-2.5 py-1.5 rounded-lg bg-red-950/40 border border-red-800/60 hover:bg-red-900/40 text-red-300 font-semibold text-xs flex items-center gap-1 transition-all"
+                              title="Marcar como campaña no rentable para evitar sus errores"
+                            >
+                              🚫 Descartar (Error)
+                            </button>
                             <button
                               type="button"
                               onClick={(e) => abrirEditarCampana(c, e)}
                               className="px-3 py-1.5 rounded-lg bg-surface border border-border hover:bg-surfaceHover text-purple-300 font-semibold text-xs flex items-center gap-1.5 transition-all"
                             >
-                              <Edit2 className="w-3 h-3" /> Modificar Presupuesto / Datos
+                              <Edit2 className="w-3 h-3" /> Reajustar Presupuesto
                             </button>
                             <button
                               type="button"
@@ -5478,7 +5614,69 @@ export default function CRMApp() {
 
               <div>
                 <label className="text-xs text-gray-400 block mb-1 font-semibold">
-                  Presupuesto Diario (COP) *
+                  Modalidad de Presupuesto
+                </label>
+                <div className="grid grid-cols-2 gap-2 mb-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNuevaCampTipoPresupuesto("lifetime");
+                      if (!nuevaCampPresupuesto) setNuevaCampPresupuesto("40000");
+                    }}
+                    className={`p-2.5 rounded-xl border text-left transition-all ${
+                      nuevaCampTipoPresupuesto === "lifetime"
+                        ? "bg-purple-950/60 border-purple-600 text-purple-200 shadow-sm"
+                        : "bg-surface border-border text-gray-400 hover:text-white"
+                    }`}
+                  >
+                    <p className="text-xs font-bold">Presupuesto Total</p>
+                    <p className="text-[10px] text-gray-400 mt-0.5">Monto global para X días</p>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNuevaCampTipoPresupuesto("daily");
+                      if (!nuevaCampPresupuesto) setNuevaCampPresupuesto("10000");
+                    }}
+                    className={`p-2.5 rounded-xl border text-left transition-all ${
+                      nuevaCampTipoPresupuesto === "daily"
+                        ? "bg-purple-950/60 border-purple-600 text-purple-200 shadow-sm"
+                        : "bg-surface border-border text-gray-400 hover:text-white"
+                    }`}
+                  >
+                    <p className="text-xs font-bold">Presupuesto Diario</p>
+                    <p className="text-[10px] text-gray-400 mt-0.5">Gasto constante por día</p>
+                  </button>
+                </div>
+              </div>
+
+              {nuevaCampTipoPresupuesto === "lifetime" && (
+                <div>
+                  <label className="text-xs text-gray-400 block mb-1 font-semibold">
+                    Duración Estimada (Días)
+                  </label>
+                  <div className="flex gap-2">
+                    {[3, 4, 7, 8, 15].map((d) => (
+                      <button
+                        key={d}
+                        type="button"
+                        onClick={() => setNuevaCampDias(d)}
+                        className={`flex-1 py-1.5 rounded-lg text-xs font-bold border transition-all ${
+                          nuevaCampDias === d
+                            ? "bg-purple-600 border-purple-500 text-white"
+                            : "bg-surface border-border text-gray-400 hover:text-white"
+                        }`}
+                      >
+                        {d} días
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <label className="text-xs text-gray-400 block mb-1 font-semibold">
+                  {nuevaCampTipoPresupuesto === "lifetime" ? "Presupuesto Total (COP)" : "Presupuesto Diario (COP)"} *
                 </label>
                 <div className="relative">
                   <span className="absolute left-3 top-2 text-xs text-gray-500 font-mono">$</span>
@@ -5486,14 +5684,34 @@ export default function CRMApp() {
                     type="number"
                     min="1000"
                     step="1000"
-                    placeholder="Ej: 30000"
+                    placeholder={nuevaCampTipoPresupuesto === "lifetime" ? "Ej: 40000" : "Ej: 10000"}
                     value={nuevaCampPresupuesto}
                     onChange={(e) => setNuevaCampPresupuesto(e.target.value)}
                     className="w-full bg-background border border-border rounded-lg pl-7 pr-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500"
                     required
                   />
                 </div>
-                <p className="text-[10px] text-gray-500 mt-1">Presupuesto asignado a nivel de campaña por día en Pesos Colombianos.</p>
+                {Number(nuevaCampPresupuesto) > 0 && (
+                  <div className="mt-2 p-2 rounded-lg bg-surface/50 border border-border text-[11px] text-gray-400 space-y-0.5">
+                    <div className="flex justify-between">
+                      <span>Inversión neta:</span>
+                      <span className="text-gray-200 font-semibold">${Number(nuevaCampPresupuesto).toLocaleString("es-CO")} COP</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>IVA Meta (19% Colombia):</span>
+                      <span className="text-amber-400 font-semibold">+${Math.round(Number(nuevaCampPresupuesto) * 0.19).toLocaleString("es-CO")} COP</span>
+                    </div>
+                    <div className="flex justify-between border-t border-border/50 pt-1 font-bold text-gray-200">
+                      <span>Total tarjeta/factura:</span>
+                      <span className="text-emerald-400">${Math.round(Number(nuevaCampPresupuesto) * 1.19).toLocaleString("es-CO")} COP</span>
+                    </div>
+                    {nuevaCampTipoPresupuesto === "lifetime" && (
+                      <div className="text-[10px] text-purple-300 pt-0.5">
+                        ≈ ${Math.round(Number(nuevaCampPresupuesto) / (nuevaCampDias || 4)).toLocaleString("es-CO")} COP netos por día.
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               <div>
@@ -5599,7 +5817,63 @@ export default function CRMApp() {
 
               <div>
                 <label className="text-xs text-gray-400 block mb-1 font-semibold">
-                  Presupuesto Diario (COP)
+                  Modalidad de Presupuesto
+                </label>
+                <div className="grid grid-cols-2 gap-2 mb-3">
+                  <button
+                    type="button"
+                    onClick={() => setEditCampTipoPresupuesto("lifetime")}
+                    className={`p-2.5 rounded-xl border text-left transition-all ${
+                      editCampTipoPresupuesto === "lifetime"
+                        ? "bg-purple-950/60 border-purple-600 text-purple-200 shadow-sm"
+                        : "bg-surface border-border text-gray-400 hover:text-white"
+                    }`}
+                  >
+                    <p className="text-xs font-bold">Presupuesto Total</p>
+                    <p className="text-[10px] text-gray-400 mt-0.5">Ej: 4 días $40k → 8 días $80k</p>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditCampTipoPresupuesto("daily")}
+                    className={`p-2.5 rounded-xl border text-left transition-all ${
+                      editCampTipoPresupuesto === "daily"
+                        ? "bg-purple-950/60 border-purple-600 text-purple-200 shadow-sm"
+                        : "bg-surface border-border text-gray-400 hover:text-white"
+                    }`}
+                  >
+                    <p className="text-xs font-bold">Presupuesto Diario</p>
+                    <p className="text-[10px] text-gray-400 mt-0.5">Gasto constante por día</p>
+                  </button>
+                </div>
+              </div>
+
+              {editCampTipoPresupuesto === "lifetime" && (
+                <div>
+                  <label className="text-xs text-gray-400 block mb-1 font-semibold">
+                    Extender Duración a (Días Totales)
+                  </label>
+                  <div className="flex gap-2">
+                    {[4, 6, 8, 10, 14, 21, 30].map((d) => (
+                      <button
+                        key={d}
+                        type="button"
+                        onClick={() => setEditCampDias(d)}
+                        className={`flex-1 py-1.5 rounded-lg text-xs font-bold border transition-all ${
+                          editCampDias === d
+                            ? "bg-purple-600 border-purple-500 text-white"
+                            : "bg-surface border-border text-gray-400 hover:text-white"
+                        }`}
+                      >
+                        {d}d
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <label className="text-xs text-gray-400 block mb-1 font-semibold">
+                  {editCampTipoPresupuesto === "lifetime" ? "Nuevo Presupuesto Total (COP)" : "Nuevo Presupuesto Diario (COP)"}
                 </label>
                 <div className="relative">
                   <span className="absolute left-3 top-2 text-xs text-gray-500 font-mono">$</span>
@@ -5607,14 +5881,34 @@ export default function CRMApp() {
                     type="number"
                     min="1000"
                     step="1000"
-                    placeholder="Ej: 50000"
+                    placeholder="Ej: 80000"
                     value={editCampPresupuesto}
                     onChange={(e) => setEditCampPresupuesto(e.target.value)}
                     className="w-full bg-background border border-border rounded-lg pl-7 pr-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500"
                     required
                   />
                 </div>
-                <p className="text-[10px] text-gray-500 mt-1">Presupuesto diario en Meta Ads para esta campaña.</p>
+                {Number(editCampPresupuesto) > 0 && (
+                  <div className="mt-2 p-2 rounded-lg bg-surface/50 border border-border text-[11px] text-gray-400 space-y-0.5">
+                    <div className="flex justify-between">
+                      <span>Inversión neta:</span>
+                      <span className="text-gray-200 font-semibold">${Number(editCampPresupuesto).toLocaleString("es-CO")} COP</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>IVA Meta (19% Colombia):</span>
+                      <span className="text-amber-400 font-semibold">+${Math.round(Number(editCampPresupuesto) * 0.19).toLocaleString("es-CO")} COP</span>
+                    </div>
+                    <div className="flex justify-between border-t border-border/50 pt-1 font-bold text-gray-200">
+                      <span>Total tarjeta/factura:</span>
+                      <span className="text-emerald-400">${Math.round(Number(editCampPresupuesto) * 1.19).toLocaleString("es-CO")} COP</span>
+                    </div>
+                    {editCampTipoPresupuesto === "lifetime" && (
+                      <div className="text-[10px] text-purple-300 pt-0.5">
+                        Ritmo diario: ≈ ${Math.round(Number(editCampPresupuesto) / (editCampDias || 8)).toLocaleString("es-CO")} COP netos/día durante {editCampDias} días.
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               <div>
@@ -5666,6 +5960,130 @@ export default function CRMApp() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL MEMORIA Y APRENDIZAJE DEL AGENTE DE ADS */}
+      {adsMemoriaModal && (
+        <div className="fixed inset-0 z-50 bg-scrim flex justify-center overflow-y-auto p-3 sm:p-4 pt-[calc(0.75rem_+_var(--safe-area-inset-top))] pb-[calc(0.75rem_+_var(--safe-area-inset-bottom))] backdrop-blur-md">
+          <div className="w-full max-w-2xl my-auto max-h-[92dvh] bg-surface border border-border rounded-2xl p-6 space-y-5 shadow-2xl flex flex-col">
+            <div className="flex items-center justify-between border-b border-border pb-3">
+              <div className="flex items-center gap-2 text-amber-400">
+                <Brain className="w-5 h-5" />
+                <h3 className="text-base font-bold text-gray-100">Memoria de Aprendizaje del Agente de Ads</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAdsMemoriaModal(false)}
+                className="text-gray-400 hover:text-white p-1 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-5 pr-1">
+              {/* SECCIÓN TOP 3 */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-amber-400 flex items-center gap-1.5">
+                    <Sparkles className="w-4 h-4" /> Top 3 Campañas Ganadoras (Estrategias a Replicar)
+                  </h4>
+                  <span className="text-[10px] text-gray-500">{topCampanasGuardadas.length}/3 guardadas</span>
+                </div>
+                <p className="text-[11px] text-gray-400 leading-tight">
+                  El Agente analiza estas campañas con el CPL más bajo para extraer sus ángulos psicológicos, creativos y copys ganadores al diseñar nuevas pruebas.
+                </p>
+
+                {topCampanasGuardadas.length === 0 ? (
+                  <div className="p-4 rounded-xl border border-dashed border-border text-center text-xs text-gray-500">
+                    Aún no has fijado campañas ganadoras. Abre cualquier campaña en el listado y haz clic en <span className="text-amber-400 font-semibold">⭐ Aprender (Top 3)</span>.
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {topCampanasGuardadas.map((c, idx) => (
+                      <div key={c.id || idx} className="p-3 rounded-xl bg-amber-950/20 border border-amber-800/40 flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="w-5 h-5 rounded-full bg-amber-500/20 text-amber-300 font-bold text-xs flex items-center justify-center">#{idx + 1}</span>
+                            <span className="font-bold text-xs text-gray-200 truncate">{c.name}</span>
+                          </div>
+                          <div className="flex items-center gap-3 text-[11px] text-gray-400 mt-1 pl-7">
+                            <span>CPL: <strong className="text-emerald-400">${Number(c.cpl || 0).toLocaleString("es-CO")} COP</strong></span>
+                            <span>Leads: <strong className="text-purple-300">{c.leads || 0}</strong></span>
+                            <span>Invertido: ${Number(c.spend || 0).toLocaleString("es-CO")} COP</span>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => eliminarDeMemoriaAds(c.id, "top")}
+                          className="text-gray-500 hover:text-red-400 p-1.5 rounded-lg text-xs"
+                          title="Quitar del Top"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* SECCIÓN CAMPAÑAS FALLIDAS / ANTI-PATRONES */}
+              <div className="space-y-2 pt-2 border-t border-border">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-red-400 flex items-center gap-1.5">
+                    🚫 Lo que ya se probó y NO funcionó (Anti-Patrones)
+                  </h4>
+                  <span className="text-[10px] text-gray-500">{campanasFallidasGuardadas.length} registradas</span>
+                </div>
+                <p className="text-[11px] text-gray-400 leading-tight">
+                  Campañas con CPL inflado o sin conversiones. El agente lee esta lista negra para no volver a cometer los mismos errores creativos o de segmentación.
+                </p>
+
+                {campanasFallidasGuardadas.length === 0 ? (
+                  <div className="p-3 rounded-xl border border-dashed border-border text-center text-xs text-gray-500">
+                    No hay campañas descartadas registradas. En cualquier campaña con pérdidas puedes tocar <span className="text-red-400 font-semibold">🚫 Descartar (Error)</span>.
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {campanasFallidasGuardadas.map((c, idx) => (
+                      <div key={c.id || idx} className="p-2.5 rounded-xl bg-red-950/20 border border-red-800/40 flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <span className="font-semibold text-xs text-gray-300 truncate block">{c.name}</span>
+                          <span className="text-[10px] text-red-400">CPL: ${Number(c.cpl || 0).toLocaleString("es-CO")} COP • Invertido: ${Number(c.spend || 0).toLocaleString("es-CO")} COP</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => eliminarDeMemoriaAds(c.id, "fail")}
+                          className="text-gray-500 hover:text-red-400 p-1 rounded-lg text-xs"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* BOTÓN DISPARAR ESTRATEGIA EVOLUTIVA */}
+              <div className="pt-3 border-t border-border">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAdsMemoriaModal(false);
+                    generarCampanaConIA();
+                  }}
+                  disabled={generandoEstrategia}
+                  className="w-full py-3 rounded-xl bg-gradient-to-r from-purple-600 via-indigo-600 to-amber-600 hover:opacity-95 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-purple-900/30 transition-all"
+                >
+                  <Sparkles className="w-4 h-4" />
+                  {generandoEstrategia ? "Generando con IA..." : "Crear Nueva Estrategia Basada en las Mejores Campañas"}
+                </button>
+                <p className="text-[10px] text-gray-400 text-center mt-2">
+                  La IA construirá 2 propuestas completas de copy, ángulos de video/imagen y estructura de presupuesto (4 a 8 días) combinando lo ganador y descartando lo fallido.
+                </p>
+              </div>
+            </div>
           </div>
         </div>
       )}

@@ -112,7 +112,14 @@ export async function GET() {
 // POST: Crear una nueva campaña directamente en Meta Ads
 export async function POST(req: Request) {
   try {
-    const { name, dailyBudget, objective = "OUTCOME_LEADS", status = "PAUSED" } = await req.json();
+    const {
+      name,
+      budgetType = "lifetime", // "lifetime" (presupuesto total) o "daily" (diario)
+      budgetAmount,
+      days = 4,
+      objective = "OUTCOME_LEADS",
+      status = "PAUSED"
+    } = await req.json();
 
     if (!name || !name.trim()) {
       return NextResponse.json({ error: "El nombre de la campaña es obligatorio." }, { status: 400 });
@@ -126,8 +133,8 @@ export async function POST(req: Request) {
       }, { status: 400 });
     }
 
-    // Meta API espera daily_budget en centavos (ej: $10,000 COP -> 1000000)
-    const budgetCents = Number(dailyBudget) > 0 ? Math.round(Number(dailyBudget) * 100) : null;
+    const totalBudget = Number(budgetAmount) || 0;
+    const duracionDias = Math.max(1, Number(days) || 4);
 
     const payload: Record<string, any> = {
       name: name.trim(),
@@ -137,8 +144,14 @@ export async function POST(req: Request) {
       access_token: metaToken
     };
 
-    if (budgetCents) {
-      payload.daily_budget = budgetCents;
+    if (totalBudget > 0) {
+      if (budgetType === "lifetime") {
+        // Presupuesto total: en centavos
+        payload.lifetime_budget = Math.round(totalBudget * 100);
+      } else {
+        // Presupuesto diario
+        payload.daily_budget = Math.round(totalBudget * 100);
+      }
     }
 
     const url = `https://graph.facebook.com/v19.0/act_${adAccountId}/campaigns`;
@@ -160,17 +173,19 @@ export async function POST(req: Request) {
       id: resJson.id,
       name: name.trim(),
       status: payload.status,
-      dailyBudget: Number(dailyBudget) || 0
+      budgetType,
+      budgetAmount: totalBudget,
+      days: duracionDias
     });
   } catch (error: any) {
     return NextResponse.json({ error: error.message || "Error interno al crear campaña" }, { status: 500 });
   }
 }
 
-// PATCH: Modificar nombre, presupuesto y/o estado de una campaña existente
+// PATCH: Modificar nombre, presupuesto (total o diario), extensión de días y/o estado de una campaña existente
 export async function PATCH(req: Request) {
   try {
-    const { campaignId, name, dailyBudget, status } = await req.json();
+    const { campaignId, name, budgetType, budgetAmount, days, status } = await req.json();
 
     if (!campaignId) {
       return NextResponse.json({ error: "Falta el ID de la campaña." }, { status: 400 });
@@ -190,8 +205,14 @@ export async function PATCH(req: Request) {
       body.name = name.trim();
     }
 
-    if (dailyBudget !== undefined && dailyBudget !== null && !isNaN(Number(dailyBudget))) {
-      body.daily_budget = Math.round(Number(dailyBudget) * 100);
+    const amountNum = Number(budgetAmount);
+    if (!isNaN(amountNum) && amountNum > 0) {
+      if (budgetType === "daily") {
+        body.daily_budget = Math.round(amountNum * 100);
+      } else {
+        // Por defecto presupuesto total (lifetime)
+        body.lifetime_budget = Math.round(amountNum * 100);
+      }
     }
 
     if (status && ["ACTIVE", "PAUSED", "ARCHIVED"].includes(status)) {
@@ -217,8 +238,10 @@ export async function PATCH(req: Request) {
       campaignId,
       updated: {
         name: body.name,
+        lifetimeBudget: body.lifetime_budget ? Math.round(body.lifetime_budget / 100) : undefined,
         dailyBudget: body.daily_budget ? Math.round(body.daily_budget / 100) : undefined,
-        status: body.status
+        status: body.status,
+        daysExtended: days || undefined
       }
     });
   } catch (error: any) {

@@ -94,7 +94,7 @@ export async function GET(req: Request) {
       status: 200,
       headers: {
         "Content-Type": contentType || "application/octet-stream",
-        "Content-Disposition": `inline; filename="${filename}"`,
+        "Content-Disposition": `attachment; filename="${filename}"`,
         "Cache-Control": "public, max-age=86400",
         "Content-Length": String(bytes.length),
         "Access-Control-Allow-Origin": "*",

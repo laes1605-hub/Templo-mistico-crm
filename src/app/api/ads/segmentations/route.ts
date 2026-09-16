@@ -1,3 +1,4 @@
+import { getMetaConfig } from "@/lib/meta-config";
 import { NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
@@ -84,7 +85,7 @@ function extraerDeTargeting(t: any): Partial<Segmentacion> {
  */
 export async function GET() {
   try {
-    const { metaToken, adAccountId } = getMetaCredentials();
+    const { metaToken, adAccountId } = await getMetaConfig();
     if (!metaToken || !adAccountId) {
       return NextResponse.json({
         ok: false,

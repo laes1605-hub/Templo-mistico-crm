@@ -255,7 +255,9 @@ export default function CRMApp() {
   const [nuevaCampObjetivo, setNuevaCampObjetivo] = useState("OUTCOME_ENGAGEMENT");
   const [nuevaCampEstado, setNuevaCampEstado] = useState<"ACTIVE" | "PAUSED">("ACTIVE");
   const [nuevaCampFechaInicio, setNuevaCampFechaInicio] = useState<string>(() => new Date().toISOString().split("T")[0]);
+  // Cantidad de anuncios = cantidad de VIDEOS DIFERENTES de la Fan Page
   const [nuevaCampNumAnuncios, setNuevaCampNumAnuncios] = useState<number>(2);
+  const [selectedVideoIds, setSelectedVideoIds] = useState<string[]>([]);
   const [nuevaCampCopy, setNuevaCampCopy] = useState<string>("");
   const [nuevaCampCopies, setNuevaCampCopies] = useState<string[]>(["", "", "", "", ""]);
   const [usarCopyVideo, setUsarCopyVideo] = useState<boolean>(true);
@@ -265,9 +267,13 @@ export default function CRMApp() {
   const [selectedWhatsappDisplay, setSelectedWhatsappDisplay] = useState<string>("");
   const [accountInfo, setAccountInfo] = useState<any>(null);
   const [loadingAccount, setLoadingAccount] = useState(false);
-  const [recargaMonto, setRecargaMonto] = useState<string>("");
-  const [recargandoSaldo, setRecargandoSaldo] = useState(false);
   const [previewCampana, setPreviewCampana] = useState<any>(null);
+
+  // TODAS las segmentaciones guardadas en la cuenta (públicos guardados, personalizados y en uso)
+  const [segmentacionesGuardadas, setSegmentacionesGuardadas] = useState<any[]>([]);
+  const [loadingSegmentaciones, setLoadingSegmentaciones] = useState(false);
+  const [segmentacionesNota, setSegmentacionesNota] = useState("");
+  const [selectedSegmentacionId, setSelectedSegmentacionId] = useState<string>("");
 
   // Segmentación guardada por defecto Templo Místico - WhatsApp ONLY
   const [segmentacionGuardada, setSegmentacionGuardada] = useState<any>(() => {
@@ -276,6 +282,7 @@ export default function CRMApp() {
       if (saved) return JSON.parse(saved);
     } catch {}
     return {
+      nombre: "Segmentación por defecto Templo Místico",
       location: { countries: ["CO"] },
       age_min: 18,
       age_max: 65,
@@ -421,6 +428,9 @@ export default function CRMApp() {
   const [loadingBal, setLoadingBal] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  // Marca de tiempo de la última sincronización de Ads (para el refresco de 10 min)
+  const ultimaActualizacionAdsRef = useRef<number>(0);
+  const [ultimaActualizacionAds, setUltimaActualizacionAds] = useState<number>(0);
 
   // ===================== CARGA INICIAL =====================
   useEffect(() => {
@@ -507,16 +517,42 @@ export default function CRMApp() {
     return () => clearInterval(t);
   }, []);
 
-  // Actualización automática de Ads: 3 veces al día (cada 8 horas = 28,800,000 ms)
-  // Además sincroniza al abrir la pestaña Ads o cuando la app vuelve a estar visible si han pasado más de 8 horas.
+  // Actualización automática de Ads CADA 10 MINUTOS: resultados de campañas,
+  // saldo de la cuenta publicitaria, videos de la Fan Page y segmentaciones.
+  // Además refresca al volver a la app si ya pasaron 10 minutos desde la última vez.
   useEffect(() => {
-    const OCHO_HORAS_MS = 8 * 60 * 60 * 1000;
-    const intervalAds = setInterval(() => {
-      fetchCampanasAds();
-    }, OCHO_HORAS_MS);
+    const DIEZ_MINUTOS_MS = 10 * 60 * 1000;
 
-    return () => clearInterval(intervalAds);
+    const refrescarTodoAds = () => {
+      fetchCampanasAds();
+      fetchAccountInfo();
+    };
+
+    const intervalAds = setInterval(refrescarTodoAds, DIEZ_MINUTOS_MS);
+
+    // Al volver a la app (o a la pestaña) se refresca si el dato ya está viejo
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      const ultima = Number(ultimaActualizacionAdsRef.current || 0);
+      if (Date.now() - ultima >= DIEZ_MINUTOS_MS) refrescarTodoAds();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+
+    return () => {
+      clearInterval(intervalAds);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Al abrir la pestaña de Ads, trae datos frescos de inmediato
+  useEffect(() => {
+    if (tab !== "ads") return;
+    fetchCampanasAds();
+    fetchAccountInfo();
+    if (segmentacionesGuardadas.length === 0) fetchSegmentaciones();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
 
   // Ajustes → Vencidos: el interruptor avisa al dashboard al instante.
   useEffect(() => {
@@ -1868,7 +1904,7 @@ export default function CRMApp() {
     setLoadingAds(true);
     setAdsNote("");
     try {
-      const res = await fetch("/api/ads/campaigns");
+      const res = await fetch("/api/ads/campaigns", { cache: "no-store" });
       const data = await res.json();
       if (data.campaigns) {
         setCampanas(data.campaigns);
@@ -1877,6 +1913,9 @@ export default function CRMApp() {
       if (data.error || data.note) {
         setAdsNote(data.error || data.note);
       }
+      const ahora = Date.now();
+      ultimaActualizacionAdsRef.current = ahora;
+      setUltimaActualizacionAds(ahora);
     } catch (e) {
       console.error("Error cargando campañas Ads:", e);
     }
@@ -1910,11 +1949,11 @@ export default function CRMApp() {
     }
   }
 
-  // Cargar videos subidos a la Fan Page de Facebook
+  // Cargar TODOS los videos publicados en la Fan Page de Facebook
   async function fetchVideosFanPage() {
     setLoadingVideos(true);
     try {
-      const res = await fetch("/api/ads/videos");
+      const res = await fetch("/api/ads/videos", { cache: "no-store" });
       const data = await res.json();
       if (data.videos && Array.isArray(data.videos)) {
         setPageVideos(data.videos);
@@ -1929,18 +1968,67 @@ export default function CRMApp() {
     }
   }
 
-  // Cargar números de WhatsApp vinculados - SOLO WHATSAPP
+  // Cargar TODAS las segmentaciones guardadas en la cuenta publicitaria
+  async function fetchSegmentaciones() {
+    setLoadingSegmentaciones(true);
+    setSegmentacionesNota("");
+    try {
+      const res = await fetch("/api/ads/segmentations", { cache: "no-store" });
+      const data = await res.json();
+      const lista = Array.isArray(data.segmentations) ? data.segmentations : [];
+      setSegmentacionesGuardadas(lista);
+      if (data.error || data.note) setSegmentacionesNota(data.error || data.note);
+    } catch (err) {
+      console.warn("Error cargando segmentaciones:", err);
+      setSegmentacionesNota("No se pudieron cargar las segmentaciones guardadas.");
+    } finally {
+      setLoadingSegmentaciones(false);
+    }
+  }
+
+  // Al elegir una segmentación guardada, se usa tal cual viene de Meta
+  function aplicarSegmentacion(id: string) {
+    setSelectedSegmentacionId(id);
+    const seg = segmentacionesGuardadas.find((s: any) => String(s.id) === String(id));
+    if (!seg) return;
+    const normalizada = {
+      id: seg.id,
+      nombre: seg.nombre,
+      origen: seg.origen,
+      location: { countries: seg.paises || [], cities: seg.ciudades || [], regions: seg.regiones || [] },
+      age_min: seg.edad_min ?? 18,
+      age_max: seg.edad_max ?? 65,
+      genders: seg.generos || [1, 2],
+      interests: seg.intereses || [],
+      behaviors: seg.comportamientos || [],
+      placements: seg.placements || ["facebook", "instagram"],
+      destination: "WHATSAPP_ONLY",
+      targeting_raw: seg.targeting_raw || null,
+    };
+    setSegmentacionGuardada(normalizada);
+    try {
+      localStorage.setItem("tm_ads_segmentacion", JSON.stringify(normalizada));
+    } catch {}
+  }
+
+  // Cargar números de WhatsApp vinculados - SOLO WHATSAPP (se muestra EL NÚMERO)
   async function fetchWhatsappNumbers() {
     setLoadingWhatsappNumbers(true);
     try {
-      const res = await fetch("/api/ads/whatsapp-numbers");
+      const res = await fetch("/api/ads/whatsapp-numbers", { cache: "no-store" });
       const data = await res.json();
       if (data.numbers && Array.isArray(data.numbers)) {
         setWhatsappNumbers(data.numbers);
-        if (data.numbers.length > 0 && !selectedWhatsappId) {
-          const principal = data.numbers.find((n: any) => n.is_mock && n.display_number.includes("305")) || data.numbers[0];
-          setSelectedWhatsappId(principal.id);
-          setSelectedWhatsappDisplay(principal.display_number);
+        if (data.numbers.length > 0) {
+          const sigueValido = data.numbers.some((n: any) => n.id === selectedWhatsappId);
+          if (!selectedWhatsappId || !sigueValido) {
+            const primero = data.numbers[0];
+            setSelectedWhatsappId(primero.id);
+            setSelectedWhatsappDisplay(primero.display_number || primero.display_phone_number || "");
+          }
+        } else {
+          setSelectedWhatsappId("");
+          setSelectedWhatsappDisplay("");
         }
       }
     } catch (err) {
@@ -1950,20 +2038,38 @@ export default function CRMApp() {
     }
   }
 
-  // Cargar info cuenta publicitaria para saldo
+  // Cargar info cuenta publicitaria: SALDO TOTAL + gasto de hoy
   async function fetchAccountInfo() {
     setLoadingAccount(true);
     try {
-      const res = await fetch("/api/ads/account");
+      const res = await fetch("/api/ads/account", { cache: "no-store" });
       const data = await res.json();
       if (data.account) {
-        setAccountInfo(data.account);
+        setAccountInfo({ ...data.account, billing_url: data.billing_url });
       }
     } catch (err) {
       console.warn("Error cargando cuenta:", err);
     } finally {
       setLoadingAccount(false);
     }
+  }
+
+  // Videos realmente elegidos (en el orden en que se marcaron), limitados al número de anuncios
+  const videosSeleccionadosObj = selectedVideoIds
+    .map((id) => pageVideos.find((v: any) => v.id === id))
+    .filter(Boolean)
+    .slice(0, nuevaCampNumAnuncios);
+
+  // Marcar / desmarcar un video. No deja pasar del número de anuncios pedido.
+  function toggleVideoSeleccionado(id: string) {
+    setSelectedVideoIds((prev) => {
+      if (prev.includes(id)) return prev.filter((v) => v !== id);
+      if (prev.length >= nuevaCampNumAnuncios) {
+        // Reemplaza el más antiguo para que siempre coincida con la cantidad pedida
+        return [...prev.slice(1), id];
+      }
+      return [...prev, id];
+    });
   }
 
   // Calcular preview completo dinámico - AHORA CON COPY DEL VIDEO O DEL AGENTE
@@ -1987,30 +2093,32 @@ export default function CRMApp() {
       const legibleInicio = fechaInicio.toLocaleString("es-CO", { weekday: "long", year: "numeric", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: true, timeZone: "America/Bogota" });
       const legibleFin = fechaFin.toLocaleString("es-CO", { weekday: "long", year: "numeric", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: true, timeZone: "America/Bogota" });
 
-      const vidObj = pageVideos.find((v: any) => v.id === selectedVideoId);
       const waObj = whatsappNumbers.find((w: any) => w.id === selectedWhatsappId);
 
-      // Determinar copy base: del video seleccionado o del agente
-      const copyVideoBase = (vidObj?.description || vidObj?.title || "").trim();
+      // Un anuncio = un VIDEO DIFERENTE de la Fan Page
+      const videosElegidos = videosSeleccionadosObj;
       const copyAgenteBase = nuevaCampCopy.trim();
+      const copyVideoBase = String((videosElegidos[0] as any)?.copy_original || (videosElegidos[0] as any)?.description || "").trim();
 
-      // Construir lista de copies por anuncio (1-5)
       const anunciosConCopy = Array.from({ length: nuevaCampNumAnuncios }, (_, i) => {
+        const vid: any = videosElegidos[i] || null;
+        // Solo el COPY ORIGINAL real; el título NO es copy y no debe usarse como tal.
+        const descVideo = String(vid?.copy_original || vid?.description || "").trim();
         let copyFinal = "";
         let origen = "";
         if (usarCopyVideo) {
-          // Si usa copy del video, tomar descripción del video
-          if (copyVideoBase) {
-            copyFinal = nuevaCampCopies[i]?.trim() ? `${copyVideoBase}\n\n--- Variación ${i+1} ---\n${nuevaCampCopies[i]}` : copyVideoBase;
-            origen = nuevaCampCopies[i]?.trim() ? "video + agente" : "video";
+          if (descVideo) {
+            // COPY ORIGINAL tal cual está publicado en la fan page
+            copyFinal = nuevaCampCopies[i]?.trim() ? `${descVideo}\n\n--- Variación ${i + 1} ---\n${nuevaCampCopies[i]}` : descVideo;
+            origen = nuevaCampCopies[i]?.trim() ? "copy original del video + variación" : "copy original del video";
           } else {
-            copyFinal = nuevaCampCopies[i]?.trim() || copyAgenteBase || `🔮 ${nuevaCampNombre || "Templo Místico"} - Consulta espiritual personalizada. Escríbenos al WhatsApp y descubre tu destino. ✨`;
-            origen = nuevaCampCopies[i]?.trim() ? "agente variación" : (copyAgenteBase ? "agente" : "auto");
+            // Sin copy original: se usa lo que escriba el agente. NUNCA se inventa texto.
+            copyFinal = nuevaCampCopies[i]?.trim() || copyAgenteBase || "";
+            origen = nuevaCampCopies[i]?.trim() ? "agente variación" : (copyAgenteBase ? "agente" : "⚠️ este video no tiene copy — escribe uno");
           }
         } else {
-          // Solo copy del agente
-          copyFinal = nuevaCampCopies[i]?.trim() || copyAgenteBase || `🔮 ${nuevaCampNombre || "Templo Místico"} - Amarres, retornos, tarot. Resultados garantizados. WhatsApp ahora.`;
-          origen = nuevaCampCopies[i]?.trim() ? "agente variación" : (copyAgenteBase ? "agente" : "auto");
+          copyFinal = nuevaCampCopies[i]?.trim() || copyAgenteBase || "";
+          origen = nuevaCampCopies[i]?.trim() ? "agente variación" : (copyAgenteBase ? "agente" : "⚠️ falta copy — escribe uno");
         }
         return {
           id: i + 1,
@@ -2018,7 +2126,10 @@ export default function CRMApp() {
           cta: "Enviar WhatsApp",
           copy: copyFinal,
           copy_origen: origen,
-          copy_preview: copyFinal.substring(0, 120) + (copyFinal.length>120?"...":""),
+          copy_preview: copyFinal.substring(0, 120) + (copyFinal.length > 120 ? "..." : ""),
+          video: vid,
+          video_title: vid?.title || "⚠️ Falta elegir video",
+          video_thumb: vid?.picture || null,
         };
       });
 
@@ -2042,9 +2153,12 @@ export default function CRMApp() {
         copy_base_video: copyVideoBase,
         copy_base_agente: copyAgenteBase,
         usar_copy_video: usarCopyVideo,
-        video: vidObj,
-        whatsapp: waObj || { display_number: selectedWhatsappDisplay || "+57 305 402 1111", verified_name: "Templo Místico" },
+        videos: videosElegidos,
+        videosFaltantes: Math.max(0, nuevaCampNumAnuncios - videosElegidos.length),
+        whatsapp: waObj || null,
+        whatsappNumero: waObj?.display_number || waObj?.display_phone_number || selectedWhatsappDisplay || "",
         segmentacion: segmentacionGuardada,
+        segmentacionNombre: segmentacionGuardada?.nombre || "Segmentación por defecto",
         destino: "WHATSAPP_ONLY",
         estado: nuevaCampEstado,
         objetivo: nuevaCampObjetivo,
@@ -2059,48 +2173,36 @@ export default function CRMApp() {
     if (showCrearCampModal) {
       calcularPreviewCampana();
     }
-  }, [nuevaCampNombre, nuevaCampPresupuesto, nuevaCampTipoPresupuesto, nuevaCampDias, nuevaCampFechaInicio, nuevaCampNumAnuncios, selectedVideoId, selectedWhatsappId, segmentacionGuardada, nuevaCampEstado, nuevaCampObjetivo, showCrearCampModal, pageVideos, whatsappNumbers, nuevaCampCopy, nuevaCampCopies, usarCopyVideo]);
+  }, [nuevaCampNombre, nuevaCampPresupuesto, nuevaCampTipoPresupuesto, nuevaCampDias, nuevaCampFechaInicio, nuevaCampNumAnuncios, selectedVideoIds, selectedWhatsappId, segmentacionGuardada, nuevaCampEstado, nuevaCampObjetivo, showCrearCampModal, pageVideos, whatsappNumbers, nuevaCampCopy, nuevaCampCopies, usarCopyVideo]);
 
-  // Cargar WhatsApp y cuenta cuando se abre modal
+  // Cargar WhatsApp, cuenta, videos y segmentaciones cuando se abre el modal
   useEffect(() => {
     if (showCrearCampModal) {
       fetchWhatsappNumbers();
       fetchAccountInfo();
+      fetchSegmentaciones();
+      if (pageVideos.length === 0) fetchVideosFanPage();
       if (!nuevaCampFechaInicio) {
         setNuevaCampFechaInicio(new Date().toISOString().split("T")[0]);
       }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showCrearCampModal]);
 
-  async function handleRecargarSaldo(e: any) {
-    e.preventDefault();
-    const monto = Number(recargaMonto);
-    if (!(monto > 0)) {
-      alert("Ingresa un monto válido mayor a 0");
-      return;
-    }
-    setRecargandoSaldo(true);
-    try {
-      const res = await fetch("/api/ads/account", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ amount: monto, note: `Recarga manual desde CRM - ${new Date().toLocaleString("es-CO")}` }),
-      });
-      const data = await res.json();
-      if (data.ok) {
-        alert(data.message || `¡Saldo cargado! $${monto.toLocaleString("es-CO")} COP`);
-        fetchAccountInfo();
-        fetchCampanasAds();
-        setRecargaMonto("");
-      } else {
-        alert(data.error || "No se pudo recargar saldo");
-      }
-    } catch (err: any) {
-      alert(err.message || "Error recargando saldo");
-    } finally {
-      setRecargandoSaldo(false);
-    }
-  }
+  // Si se sube el número de anuncios, autocompleta con los videos más recientes aún no usados
+  useEffect(() => {
+    if (!showCrearCampModal || pageVideos.length === 0) return;
+    setSelectedVideoIds((prev) => {
+      const validos = prev.filter((id) => pageVideos.some((v: any) => v.id === id));
+      if (validos.length >= nuevaCampNumAnuncios) return validos.slice(0, nuevaCampNumAnuncios);
+      const faltan = nuevaCampNumAnuncios - validos.length;
+      const candidatos = pageVideos
+        .filter((v: any) => !validos.includes(v.id))
+        .slice(0, faltan)
+        .map((v: any) => v.id);
+      return [...validos, ...candidatos];
+    });
+  }, [nuevaCampNumAnuncios, pageVideos, showCrearCampModal]);
 
   // Guardar campaña en el Top 3 de mejores o en lo que no funciona
   function marcarMemoriaAds(campana: any, tipo: "top" | "fail") {
@@ -2177,21 +2279,52 @@ export default function CRMApp() {
       }
     }
 
+    // Cada anuncio debe llevar un VIDEO DIFERENTE de la Fan Page
+    if (videosSeleccionadosObj.length < nuevaCampNumAnuncios) {
+      alert(
+        `Pediste ${nuevaCampNumAnuncios} anuncios, o sea ${nuevaCampNumAnuncios} videos DIFERENTES, pero solo elegiste ${videosSeleccionadosObj.length}.\n\nSelecciona ${nuevaCampNumAnuncios - videosSeleccionadosObj.length} video(s) más en la lista de la Fan Page.`
+      );
+      return;
+    }
+
+    const waObjSel = whatsappNumbers.find((w: any) => w.id === selectedWhatsappId);
+    const numeroWhatsapp = waObjSel?.display_number || waObjSel?.display_phone_number || selectedWhatsappDisplay || "";
+    if (!numeroWhatsapp) {
+      alert("Selecciona el número de WhatsApp al que deben llegar los mensajes de la campaña.");
+      return;
+    }
+
     setGuardandoCampana(true);
     try {
-      const vidObj = pageVideos.find((v: any) => v.id === selectedVideoId);
-      const waObj = whatsappNumbers.find((w: any) => w.id === selectedWhatsappId);
-      
-      // Construir copies finales para enviar al backend - video o agente
-      const vidDesc = (vidObj?.description || "").trim();
-      const copyBase = usarCopyVideo && vidDesc ? vidDesc : nuevaCampCopy.trim();
+      const waObj = waObjSel;
+      const videosElegidos = videosSeleccionadosObj;
+
+      // Copy por anuncio: cada uno usa la descripción de SU propio video
       const adCopiesFinal = Array.from({ length: nuevaCampNumAnuncios }, (_, i) => {
+        const vid: any = videosElegidos[i];
+        // COPY ORIGINAL del video publicado en la fan page
+        const descVideo = String(vid?.copy_original || vid?.description || "").trim();
+        const base = usarCopyVideo && descVideo ? descVideo : nuevaCampCopy.trim();
         const variacion = nuevaCampCopies[i]?.trim() || "";
-        if (variacion) {
-          return copyBase ? `${copyBase}\n\n${variacion}` : variacion;
-        }
-        return copyBase || `${nuevaCampNombre.trim()} - Consulta espiritual por WhatsApp`;
+        if (variacion) return base ? `${base}\n\n${variacion}` : variacion;
+        return base;
       });
+
+      // Si algún anuncio quedaría sin texto, se avisa en vez de inventar copy
+      const sinCopy = adCopiesFinal
+        .map((c, i) => (c.trim() ? null : i + 1))
+        .filter(Boolean);
+      if (sinCopy.length > 0) {
+        alert(
+          `Los anuncios ${sinCopy.join(", ")} no tienen copy.\n\nEsos videos no traen texto publicado en la fan page, así que escribe un copy en "Copy del Anuncio" o en la variación correspondiente.`
+        );
+        setGuardandoCampana(false);
+        return;
+      }
+
+      const copyBase = usarCopyVideo
+        ? String((videosElegidos[0] as any)?.copy_original || (videosElegidos[0] as any)?.description || "").trim() || nuevaCampCopy.trim()
+        : nuevaCampCopy.trim();
 
       const payload = {
         name: nuevaCampNombre.trim(),
@@ -2204,18 +2337,25 @@ export default function CRMApp() {
         numAds: nuevaCampNumAnuncios,
         objective: nuevaCampObjetivo || "OUTCOME_ENGAGEMENT",
         status: nuevaCampEstado,
-        selectedVideoId: selectedVideoId || undefined,
-        videoTitle: vidObj?.title || undefined,
-        videoDescription: vidDesc || undefined,
+        // Videos DIFERENTES: uno por anuncio
+        selectedVideos: videosElegidos.map((v: any) => ({
+          id: v.id,
+          title: v.title,
+          description: v.description,
+          picture: v.picture,
+        })),
+        selectedVideoId: (videosElegidos[0] as any)?.id,
+        videoTitle: (videosElegidos[0] as any)?.title,
+        videoDescription: (videosElegidos[0] as any)?.description,
         whatsappNumberId: selectedWhatsappId || waObj?.id,
-        whatsappDisplayNumber: waObj?.display_number || selectedWhatsappDisplay || "+57 305 402 1111",
+        whatsappDisplayNumber: numeroWhatsapp,
         whatsappVerifiedName: waObj?.verified_name || "Templo Místico",
         segmentation: segmentacionGuardada,
+        segmentationName: segmentacionGuardada?.nombre,
         pageId: undefined,
         adCopies: adCopiesFinal,
         adCopyBase: copyBase,
         usarCopyVideo: usarCopyVideo,
-        addBalanceAmount: recargaMonto ? Number(recargaMonto) : undefined,
       };
 
       console.log("Creando campaña con payload completo:", payload);
@@ -2235,23 +2375,32 @@ export default function CRMApp() {
           alert(data.error || "No se pudo crear la campaña en Meta Ads.");
         }
       } else {
+        const listaVideos = videosElegidos
+          .map((v: any, i: number) => `   ${i + 1}. ${v.title}`)
+          .join("\n");
+        const erroresAds = Array.isArray(data.ads_errors) && data.ads_errors.length > 0
+          ? `\n\n⚠️ Anuncios con problema: ${data.ads_errors.map((e: any) => `#${e.index || "?"} ${e.error}`).join(" | ")}`
+          : "";
         const resumen = `¡Campaña "${nuevaCampNombre}" creada con éxito en Meta Ads!\n\n` +
-          `📅 ${data.legibleInicio || data.preview?.duracion?.legible_inicio} → ${data.legibleFin || data.preview?.duracion?.legible_fin}\n` +
+          `📅 Inicio: ${data.legibleInicio || data.preview?.duracion?.legible_inicio}\n` +
+          `🏁 Fin: ${data.legibleFin || data.preview?.duracion?.legible_fin}\n` +
           `⏰ Horario: 00:01 a 23:59 (${nuevaCampDias} días)\n` +
-          `📊 ${nuevaCampNumAnuncios} anuncios • Solo WhatsApp: ${waObj?.display_number || selectedWhatsappDisplay}\n` +
+          `🎬 ${nuevaCampNumAnuncios} anuncios con ${videosElegidos.length} videos DIFERENTES:\n${listaVideos}\n` +
+          `💬 WhatsApp destino: ${numeroWhatsapp}\n` +
           `💰 $${presupuestoNum.toLocaleString("es-CO")} COP + IVA = $${Math.round(presupuestoNum * 1.19).toLocaleString("es-CO")} COP\n` +
-          `🎯 Segmentación: ${segmentacionGuardada?.location?.countries?.join(", ") || "CO"} - ${segmentacionGuardada?.interests?.slice(0,2).join(", ")}\n` +
-          `ID: ${data.id}`;
+          `🎯 Segmentación: ${segmentacionGuardada?.nombre || "Por defecto"}\n` +
+          `ID: ${data.id}${erroresAds}`;
         alert(resumen);
         setShowCrearCampModal(false);
         setNuevaCampNombre("");
         setNuevaCampPresupuesto("");
         setNuevaCampEstado("ACTIVE");
-        setRecargaMonto("");
         setNuevaCampCopy("");
         setNuevaCampCopies(["", "", "", "", ""]);
         setUsarCopyVideo(true);
+        setSelectedVideoIds([]);
         fetchCampanasAds();
+        fetchAccountInfo();
       }
     } catch (err: any) {
       console.error("Error creando campaña:", err);
@@ -4441,6 +4590,13 @@ export default function CRMApp() {
                       const isVidMsg = isVideoMessage(msg);
                       const isDocMsg = isFileMessage(msg);
                       const slug = slugFoto(getDisplayName(clienteActual, selectedConv));
+                      // Sufijo único por mensaje (fecha + n.º) para que cada
+                      // adjunto descargado tenga su propio nombre y no se pisen.
+                      const sufijoMsg = (() => {
+                        const d = new Date(msg.creado_en || Date.now());
+                        const p2 = (n: number) => String(n).padStart(2, "0");
+                        return `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}-${idxMsg + 1}`;
+                      })();
                       const pieDeFoto = textoAdjuntoMultimedia(msg);
                       // Marca horizontal de fecha: se dibuja solo cuando el
                       // mensaje cambia de día respecto al anterior (o es el
@@ -4468,7 +4624,7 @@ export default function CRMApp() {
                                   <div className="space-y-2">
                                     <ChatImage
                                       src={msg.url_archivo}
-                                      filename={guessImageFilename(String(msg.url_archivo), `foto-${slug}-${isMe ? "enviada" : "cliente"}`)}
+                                      filename={guessImageFilename(String(msg.url_archivo), `foto-${slug}-${isMe ? "enviada" : "cliente"}-${sufijoMsg}`)}
                                     />
                                     {pieDeFoto && <p className="text-sm whitespace-pre-wrap leading-relaxed">{pieDeFoto}</p>}
                                   </div>
@@ -4479,7 +4635,7 @@ export default function CRMApp() {
                                   <div className="space-y-2">
                                     <ChatVideo
                                       src={msg.url_archivo}
-                                      filename={guessFilename(String(msg.url_archivo), `video-${slug}-${isMe ? "enviado" : "cliente"}.mp4`, "video/mp4")}
+                                      filename={guessFilename(String(msg.url_archivo), `video-${slug}-${isMe ? "enviado" : "cliente"}-${sufijoMsg}.mp4`, "video/mp4")}
                                       isMe={isMe}
                                     />
                                     {pieDeFoto && <p className="text-sm whitespace-pre-wrap leading-relaxed">{pieDeFoto}</p>}
@@ -5645,6 +5801,61 @@ export default function CRMApp() {
               </div>
             </header>
             {adsNote && !loadingAds && (<div className="p-3 rounded-xl border border-purple-800/40 bg-purple-950/20 text-purple-300 text-xs">{adsNote}</div>)}
+
+            {/* ===== SALDO DE LA CUENTA PUBLICITARIA (total + gasto de hoy) ===== */}
+            <div className="p-4 md:p-5 rounded-2xl border border-emerald-900/50 bg-gradient-to-br from-emerald-950/30 via-surface to-surface space-y-3">
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <div className="flex items-center gap-2">
+                  <h3 className="text-sm font-bold text-gray-200 uppercase tracking-wider">💳 Saldo de la Cuenta Publicitaria</h3>
+                  {accountInfo?.name && <span className="text-[10px] text-gray-500 font-mono">{accountInfo.name}</span>}
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="text-[10px] text-gray-500">
+                    {ultimaActualizacionAds ? `Actualizado ${new Date(ultimaActualizacionAds).toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" })}` : "Sincronizando..."} • auto cada 10 min
+                  </span>
+                  <button type="button" onClick={() => { fetchAccountInfo(); fetchCampanasAds(); }} className="text-[10px] text-gray-400 hover:text-white flex items-center gap-1">
+                    <RefreshCw className={`w-3 h-3 ${loadingAccount ? "animate-spin" : ""}`} /> Actualizar
+                  </button>
+                </div>
+              </div>
+
+              {accountInfo ? (
+                <>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    <div className="p-3 rounded-xl bg-background border border-emerald-900/40">
+                      <span className="text-[10px] text-gray-500 font-bold uppercase tracking-wider block">Saldo total en la cuenta</span>
+                      <p className="text-xl md:text-2xl font-extrabold text-emerald-400 mt-1">{accountInfo.saldo_disponible_formatted || accountInfo.balance_formatted || "—"}</p>
+                      <span className="text-[9px] text-gray-500">{accountInfo.is_prepay ? "Cuenta prepago · fondos disponibles" : accountInfo.balance_label || "Facturación por umbral"}</span>
+                    </div>
+                    <div className="p-3 rounded-xl bg-background border border-border">
+                      <span className="text-[10px] text-gray-500 font-bold uppercase tracking-wider block">Gastado hoy</span>
+                      <p className="text-xl md:text-2xl font-extrabold text-amber-400 mt-1">{accountInfo.spend_today_formatted || "$0 COP"}</p>
+                      <span className="text-[9px] text-gray-500">{accountInfo.leads_today || 0} leads hoy{accountInfo.cpl_today ? ` · CPL $${Number(accountInfo.cpl_today).toLocaleString("es-CO")}` : ""}</span>
+                    </div>
+                    <div className="p-3 rounded-xl bg-background border border-border">
+                      <span className="text-[10px] text-gray-500 font-bold uppercase tracking-wider block">Gastado histórico</span>
+                      <p className="text-lg md:text-xl font-extrabold text-gray-200 mt-1">{accountInfo.amount_spent_formatted || "—"}</p>
+                      <span className="text-[9px] text-gray-500">Últimos 30 días: {accountInfo.spend_last_30d_formatted || "—"}</span>
+                    </div>
+                    <div className="p-3 rounded-xl bg-background border border-border">
+                      <span className="text-[10px] text-gray-500 font-bold uppercase tracking-wider block">Límite de gasto</span>
+                      <p className="text-lg md:text-xl font-extrabold text-gray-200 mt-1">{accountInfo.spend_cap_formatted || "Sin límite"}</p>
+                      <span className="text-[9px] text-gray-500">{accountInfo.payment_method ? `Pago: ${accountInfo.payment_method}` : accountInfo.currency || "COP"}</span>
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-gray-500">
+                    La recarga de saldo solo se puede hacer desde Meta (la API no lo permite).{" "}
+                    <a href={accountInfo.billing_url || "https://business.facebook.com/billing_hub/accounts"} target="_blank" rel="noreferrer" className="text-emerald-400 hover:text-emerald-300 underline font-semibold">
+                      Abrir Facturación en Meta Business ↗
+                    </a>
+                  </p>
+                </>
+              ) : (
+                <div className="text-[11px] text-gray-500 text-center py-4 border border-dashed border-border rounded-xl">
+                  {loadingAccount ? "Consultando saldo en Meta..." : "Sin datos de cuenta — verifica META_AD_ACCOUNT_ID y META_MARKETING_TOKEN"}
+                </div>
+              )}
+            </div>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
               <div className="p-4 md:p-5 bg-surface border border-border rounded-2xl"><span className="text-[10px] text-gray-500 font-bold uppercase tracking-wider">Inversión Total</span><p className="text-xl md:text-2xl font-extrabold text-gray-100 mt-1">${Math.round(campanas.reduce((acc, c) => acc + Number(c.spend || 0), 0)).toLocaleString("es-CO")} COP</p></div>
               <div className="p-4 md:p-5 bg-surface border border-border rounded-2xl"><span className="text-[10px] text-gray-500 font-bold uppercase tracking-wider">Leads de Ads</span><p className="text-xl md:text-2xl font-extrabold text-purple-400 mt-1">{campanas.reduce((acc, c) => acc + Number(c.leads || 0), 0)}</p></div>
@@ -5688,6 +5899,21 @@ export default function CRMApp() {
                                 <Edit2 className="w-2.5 h-2.5" /> Editar
                               </button>
                             </div>
+                            {/* FECHAS DE LA CAMPAÑA Y DEL ANUNCIO */}
+                            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1.5 text-[10px]">
+                              <span className="text-gray-400">
+                                📅 Inicio: <span className="text-gray-200 font-semibold">{c.startDate ? new Date(c.startTime).toLocaleDateString("es-CO", { day: "2-digit", month: "short", year: "numeric", timeZone: "America/Bogota" }) : "—"}</span>
+                              </span>
+                              <span className="text-gray-400">
+                                🏁 Fin del anuncio: <span className="text-gray-200 font-semibold">{c.adEndTime || c.stopTime ? new Date(c.adEndTime || c.stopTime).toLocaleDateString("es-CO", { day: "2-digit", month: "short", year: "numeric", timeZone: "America/Bogota" }) : "Sin fecha de fin"}</span>
+                              </span>
+                              {c.diasRestantes !== null && c.diasRestantes !== undefined && (
+                                <span className={`px-1.5 py-0.5 rounded font-bold ${c.diasRestantes > 0 ? "bg-emerald-950/70 text-emerald-400 border border-emerald-900" : "bg-red-950/70 text-red-400 border border-red-900"}`}>
+                                  {c.diasRestantes > 0 ? `Quedan ${c.diasRestantes} día${c.diasRestantes === 1 ? "" : "s"}` : "Finalizada"}
+                                </span>
+                              )}
+                              <span className="text-gray-500">🎬 {c.numAnuncios} anuncio{c.numAnuncios === 1 ? "" : "s"}</span>
+                            </div>
                           </div>
                         </div>
                         <div className="flex items-center gap-6 justify-between md:justify-end border-t md:border-t-0 pt-3 md:pt-0 border-border">
@@ -5710,7 +5936,41 @@ export default function CRMApp() {
 
                       {/* DETALLE EXPANDIBLE CON ACCESO RÁPIDO */}
                       {isExpanded && (
-                        <div className="px-5 pb-5 pt-1 bg-surface/30 border-t border-border/30 flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs">
+                        <div className="px-5 pb-5 pt-1 bg-surface/30 border-t border-border/30 flex flex-col gap-3 text-xs">
+                          {/* FECHAS COMPLETAS */}
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                            <div className="p-2.5 rounded-lg bg-background/70 border border-border">
+                              <p className="text-[10px] uppercase font-bold text-purple-400 mb-1">📅 Fechas de la campaña</p>
+                              <p className="text-[11px] text-gray-300">Inicio: <span className="text-gray-100 font-semibold">{c.legibleInicio || "—"}</span></p>
+                              <p className="text-[11px] text-gray-300">Fin: <span className="text-gray-100 font-semibold">{c.legibleFin || "Sin fecha de finalización"}</span></p>
+                              {c.diasTotales && <p className="text-[10px] text-gray-500 mt-0.5">Duración: {c.diasTotales} días{c.diasRestantes !== null ? ` • Restan ${c.diasRestantes}` : ""}</p>}
+                            </div>
+                            <div className="p-2.5 rounded-lg bg-background/70 border border-border">
+                              <p className="text-[10px] uppercase font-bold text-emerald-400 mb-1">🏁 Fechas del anuncio (conjunto)</p>
+                              <p className="text-[11px] text-gray-300">Inicio: <span className="text-gray-100 font-semibold">{c.legibleInicioAnuncio || c.legibleInicio || "—"}</span></p>
+                              <p className="text-[11px] text-gray-300">Fin: <span className="text-gray-100 font-semibold">{c.legibleFinAnuncio || c.legibleFin || "Sin fecha de finalización"}</span></p>
+                            </div>
+                          </div>
+
+                          {/* ANUNCIOS Y SUS VIDEOS */}
+                          {Array.isArray(c.anuncios) && c.anuncios.length > 0 && (
+                            <div className="p-2.5 rounded-lg bg-background/70 border border-border">
+                              <p className="text-[10px] uppercase font-bold text-amber-400 mb-1.5">🎬 {c.anuncios.length} anuncio(s) · videos usados</p>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-40 overflow-y-auto pr-1">
+                                {c.anuncios.map((a: any) => (
+                                  <div key={a.id} className="flex items-center gap-2 p-1.5 rounded bg-surface/60 border border-border/60">
+                                    {a.thumbnail ? <img src={a.thumbnail} alt="" className="w-8 h-8 rounded object-cover border border-border shrink-0" /> : <div className="w-8 h-8 rounded bg-purple-950 text-purple-400 text-[8px] font-bold flex items-center justify-center shrink-0">VID</div>}
+                                    <div className="min-w-0">
+                                      <p className="text-[10px] text-gray-200 truncate font-medium">{a.name}</p>
+                                      <p className="text-[9px] text-gray-500">{a.status} {a.videoId ? `• video ${String(a.videoId).slice(-8)}` : "• sin video"}</p>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
                           <div className="flex flex-wrap gap-4 text-gray-400">
                             <div><span className="text-gray-500 block text-[10px] uppercase font-bold">Impresiones:</span> <span className="text-gray-200 font-semibold">{Number(c.impressions || 0).toLocaleString()}</span></div>
                             <div><span className="text-gray-500 block text-[10px] uppercase font-bold">Clics en anuncio:</span> <span className="text-gray-200 font-semibold">{Number(c.clicks || 0).toLocaleString()}</span></div>
@@ -5753,6 +6013,7 @@ export default function CRMApp() {
                               {isActive ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}
                               {isActive ? "Pausar campaña" : "Activar campaña"}
                             </button>
+                          </div>
                           </div>
                         </div>
                       )}
@@ -5929,13 +6190,13 @@ export default function CRMApp() {
 
                   {/* NUMERO DE ANUNCIOS 1-5 */}
                   <div className="p-3 rounded-xl bg-amber-950/20 border border-amber-800/30 space-y-2">
-                    <label className="text-xs text-amber-300 block font-bold">🎬 ¿Cuántos anuncios probar? (1-5)</label>
+                    <label className="text-xs text-amber-300 block font-bold">🎬 ¿Cuántos anuncios? = videos DIFERENTES (1-5)</label>
                     <div className="flex gap-1.5">
                       {[1,2,3,4,5].map((n) => (
                         <button key={n} type="button" onClick={() => setNuevaCampNumAnuncios(n)} className={`flex-1 py-2 rounded-lg text-xs font-bold border transition-all ${nuevaCampNumAnuncios === n ? "bg-amber-600 border-amber-500 text-white shadow" : "bg-surface border-border text-gray-400 hover:text-white"}`}>{n}</button>
                       ))}
                     </div>
-                    <p className="text-[10px] text-gray-400">Ideal para ir probando cosas. Cada anuncio tendrá variación de copy + mismo video base. Estrategia: {nuevaCampNumAnuncios===1?"1 video directo":`${nuevaCampNumAnuncios} variaciones A/B para optimizar CPL`}</p>
+                    <p className="text-[10px] text-gray-400">Cada anuncio usa un <span className="text-amber-300 font-bold">video DIFERENTE</span> de los publicados en la Fan Page. Si eliges {nuevaCampNumAnuncios}, serán {nuevaCampNumAnuncios} video{nuevaCampNumAnuncios===1?"":"s"} distinto{nuevaCampNumAnuncios===1?"":"s"} compitiendo entre sí para hallar el ganador por CPL.</p>
                   </div>
 
                   {/* WHATSAPP SELECTOR VINCULADO */}
@@ -5945,10 +6206,24 @@ export default function CRMApp() {
                       <button type="button" onClick={fetchWhatsappNumbers} className="text-[10px] text-emerald-400 hover:text-emerald-300 flex items-center gap-1"><RefreshCw className={`w-3 h-3 ${loadingWhatsappNumbers?'animate-spin':''}`} /> Recargar</button>
                     </div>
                     {whatsappNumbers.length>0 ? (
-                      <select value={selectedWhatsappId} onChange={(e)=>{ const v=e.target.value; setSelectedWhatsappId(v); const obj=whatsappNumbers.find((w:any)=>w.id===v); if(obj) setSelectedWhatsappDisplay(obj.display_number); }} className="w-full bg-background border border-emerald-700/50 rounded-lg px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-emerald-500">
-                        {whatsappNumbers.map((w:any)=> (<option key={w.id} value={w.id}>{w.display_number} - {w.verified_name} {w.is_mock?'[Mock]':''} {w.quality_rating?`(${w.quality_rating})`:''}</option>))}
-                      </select>
-                    ) : (<div className="p-2 rounded-lg border border-dashed border-emerald-800/50 text-center text-[11px] text-emerald-300/70">{loadingWhatsappNumbers?"Cargando números vinculados...":"No hay números vinculados - usando +57 305 402 1111 por defecto"}</div>)}
+                      <div className="space-y-2">
+                        <select value={selectedWhatsappId} onChange={(e)=>{ const v=e.target.value; setSelectedWhatsappId(v); const obj=whatsappNumbers.find((w:any)=>w.id===v); if(obj) setSelectedWhatsappDisplay(obj.display_number || obj.display_phone_number); }} className="w-full bg-background border border-emerald-700/50 rounded-lg px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-emerald-500">
+                          {whatsappNumbers.map((w:any)=> (<option key={w.id} value={w.id}>{w.display_number || w.display_phone_number}{w.verified_name?` — ${w.verified_name}`:""}</option>))}
+                        </select>
+                        {/* EL NÚMERO, bien grande y claro */}
+                        {(() => {
+                          const wsel = whatsappNumbers.find((w:any)=>w.id===selectedWhatsappId) || whatsappNumbers[0];
+                          if(!wsel) return null;
+                          return (
+                            <div className="p-2.5 rounded-lg bg-background border border-emerald-800/50">
+                              <p className="text-[9px] text-gray-500 uppercase font-bold tracking-wider">Los mensajes llegarán a este número</p>
+                              <p className="text-base font-extrabold text-emerald-300 font-mono tracking-wide">{wsel.display_number || wsel.display_phone_number}</p>
+                              <p className="text-[10px] text-gray-400">{wsel.verified_name}{wsel.quality_rating?` • Calidad ${wsel.quality_rating}`:""}{wsel.waba_name?` • ${wsel.waba_name}`:""}</p>
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    ) : (<div className="p-2 rounded-lg border border-dashed border-amber-800/50 text-center text-[11px] text-amber-300/80">{loadingWhatsappNumbers?"Cargando números vinculados...":"⚠️ No hay números de WhatsApp vinculados al token. Vincula tu WhatsApp Business en Meta o configura META_WABA_ID."}</div>)}
                     <div className="flex items-center gap-2 text-[10px] text-emerald-200 bg-background/60 p-2 rounded-lg border border-emerald-900/30">
                       <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" /> Campañas únicamente dirigidas a WhatsApp. Nada de Messenger ni otras plataformas. Solo WhatsApp.
                     </div>
@@ -5978,25 +6253,75 @@ export default function CRMApp() {
                     )}
                   </div>
 
-                  {/* VIDEO FAN PAGE + COPY DEL VIDEO */}
+                  {/* VIDEOS DE LA FAN PAGE: UNO DIFERENTE POR CADA ANUNCIO */}
                   <div className="p-3 rounded-xl bg-purple-950/10 border border-purple-800/20 space-y-2">
-                    <div className="flex items-center justify-between mb-1"><label className="text-xs text-gray-300 font-bold flex items-center gap-1.5"><Video className="w-3.5 h-3.5 text-purple-400" /> Video Fan Page + Copy</label><button type="button" onClick={fetchVideosFanPage} className="text-[10px] text-purple-400 hover:text-purple-300 flex items-center gap-1"><RefreshCw className={`w-3 h-3 ${loadingVideos?'animate-spin':''}`} /> Refrescar</button></div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-xs text-gray-300 font-bold flex items-center gap-1.5"><Video className="w-3.5 h-3.5 text-purple-400" /> Videos de la Fan Page</label>
+                      <button type="button" onClick={fetchVideosFanPage} className="text-[10px] text-purple-400 hover:text-purple-300 flex items-center gap-1"><RefreshCw className={`w-3 h-3 ${loadingVideos?'animate-spin':''}`} /> Refrescar</button>
+                    </div>
+
+                    <div className={`p-2 rounded-lg text-[10px] font-semibold border ${videosSeleccionadosObj.length === nuevaCampNumAnuncios ? "bg-emerald-950/40 border-emerald-800/50 text-emerald-300" : "bg-amber-950/40 border-amber-800/50 text-amber-300"}`}>
+                      {videosSeleccionadosObj.length === nuevaCampNumAnuncios
+                        ? `✅ ${nuevaCampNumAnuncios} anuncios = ${videosSeleccionadosObj.length} videos DIFERENTES seleccionados`
+                        : `⚠️ Pediste ${nuevaCampNumAnuncios} anuncios → elige ${nuevaCampNumAnuncios} videos diferentes (llevas ${videosSeleccionadosObj.length})`}
+                    </div>
+
                     {pageVideos.length>0 ? (
-                      <div className="space-y-2">
-                        <select value={selectedVideoId} onChange={(e)=>{ setSelectedVideoId(e.target.value); const v=pageVideos.find((x:any)=>x.id===e.target.value); if(v?.description && usarCopyVideo && !nuevaCampCopy){ setNuevaCampCopy(v.description); } }} className="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500 truncate">{pageVideos.map((v:any)=>(<option key={v.id} value={v.id}>{v.title} {v.length?`(${v.length}s)`:''}</option>))}</select>
-                        <div className="p-2 rounded-lg bg-surface/50 border border-border flex items-center gap-3">{pageVideos.find((v:any)=>v.id===selectedVideoId)?.picture && (<img src={pageVideos.find((v:any)=>v.id===selectedVideoId)?.picture} alt="thumb" className="w-12 h-12 object-cover rounded-md border border-border shrink-0" />)}<div className="min-w-0 text-[11px]"><p className="font-semibold text-gray-200 truncate">{pageVideos.find((v:any)=>v.id===selectedVideoId)?.title}</p><p className="text-gray-400 text-[10px] line-clamp-2">{pageVideos.find((v:any)=>v.id===selectedVideoId)?.description || "Video oficial Fan Page - sin descripción"}</p><span className="text-[8px] px-1 py-0.5 rounded bg-purple-950 text-purple-300 border border-purple-800 mt-1 inline-block">Copy original del video</span></div></div>
-                        {pageVideos.find((v:any)=>v.id===selectedVideoId)?.description && (
-                          <div className="p-2 rounded-lg bg-background/60 border border-border/50">
-                            <p className="text-[10px] text-gray-500 font-bold mb-1">📝 Copy que viene con el video seleccionado:</p>
-                            <p className="text-[11px] text-gray-300 whitespace-pre-wrap leading-snug max-h-20 overflow-y-auto">{pageVideos.find((v:any)=>v.id===selectedVideoId)?.description}</p>
-                          </div>
-                        )}
+                      <div className="space-y-1.5 max-h-64 overflow-y-auto pr-1">
+                        {pageVideos.map((v:any)=>{
+                          const pos = selectedVideoIds.indexOf(v.id);
+                          const elegido = pos >= 0 && pos < nuevaCampNumAnuncios;
+                          return (
+                            <button
+                              key={v.id}
+                              type="button"
+                              onClick={()=>toggleVideoSeleccionado(v.id)}
+                              className={`w-full text-left p-2 rounded-lg border flex items-center gap-2.5 transition-all ${elegido ? "bg-purple-950/50 border-purple-600" : "bg-surface/50 border-border hover:border-purple-800"}`}
+                            >
+                              <div className="relative shrink-0">
+                                {v.picture ? <img src={v.picture} alt="" className="w-11 h-11 object-cover rounded-md border border-border" /> : <div className="w-11 h-11 rounded-md bg-purple-950 flex items-center justify-center text-purple-400 font-bold text-[9px]">VID</div>}
+                                {elegido && <span className="absolute -top-1.5 -left-1.5 w-5 h-5 rounded-full bg-purple-600 text-white text-[10px] font-extrabold flex items-center justify-center border-2 border-surface">{pos+1}</span>}
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <p className={`text-[11px] font-semibold truncate ${elegido ? "text-purple-200" : "text-gray-200"}`}>{v.title}</p>
+                                <p className="text-[9px] text-gray-500">{v.views ? `${Number(v.views).toLocaleString("es-CO")} vistas • ` : ""}{v.length ? `${v.length}s • ` : ""}{v.createdTime ? new Date(v.createdTime).toLocaleDateString("es-CO", { day:"2-digit", month:"short", year:"numeric" }) : ""}</p>
+                                {v.tiene_copy
+                                  ? <p className="text-[9px] text-gray-400 line-clamp-2 mt-0.5 whitespace-pre-wrap">📝 {v.copy_original || v.description}</p>
+                                  : <p className="text-[9px] text-amber-500/80 mt-0.5">⚠️ Sin copy publicado — tendrás que escribirlo</p>}
+                              </div>
+                              <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold shrink-0 ${elegido ? "bg-purple-600 text-white" : "bg-surface border border-border text-gray-500"}`}>{elegido ? `Anuncio ${pos+1}` : "Elegir"}</span>
+                            </button>
+                          );
+                        })}
                       </div>
-                    ) : (<div className="p-2.5 rounded-lg border border-dashed border-border text-center text-[11px] text-gray-400">Cargando videos...</div>)}
+                    ) : (<div className="p-2.5 rounded-lg border border-dashed border-border text-center text-[11px] text-gray-400">{loadingVideos ? "Cargando videos publicados..." : "No se encontraron videos publicados en la Fan Page."}</div>)}
+
                     <div className="flex gap-2 pt-1">
-                      <button type="button" onClick={()=>setUsarCopyVideo(true)} className={`flex-1 py-1.5 rounded-lg text-[10px] font-bold border ${usarCopyVideo?"bg-purple-600 border-purple-500 text-white":"bg-surface border-border text-gray-400"}`}>Usar copy del video</button>
+                      <button type="button" onClick={()=>setUsarCopyVideo(true)} className={`flex-1 py-1.5 rounded-lg text-[10px] font-bold border ${usarCopyVideo?"bg-purple-600 border-purple-500 text-white":"bg-surface border-border text-gray-400"}`}>Usar copy de cada video</button>
                       <button type="button" onClick={()=>setUsarCopyVideo(false)} className={`flex-1 py-1.5 rounded-lg text-[10px] font-bold border ${!usarCopyVideo?"bg-amber-600 border-amber-500 text-white":"bg-surface border-border text-gray-400"}`}>Usar copy del agente</button>
                     </div>
+
+                    {/* COPY ORIGINAL COMPLETO DE CADA VIDEO ELEGIDO */}
+                    {usarCopyVideo && videosSeleccionadosObj.length > 0 && (
+                      <div className="space-y-1.5 pt-1">
+                        <p className="text-[10px] font-bold text-purple-300">📝 Copy original publicado en la fan page:</p>
+                        {videosSeleccionadosObj.map((v: any, idx: number) => (
+                          <div key={v.id} className="p-2 rounded-lg bg-background/70 border border-border/60">
+                            <div className="flex items-center justify-between gap-2 mb-1">
+                              <span className="text-[9px] font-bold text-gray-300 truncate">Anuncio {idx + 1} · {v.title}</span>
+                              <span className={`text-[8px] px-1.5 py-0.5 rounded shrink-0 ${v.tiene_copy ? "bg-emerald-950 text-emerald-300 border border-emerald-800" : "bg-amber-950 text-amber-300 border border-amber-800"}`}>
+                                {v.copy_origen === "post" ? "texto del post" : v.copy_origen === "video_description" ? "descripción del video" : v.copy_origen === "video_node" ? "texto del video" : "sin copy"}
+                              </span>
+                            </div>
+                            {v.tiene_copy ? (
+                              <p className="text-[10px] text-gray-300 whitespace-pre-wrap leading-snug max-h-24 overflow-y-auto">{v.copy_original || v.description}</p>
+                            ) : (
+                              <p className="text-[10px] text-amber-400/90">Este video no tiene texto publicado. Escribe el copy abajo para este anuncio.</p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
 
                   {/* COPY DEL AGENTE - BASE + VARIACIONES 1-5 */}
@@ -6020,36 +6345,70 @@ export default function CRMApp() {
                     </div>
                   </div>
 
-                  {/* SEGMENTACION GUARDADA */}
-                  <div className="p-3 rounded-xl bg-surface/60 border border-border space-y-1.5">
-                    <label className="text-xs text-gray-300 font-bold flex items-center gap-1">🎯 Segmentación Guardada</label>
-                    <div className="text-[10px] text-gray-400 space-y-1 bg-background/60 p-2 rounded-lg border border-border/50">
-                      <div className="flex justify-between"><span>País:</span><span className="text-gray-200 font-medium">{segmentacionGuardada?.location?.countries?.join(", ") || "CO"}</span></div>
-                      <div className="flex justify-between"><span>Edad:</span><span className="text-gray-200">{segmentacionGuardada?.age?.min || 18}-{segmentacionGuardada?.age?.max || 65}</span></div>
-                      <div><span className="text-gray-500">Intereses:</span><div className="flex flex-wrap gap-1 mt-1">{(segmentacionGuardada?.interests || ["Esoterismo","Tarot"]).slice(0,4).map((i:string,idx:number)=>(<span key={idx} className="text-[9px] px-1.5 py-0.5 rounded bg-purple-950 border border-purple-800 text-purple-300">{i}</span>))}</div></div>
-                      <div className="flex justify-between"><span>Destino:</span><span className="text-emerald-300 font-bold">{segmentacionGuardada?.destination || "WHATSAPP_ONLY"}</span></div>
-                      <div className="flex justify-between"><span>Placements:</span><span className="text-gray-300">{segmentacionGuardada?.placements?.length || 4} feeds/stories/reels</span></div>
+                  {/* TODAS LAS SEGMENTACIONES GUARDADAS */}
+                  <div className="p-3 rounded-xl bg-surface/60 border border-border space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs text-gray-300 font-bold flex items-center gap-1">🎯 Segmentaciones Guardadas ({segmentacionesGuardadas.length})</label>
+                      <button type="button" onClick={fetchSegmentaciones} className="text-[10px] text-purple-400 hover:text-purple-300 flex items-center gap-1"><RefreshCw className={`w-3 h-3 ${loadingSegmentaciones?'animate-spin':''}`} /> Recargar</button>
                     </div>
-                    <p className="text-[9px] text-gray-500">Editable en localStorage tm_ads_segmentacion o desde IA Advisor</p>
+
+                    {segmentacionesGuardadas.length > 0 ? (
+                      <select
+                        value={selectedSegmentacionId}
+                        onChange={(e)=>aplicarSegmentacion(e.target.value)}
+                        className="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500"
+                      >
+                        <option value="">— Elegir segmentación guardada —</option>
+                        <optgroup label="Públicos guardados">
+                          {segmentacionesGuardadas.filter((x:any)=>x.origen==="saved_audience").map((x:any)=>(
+                            <option key={x.id} value={x.id}>{x.nombre}{x.tamano_aprox?` (${Number(x.tamano_aprox).toLocaleString("es-CO")})`:""}</option>
+                          ))}
+                        </optgroup>
+                        <optgroup label="Públicos personalizados">
+                          {segmentacionesGuardadas.filter((x:any)=>x.origen==="custom_audience").map((x:any)=>(
+                            <option key={x.id} value={x.id}>{x.nombre}</option>
+                          ))}
+                        </optgroup>
+                        <optgroup label="Segmentaciones en uso (conjuntos de anuncios)">
+                          {segmentacionesGuardadas.filter((x:any)=>x.origen==="adset").map((x:any)=>(
+                            <option key={x.id} value={x.id}>{x.nombre}</option>
+                          ))}
+                        </optgroup>
+                      </select>
+                    ) : (
+                      <div className="p-2 rounded-lg border border-dashed border-border text-center text-[11px] text-gray-400">
+                        {loadingSegmentaciones ? "Cargando segmentaciones de la cuenta..." : (segmentacionesNota || "No se encontraron segmentaciones guardadas.")}
+                      </div>
+                    )}
+
+                    {/* Detalle de la segmentación activa */}
+                    <div className="text-[10px] text-gray-400 space-y-1 bg-background/60 p-2 rounded-lg border border-border/50">
+                      <div className="flex justify-between"><span>Usando:</span><span className="text-purple-300 font-bold text-right truncate max-w-[60%]">{segmentacionGuardada?.nombre || "Segmentación por defecto"}</span></div>
+                      <div className="flex justify-between"><span>País:</span><span className="text-gray-200 font-medium">{segmentacionGuardada?.location?.countries?.join(", ") || "CO"}</span></div>
+                      {segmentacionGuardada?.location?.cities?.length > 0 && (
+                        <div className="flex justify-between"><span>Ciudades:</span><span className="text-gray-200 text-right truncate max-w-[60%]">{segmentacionGuardada.location.cities.slice(0,3).join(", ")}</span></div>
+                      )}
+                      <div className="flex justify-between"><span>Edad:</span><span className="text-gray-200">{segmentacionGuardada?.age_min ?? 18}-{segmentacionGuardada?.age_max ?? 65}</span></div>
+                      <div className="flex justify-between"><span>Género:</span><span className="text-gray-200">{(segmentacionGuardada?.genders||[1,2]).length===2?"Todos":(segmentacionGuardada?.genders||[]).includes(1)?"Hombres":"Mujeres"}</span></div>
+                      <div><span className="text-gray-500">Intereses:</span><div className="flex flex-wrap gap-1 mt-1">{(segmentacionGuardada?.interests || []).slice(0,6).map((it:string,idx:number)=>(<span key={idx} className="text-[9px] px-1.5 py-0.5 rounded bg-purple-950 border border-purple-800 text-purple-300">{it}</span>))}{(segmentacionGuardada?.interests||[]).length===0 && <span className="text-gray-600">Sin intereses definidos</span>}</div></div>
+                      <div className="flex justify-between"><span>Destino:</span><span className="text-emerald-300 font-bold">WHATSAPP_ONLY</span></div>
+                    </div>
+                    {segmentacionesNota && segmentacionesGuardadas.length > 0 && <p className="text-[9px] text-gray-500">{segmentacionesNota}</p>}
                   </div>
 
-                  {/* SALDO CUENTA PUBLICITARIA + RECARGA */}
+                  {/* SALDO CUENTA PUBLICITARIA (solo lectura - Meta no permite recargar por API) */}
                   <div className="p-3 rounded-xl bg-gray-900/60 border border-border space-y-2">
                     <div className="flex items-center justify-between"><label className="text-xs text-gray-300 font-bold">💳 Saldo Cuenta Publicitaria</label><button type="button" onClick={fetchAccountInfo} className="text-[10px] text-gray-400 hover:text-white flex items-center gap-1"><RefreshCw className={`w-3 h-3 ${loadingAccount?'animate-spin':''}`} /> Actualizar</button></div>
                     {accountInfo ? (
                       <div className="text-[11px] space-y-1 bg-background/80 p-2.5 rounded-lg border border-border">
-                        <div className="flex justify-between"><span className="text-gray-500">Cuenta:</span><span className="text-gray-200 font-mono">{accountInfo.name || accountInfo.id}</span></div>
-                        <div className="flex justify-between"><span className="text-gray-500">Balance:</span><span className="text-emerald-400 font-bold">{accountInfo.balance_formatted || `$${Number(accountInfo.balance||0).toLocaleString("es-CO")} COP`}</span></div>
-                        <div className="flex justify-between"><span className="text-gray-500">Gastado:</span><span className="text-gray-300">${Number(accountInfo.amount_spent||0).toLocaleString("es-CO")}</span></div>
-                        <div className="flex justify-between"><span className="text-gray-500">Límite:</span><span className="text-gray-300">${Number(accountInfo.spend_cap||0).toLocaleString("es-CO")} {accountInfo.currency}</span></div>
-                        <div className="flex justify-between"><span className="text-gray-500">Restante:</span><span className="text-amber-300">${Number(accountInfo.remaining||0).toLocaleString("es-CO")}</span></div>
+                        <div className="flex justify-between"><span className="text-gray-500">Cuenta:</span><span className="text-gray-200 font-mono truncate max-w-[60%] text-right">{accountInfo.name || accountInfo.id}</span></div>
+                        <div className="flex justify-between"><span className="text-gray-500">Saldo total:</span><span className="text-emerald-400 font-bold">{accountInfo.saldo_disponible_formatted || accountInfo.balance_formatted}</span></div>
+                        <div className="flex justify-between"><span className="text-gray-500">Gastado hoy:</span><span className="text-amber-300 font-semibold">{accountInfo.spend_today_formatted}</span></div>
+                        <div className="flex justify-between"><span className="text-gray-500">Gastado total:</span><span className="text-gray-300">{accountInfo.amount_spent_formatted}</span></div>
+                        <div className="flex justify-between"><span className="text-gray-500">Límite:</span><span className="text-gray-300">{accountInfo.spend_cap_formatted}</span></div>
                       </div>
                     ) : (<div className="text-[11px] text-gray-500 text-center py-2 border border-dashed border-border rounded-lg">{loadingAccount?"Cargando cuenta...":"Sin datos de cuenta - verifica META_AD_ACCOUNT_ID"}</div>)}
-                    <div className="flex gap-2 items-end">
-                      <div className="flex-1"><label className="text-[10px] text-gray-400 block mb-1">Monto recarga COP</label><input type="number" min="5000" step="1000" placeholder="Ej: 50000" value={recargaMonto} onChange={(e)=>setRecargaMonto(e.target.value)} className="w-full bg-background border border-border rounded-lg px-2.5 py-1.5 text-xs text-gray-200 focus:outline-none focus:border-emerald-600" /></div>
-                      <button type="button" onClick={handleRecargarSaldo} disabled={recargandoSaldo || !recargaMonto} className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold flex items-center gap-1">{recargandoSaldo?<RefreshCw className="w-3 h-3 animate-spin" />:"💳"} Recargar</button>
-                    </div>
-                    <p className="text-[9px] text-gray-500">Recarga ajusta spend_cap en Meta. Si no tienes permiso, ve a business.facebook.com → Facturación → Métodos de pago.</p>
+                    <p className="text-[9px] text-gray-500">La API de Meta no permite recargar saldo. Hazlo en <a href={accountInfo?.billing_url || "https://business.facebook.com/billing_hub/accounts"} target="_blank" rel="noreferrer" className="text-emerald-400 underline">Meta Business → Facturación ↗</a></p>
                   </div>
 
                   <div className="grid grid-cols-2 gap-2">
@@ -6066,7 +6425,7 @@ export default function CRMApp() {
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[11px]">
                     <div className="space-y-1.5 bg-background/70 p-2.5 rounded-lg border border-border">
                       <p className="font-bold text-gray-100 text-xs">{previewCampana.nombre}</p>
-                      <div className="space-y-0.5 text-gray-400"><p>📅 <span className="text-gray-200">{previewCampana.legibleInicio}</span></p><p>🏁 <span className="text-gray-200">{previewCampana.legibleFin}</span></p><p>⏰ 00:01 → 23:59 Bogotá • {previewCampana.dias} días</p><p>📊 {previewCampana.numAnuncios} anuncios • CTA: Enviar WhatsApp</p><p>🎯 Destino: <span className="text-emerald-300 font-bold">SOLO WHATSAPP {previewCampana.whatsapp?.display_number || "+57 305 402 1111"}</span></p></div>
+                      <div className="space-y-0.5 text-gray-400"><p>📅 <span className="text-gray-200">{previewCampana.legibleInicio}</span></p><p>🏁 <span className="text-gray-200">{previewCampana.legibleFin}</span></p><p>⏰ 00:01 → 23:59 Bogotá • {previewCampana.dias} días</p><p>📊 {previewCampana.numAnuncios} anuncios con {previewCampana.videos?.length || 0} videos diferentes</p><p>🎯 Destino: <span className="text-emerald-300 font-bold">SOLO WHATSAPP {previewCampana.whatsappNumero || "⚠️ falta número"}</span></p></div>
                     </div>
                     <div className="space-y-1.5 bg-background/70 p-2.5 rounded-lg border border-border">
                       <p className="font-bold text-gray-300">💰 Presupuesto</p>
@@ -6088,10 +6447,10 @@ export default function CRMApp() {
                             <span className="text-[8px] px-1.5 py-0.5 rounded bg-surface border border-border text-gray-400">{ad.copy_origen}</span>
                           </div>
                           <div className="flex gap-2 items-start">
-                            {previewCampana.video?.picture && <img src={previewCampana.video.picture} alt="thumb" className="w-8 h-8 rounded object-cover border border-border shrink-0 mt-0.5" />}
+                            {ad.video_thumb && <img src={ad.video_thumb} alt="thumb" className="w-8 h-8 rounded object-cover border border-border shrink-0 mt-0.5" />}
                             <div className="flex-1 min-w-0">
                               <p className="text-[11px] text-gray-200 whitespace-pre-wrap leading-snug">{ad.copy}</p>
-                              <p className="text-[9px] text-gray-500 mt-1">CTA: {ad.cta} • Video: {previewCampana.video?.title || "Video Fan Page"} → WhatsApp {previewCampana.whatsapp?.display_number}</p>
+                              <p className="text-[9px] text-gray-500 mt-1">CTA: {ad.cta} • 🎬 <span className="text-purple-300 font-semibold">{ad.video_title}</span> → WhatsApp <span className="text-emerald-300 font-mono">{previewCampana.whatsappNumero || "—"}</span></p>
                             </div>
                           </div>
                         </div>
@@ -6099,7 +6458,7 @@ export default function CRMApp() {
                     </div>
                     {previewCampana.copy_base_video && (
                       <div className="p-2 rounded-lg bg-purple-950/20 border border-purple-800/30 text-[10px]">
-                        <p className="text-purple-300 font-bold">📹 Copy original del video seleccionado:</p>
+                        <p className="text-purple-300 font-bold">📹 Copy original publicado en la fan page:</p>
                         <p className="text-gray-400 whitespace-pre-wrap mt-1">{previewCampana.copy_base_video.substring(0,300)}{previewCampana.copy_base_video.length>300?"...":""}</p>
                       </div>
                     )}
@@ -6112,10 +6471,10 @@ export default function CRMApp() {
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[10px]">
-                    <div className="bg-background/60 p-2 rounded-lg border border-border/50"><p className="font-bold text-gray-300 mb-1">🎯 Segmentación Guardada</p><p className="text-gray-400">País: {previewCampana.segmentacion?.location?.countries?.join(", ") || "CO"} • Edad: {previewCampana.segmentacion?.age?.min}-{previewCampana.segmentacion?.age?.max}</p><p className="text-gray-400">Intereses: {previewCampana.segmentacion?.interests?.slice(0,3).join(", ")}</p><p className="text-emerald-300">Solo WhatsApp placements: {previewCampana.segmentacion?.placements?.length || 4} (FB/IG feed/story/reels)</p></div>
-                    <div className="bg-background/60 p-2 rounded-lg border border-border/50"><p className="font-bold text-gray-300 mb-1">💬 WhatsApp + Video</p><p className="text-gray-400">Número: <span className="text-gray-200">{previewCampana.whatsapp?.display_number}</span> ({previewCampana.whatsapp?.verified_name})</p><p className="text-gray-400">Video: {previewCampana.video?.title || "Video Fan Page seleccionado"}</p><p className="text-[9px] text-gray-500 mt-1">Campañas únicamente dirigidas a WhatsApp, nada de Messenger ni demás plataformas, solo WhatsApp.</p></div>
+                    <div className="bg-background/60 p-2 rounded-lg border border-border/50"><p className="font-bold text-gray-300 mb-1">🎯 Segmentación: <span className="text-purple-300">{previewCampana.segmentacionNombre}</span></p><p className="text-gray-400">País: {previewCampana.segmentacion?.location?.countries?.join(", ") || "CO"} • Edad: {previewCampana.segmentacion?.age_min ?? 18}-{previewCampana.segmentacion?.age_max ?? 65}</p><p className="text-gray-400">Intereses: {(previewCampana.segmentacion?.interests || []).slice(0,3).join(", ") || "—"}</p><p className="text-emerald-300">Solo WhatsApp placements: {previewCampana.segmentacion?.placements?.length || 4} (FB/IG feed/story/reels)</p></div>
+                    <div className="bg-background/60 p-2 rounded-lg border border-border/50"><p className="font-bold text-gray-300 mb-1">💬 WhatsApp + Videos</p><p className="text-gray-400">Número: <span className="text-emerald-300 font-mono font-bold">{previewCampana.whatsappNumero || "⚠️ sin número"}</span></p><p className="text-gray-400">{previewCampana.whatsapp?.verified_name || ""}</p><p className="text-gray-400 mt-1">Videos diferentes: <span className="text-purple-300 font-bold">{previewCampana.videos?.length || 0} de {previewCampana.numAnuncios}</span>{previewCampana.videosFaltantes > 0 && <span className="text-amber-400"> • faltan {previewCampana.videosFaltantes}</span>}</p><p className="text-[9px] text-gray-500 mt-1">Campañas únicamente dirigidas a WhatsApp, nada de Messenger ni demás plataformas, solo WhatsApp.</p></div>
                   </div>
-                  {recargaMonto && Number(recargaMonto)>0 && (<div className="p-2 rounded-lg bg-emerald-950/30 border border-emerald-800/40 text-[11px] text-emerald-200">💳 Con esta creación se intentará recargar <span className="font-bold">${Number(recargaMonto).toLocaleString("es-CO")} COP</span> a la cuenta publicitaria {accountInfo?.id || ""}</div>)}
+                  {accountInfo && (<div className="p-2 rounded-lg bg-emerald-950/20 border border-emerald-800/30 text-[11px] text-emerald-200">💳 Saldo actual de la cuenta: <span className="font-bold">{accountInfo.saldo_disponible_formatted || accountInfo.balance_formatted}</span> • Gastado hoy: <span className="font-bold">{accountInfo.spend_today_formatted}</span></div>)}
                 </div>
               ) : (
                 <div className="p-3 rounded-xl border border-dashed border-border text-center text-[11px] text-gray-500">Completa presupuesto y fecha de inicio para ver la vista previa completa con valores, segmentación, fechas con hora y copy del anuncio (video o agente)</div>

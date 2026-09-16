@@ -53,35 +53,65 @@ export function mimeToExt(mime: string): string {
   return MIME_EXT[clean] || (clean.startsWith("image/") ? clean.slice(6) : clean.startsWith("audio/") ? clean.slice(6) : clean.startsWith("video/") ? clean.slice(6) : "bin");
 }
 
+/**
+ * Nombre de archivo para una imagen.
+ *
+ * Importante: el nombre SIEMPRE se arma con `fallback` (que el que llama hace
+ * único por cliente/mensaje) y de la URL solo se toma la extensión. Antes se
+ * devolvía el último segmento de la URL, y como WhatsApp/Supabase suelen
+ * repetir nombres genéricos ("image.jpg"), todas las fotos de un chat se
+ * llamaban igual y se pisaban entre ellas al descargarlas.
+ */
 export function guessImageFilename(url: string, fallback = "imagen-cliente"): string {
   const base = fallback.replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "") || "imagen-cliente";
+  const sinExt = base.replace(/\.[A-Za-z0-9]{2,5}$/, "");
+
   if (url.startsWith("data:")) {
     const mime = url.slice(5, url.indexOf(";")) || "image/jpeg";
-    return `${base}.${mimeToExt(mime)}`;
+    return `${sinExt}.${mimeToExt(mime)}`;
   }
+
+  let ext = "jpg";
   try {
-    const path = new URL(url).pathname;
+    const path = new URL(url, "https://x.invalid").pathname;
     const last = decodeURIComponent(path.split("/").pop() || "");
-    if (/\.([A-Za-z0-9]{2,5})$/i.test(last)) return last;
+    const m = last.match(/\.([A-Za-z0-9]{2,5})$/);
+    if (m) ext = m[1].toLowerCase();
   } catch {}
-  return `${base}.jpg`;
+
+  return `${sinExt}.${ext}`;
 }
 
+/**
+ * Nombre de archivo para cualquier adjunto. Igual que en las imágenes, el
+ * nombre lo manda `fallback` y de la URL solo se hereda la extensión, para que
+ * dos adjuntos distintos nunca terminen con el mismo nombre.
+ */
 export function guessFilename(url: string, fallback = "archivo-adjunto", mimeType?: string): string {
   const base = fallback.replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "") || "archivo-adjunto";
+  const sinExt = base.replace(/\.[A-Za-z0-9]{2,5}$/, "");
+
   if (url.startsWith("data:")) {
     const mime = mimeType || url.slice(5, url.indexOf(";")) || "application/octet-stream";
-    return `${base}.${mimeToExt(mime)}`;
+    return `${sinExt}.${mimeToExt(mime)}`;
   }
+
+  let ext = "";
   try {
-    const path = new URL(url).pathname;
+    const path = new URL(url, "https://x.invalid").pathname;
     const last = decodeURIComponent(path.split("/").pop() || "");
-    if (/\.([A-Za-z0-9]{2,5})$/i.test(last)) return last;
+    const m = last.match(/\.([A-Za-z0-9]{2,5})$/);
+    if (m) ext = m[1].toLowerCase();
   } catch {}
-  if (mimeType) {
-    return `${base}.${mimeToExt(mimeType)}`;
+
+  if (!ext && mimeType) ext = mimeToExt(mimeType);
+  // Si el fallback ya traía extensión (ej. "video-x.mp4") se respeta
+  if (!ext) {
+    const mb = base.match(/\.([A-Za-z0-9]{2,5})$/);
+    if (mb) ext = mb[1].toLowerCase();
   }
-  return base;
+
+  return ext ? `${sinExt}.${ext}` : sinExt;
 }
 
 /** ¿Es un mensaje de audio / nota de voz? */
@@ -209,6 +239,53 @@ async function archivoABase64(file: File): Promise<string> {
 
 const sanearNombre = (n: string): string => n.replace(/[^\w.\-]+/g, "_").slice(0, 60) || "archivo";
 
+/** Separa "foto-juan.jpg" en { base: "foto-juan", ext: ".jpg" } */
+function partirNombre(nombre: string): { base: string; ext: string } {
+  const punto = nombre.lastIndexOf(".");
+  if (punto > 0 && punto > nombre.length - 7) {
+    return { base: nombre.slice(0, punto), ext: nombre.slice(punto) };
+  }
+  return { base: nombre, ext: "" };
+}
+
+/**
+ * Busca un nombre libre dentro de la carpeta para que las descargas se ACUMULEN
+ * y nunca se pise una imagen con otra: foto.jpg, foto (1).jpg, foto (2).jpg...
+ */
+async function nombreLibreEnCarpeta(
+  Filesystem: any,
+  Directory: any,
+  carpeta: string,
+  nombre: string
+): Promise<string> {
+  const { base, ext } = partirNombre(nombre);
+
+  const existe = async (candidato: string): Promise<boolean> => {
+    const rutas = [`${carpeta}/${candidato}`, candidato];
+    for (const ruta of rutas) {
+      for (const dir of [Directory.Documents, Directory.Data]) {
+        try {
+          await Filesystem.stat({ path: ruta, directory: dir });
+          return true; // el archivo ya está: hay que cambiar de nombre
+        } catch {
+          // no existe en esta combinación, se sigue probando
+        }
+      }
+    }
+    return false;
+  };
+
+  if (!(await existe(nombre))) return nombre;
+
+  for (let i = 1; i < 500; i++) {
+    const candidato = `${base} (${i})${ext}`;
+    if (!(await existe(candidato))) return candidato;
+  }
+
+  // Salvavidas: marca de tiempo para no sobrescribir jamás
+  return `${base}-${Date.now()}${ext}`;
+}
+
 async function guardarNativoCapacitor(files: File[], titulo: string): Promise<boolean> {
   try {
     const { Filesystem, Directory } = await import("@capacitor/filesystem");
@@ -232,7 +309,14 @@ async function guardarNativoCapacitor(files: File[], titulo: string): Promise<bo
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
-      const nombreLimpio = sanearNombre(file.name);
+      // Nombre libre: si ya existe uno igual se guarda como "nombre (1).jpg",
+      // así las descargas se acumulan en vez de reemplazarse.
+      const nombreLimpio = await nombreLibreEnCarpeta(
+        Filesystem,
+        Directory,
+        carpeta,
+        sanearNombre(file.name)
+      );
       const dataBase64 = await archivoABase64(file);
 
       let saved = false;
@@ -364,11 +448,25 @@ export async function downloadMedia(url: string, filename: string): Promise<void
 export async function downloadMany(items: Array<{ url: string; filename: string }>): Promise<{ ok: number; fail: number }> {
   let fail = 0;
   const files: File[] = [];
+  // Dentro de un mismo lote tampoco puede haber dos nombres iguales,
+  // si no el segundo archivo sobrescribiría al primero.
+  const usados = new Set<string>();
+
   for (const item of items) {
     try {
       const blob = await resolveMediaBlob(item.url);
       const type = blob.type || "image/jpeg";
-      files.push(new File([blob], item.filename, { type }));
+
+      let nombre = item.filename;
+      if (usados.has(nombre)) {
+        const { base, ext } = partirNombre(nombre);
+        let i = 1;
+        while (usados.has(`${base} (${i})${ext}`)) i++;
+        nombre = `${base} (${i})${ext}`;
+      }
+      usados.add(nombre);
+
+      files.push(new File([blob], nombre, { type }));
     } catch {
       fail += 1;
     }

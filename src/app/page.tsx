@@ -245,6 +245,19 @@ export default function CRMApp() {
   const [adsQuery, setAdsQuery] = useState("");
   const [adsStatusFilter, setAdsStatusFilter] = useState<"all" | "ACTIVE" | "PAUSED">("all");
 
+  // Edición y creación de campañas
+  const [showCrearCampModal, setShowCrearCampModal] = useState(false);
+  const [guardandoCampana, setGuardandoCampana] = useState(false);
+  const [nuevaCampNombre, setNuevaCampNombre] = useState("");
+  const [nuevaCampPresupuesto, setNuevaCampPresupuesto] = useState("");
+  const [nuevaCampObjetivo, setNuevaCampObjetivo] = useState("OUTCOME_LEADS");
+  const [nuevaCampEstado, setNuevaCampEstado] = useState<"ACTIVE" | "PAUSED">("ACTIVE");
+
+  const [campanaEditando, setCampanaEditando] = useState<any | null>(null);
+  const [editCampNombre, setEditCampNombre] = useState("");
+  const [editCampPresupuesto, setEditCampPresupuesto] = useState("");
+  const [editCampEstado, setEditCampEstado] = useState<"ACTIVE" | "PAUSED">("ACTIVE");
+
   const [isEditingNombre, setIsEditingNombre] = useState(false);
   const [tempNombre, setTempNombre] = useState("");
 
@@ -445,6 +458,17 @@ export default function CRMApp() {
   useEffect(() => {
     const t = setInterval(() => setNowTick(Date.now()), 60_000);
     return () => clearInterval(t);
+  }, []);
+
+  // Actualización automática de Ads: 3 veces al día (cada 8 horas = 28,800,000 ms)
+  // Además sincroniza al abrir la pestaña Ads o cuando la app vuelve a estar visible si han pasado más de 8 horas.
+  useEffect(() => {
+    const OCHO_HORAS_MS = 8 * 60 * 60 * 1000;
+    const intervalAds = setInterval(() => {
+      fetchCampanasAds();
+    }, OCHO_HORAS_MS);
+
+    return () => clearInterval(intervalAds);
   }, []);
 
   // Ajustes → Vencidos: el interruptor avisa al dashboard al instante.
@@ -1823,6 +1847,106 @@ export default function CRMApp() {
       });
     } catch (e) {
       console.error("Error cambiando estado campaña:", e);
+    }
+  }
+
+  async function crearNuevaCampanaAds(e: React.FormEvent) {
+    e.preventDefault();
+    if (!nuevaCampNombre.trim()) {
+      alert("Por favor ingresa el nombre de la campaña.");
+      return;
+    }
+    const presupuestoNum = Number(nuevaCampPresupuesto) || 0;
+    if (presupuestoNum < 0) {
+      alert("El presupuesto no puede ser negativo.");
+      return;
+    }
+
+    setGuardandoCampana(true);
+    try {
+      const res = await fetch("/api/ads/campaigns", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: nuevaCampNombre.trim(),
+          dailyBudget: presupuestoNum,
+          objective: nuevaCampObjetivo,
+          status: nuevaCampEstado
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        alert(data.error || "No se pudo crear la campaña en Meta Ads.");
+      } else {
+        alert(`¡Campaña "${nuevaCampNombre}" creada con éxito en Meta Ads!`);
+        setShowCrearCampModal(false);
+        setNuevaCampNombre("");
+        setNuevaCampPresupuesto("");
+        setNuevaCampEstado("ACTIVE");
+        fetchCampanasAds();
+      }
+    } catch (err: any) {
+      console.error("Error creando campaña:", err);
+      alert(err.message || "Error al conectar con el servidor.");
+    } finally {
+      setGuardandoCampana(false);
+    }
+  }
+
+  function abrirEditarCampana(c: any, e?: React.MouseEvent) {
+    e?.stopPropagation();
+    setCampanaEditando(c);
+    setEditCampNombre(c.name || "");
+    setEditCampPresupuesto(String(c.dailyBudget || ""));
+    setEditCampEstado(c.status === "ACTIVE" ? "ACTIVE" : "PAUSED");
+  }
+
+  async function guardarEdicionCampana(e: React.FormEvent) {
+    e.preventDefault();
+    if (!campanaEditando) return;
+    if (!editCampNombre.trim()) {
+      alert("El nombre de la campaña no puede estar vacío.");
+      return;
+    }
+    const presupuestoNum = Number(editCampPresupuesto) || 0;
+    if (presupuestoNum < 0) {
+      alert("El presupuesto no puede ser negativo.");
+      return;
+    }
+
+    setGuardandoCampana(true);
+    // Optimistic update
+    setCampanas(prev => prev.map(c => c.id === campanaEditando.id ? {
+      ...c,
+      name: editCampNombre.trim(),
+      dailyBudget: presupuestoNum,
+      status: editCampEstado
+    } : c));
+
+    try {
+      const res = await fetch("/api/ads/campaigns", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          campaignId: campanaEditando.id,
+          name: editCampNombre.trim(),
+          dailyBudget: presupuestoNum,
+          status: editCampEstado
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        alert(data.error || "No se pudo actualizar la campaña.");
+        fetchCampanasAds();
+      } else {
+        setCampanaEditando(null);
+      }
+    } catch (err: any) {
+      console.error("Error actualizando campaña:", err);
+      alert(err.message || "Error de conexión al actualizar campaña.");
+      fetchCampanasAds();
+    } finally {
+      setGuardandoCampana(false);
     }
   }
 
@@ -5097,7 +5221,17 @@ export default function CRMApp() {
           <div className="flex-1 p-4 md:p-8 overflow-y-auto bg-background space-y-6">
             <header className="flex flex-col md:flex-row md:items-center justify-between gap-4">
               <div><div className="flex items-center gap-2"><h1 className="text-xl md:text-2xl font-bold text-gray-100 flex items-center gap-2"><TrendingUp className="text-purple-400 w-6 h-6" /> Gestor de Meta Ads (COP)</h1><span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold border ${isLiveAds ? 'bg-emerald-950/60 text-emerald-400 border-emerald-800' : 'bg-amber-950/60 text-amber-400 border-amber-800'}`}>{isLiveAds ? 'Meta Live API' : 'Modo Demo'}</span></div><p className="text-xs md:text-sm text-gray-400">Decisiones rápidas para proteger presupuesto y escalar lo que convierte.</p></div>
-              <div className="flex items-center gap-2"><button onClick={fetchCampanasAds} disabled={loadingAds} className="bg-surface hover:bg-surfaceHover border border-border text-gray-300 px-3 py-2 rounded-xl text-xs font-medium flex items-center gap-1.5 transition-all"><RefreshCw className={`w-3.5 h-3.5 ${loadingAds ? 'animate-spin' : ''}`} /> Actualizar</button><button onClick={consultarAsesorIAAds} className="bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white px-4 py-2 rounded-xl text-xs font-bold shadow-lg shadow-purple-900/30 flex items-center gap-2 transition-all"><Sparkles className="w-4 h-4" /> Analizar con IA</button></div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setShowCrearCampModal(true)}
+                  className="bg-purple-600 hover:bg-purple-500 text-white px-3.5 py-2 rounded-xl text-xs font-bold shadow-lg shadow-purple-900/30 flex items-center gap-1.5 transition-all"
+                  title="Crear nueva campaña en Meta Ads"
+                >
+                  <Plus className="w-3.5 h-3.5" /> Nueva Campaña
+                </button>
+                <button onClick={fetchCampanasAds} disabled={loadingAds} className="bg-surface hover:bg-surfaceHover border border-border text-gray-300 px-3 py-2 rounded-xl text-xs font-medium flex items-center gap-1.5 transition-all"><RefreshCw className={`w-3.5 h-3.5 ${loadingAds ? 'animate-spin' : ''}`} /> Actualizar</button>
+                <button onClick={consultarAsesorIAAds} className="bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white px-4 py-2 rounded-xl text-xs font-bold shadow-lg shadow-purple-900/30 flex items-center gap-2 transition-all"><Sparkles className="w-4 h-4" /> Analizar con IA</button>
+              </div>
             </header>
             {adsNote && !loadingAds && (<div className="p-3 rounded-xl border border-purple-800/40 bg-purple-950/20 text-purple-300 text-xs">{adsNote}</div>)}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
@@ -5111,7 +5245,92 @@ export default function CRMApp() {
               <div className="divide-y divide-border/40">
                 {campanasVisibles.map((c) => {
                   const isActive = c.status === "ACTIVE"; const isExpanded = expandedCamp === c.id;
-                  return (<div key={c.id} className="hover:bg-surface/40 transition-colors"><div className="p-4 md:p-5 flex flex-col md:flex-row md:items-center justify-between gap-4 cursor-pointer" onClick={() => setExpandedCamp(isExpanded ? null : c.id)}><div className="flex items-start gap-3 min-w-0"><button onClick={(e) => { e.stopPropagation(); toggleEstadoCampana(c.id, c.status); }} className={`mt-1 p-2 rounded-xl border transition-all ${isActive ? "bg-emerald-950/60 border-emerald-800 text-emerald-400" : "bg-surfaceHover border-border text-gray-500"}`} title={isActive ? "Pausar" : "Activar"}>{isActive ? <Pause className="w-4 h-4 fill-emerald-400" /> : <Play className="w-4 h-4 fill-gray-400 ml-0.5" />}</button><div><div className="flex items-center gap-2"><h4 className="text-sm font-bold text-gray-100">{c.name}</h4><span className={`text-[9px] px-2 py-0.5 rounded-full font-bold ${isActive ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-gray-800 text-gray-400'}`}>{isActive ? 'ACTIVA' : c.status === 'ARCHIVED' ? 'ARCHIVADA' : 'PAUSADA'}</span>{isExpanded ? <ChevronDown className="w-3.5 h-3.5 text-gray-400" /> : <ChevronRight className="w-3.5 h-3.5 text-gray-400" />}</div><p className="text-xs text-gray-400 mt-1">Presupuesto: <span className="text-gray-200 font-medium">${Number(c.dailyBudget).toLocaleString("es-CO")} COP/día</span></p></div></div><div className="flex items-center gap-6 justify-between md:justify-end border-t md:border-t-0 pt-3 md:pt-0 border-border"><div className="text-left md:text-right"><span className="text-[10px] text-gray-500 block uppercase font-bold">Invertido</span><span className="text-sm font-bold text-gray-200">${Number(c.spend).toLocaleString("es-CO")}</span></div><div className="text-left md:text-right"><span className="text-[10px] text-gray-500 block uppercase font-bold">Leads</span><span className="text-sm font-bold text-purple-400">{c.leads}</span></div><div className="text-left md:text-right"><span className="text-[10px] text-gray-500 block uppercase font-bold">CPL</span><span className={`text-xs font-extrabold px-2 py-0.5 rounded ${c.cpl < 10000 ? 'bg-emerald-950/80 text-emerald-400' : c.cpl < 18000 ? 'bg-amber-950/80 text-amber-400' : 'bg-red-950/80 text-red-400'}`}>${Number(c.cpl).toLocaleString("es-CO")} COP</span></div></div></div></div>);
+                  return (
+                    <div key={c.id} className="hover:bg-surface/40 transition-colors">
+                      <div className="p-4 md:p-5 flex flex-col md:flex-row md:items-center justify-between gap-4 cursor-pointer" onClick={() => setExpandedCamp(isExpanded ? null : c.id)}>
+                        <div className="flex items-start gap-3 min-w-0">
+                          <button
+                            onClick={(e) => { e.stopPropagation(); toggleEstadoCampana(c.id, c.status); }}
+                            className={`mt-1 p-2 rounded-xl border transition-all ${isActive ? "bg-emerald-950/60 border-emerald-800 text-emerald-400" : "bg-surfaceHover border-border text-gray-500"}`}
+                            title={isActive ? "Pausar campaña" : "Activar campaña"}
+                          >
+                            {isActive ? <Pause className="w-4 h-4 fill-emerald-400" /> : <Play className="w-4 h-4 fill-gray-400 ml-0.5" />}
+                          </button>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h4 className="text-sm font-bold text-gray-100">{c.name}</h4>
+                              <span className={`text-[9px] px-2 py-0.5 rounded-full font-bold ${isActive ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-gray-800 text-gray-400'}`}>
+                                {isActive ? 'ACTIVA' : c.status === 'ARCHIVED' ? 'ARCHIVADA' : 'PAUSADA'}
+                              </span>
+                              {isExpanded ? <ChevronDown className="w-3.5 h-3.5 text-gray-400" /> : <ChevronRight className="w-3.5 h-3.5 text-gray-400" />}
+                            </div>
+                            <div className="flex items-center gap-2 mt-1">
+                              <p className="text-xs text-gray-400">
+                                Presupuesto: <span className="text-gray-200 font-medium">${Number(c.dailyBudget).toLocaleString("es-CO")} COP/día</span>
+                              </p>
+                              <button
+                                type="button"
+                                onClick={(e) => abrirEditarCampana(c, e)}
+                                className="text-[10px] text-purple-400 hover:text-purple-300 underline font-medium flex items-center gap-0.5 ml-1"
+                                title="Editar presupuesto o nombre de campaña"
+                              >
+                                <Edit2 className="w-2.5 h-2.5" /> Editar
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-6 justify-between md:justify-end border-t md:border-t-0 pt-3 md:pt-0 border-border">
+                          <div className="text-left md:text-right">
+                            <span className="text-[10px] text-gray-500 block uppercase font-bold">Invertido</span>
+                            <span className="text-sm font-bold text-gray-200">${Number(c.spend).toLocaleString("es-CO")}</span>
+                          </div>
+                          <div className="text-left md:text-right">
+                            <span className="text-[10px] text-gray-500 block uppercase font-bold">Leads</span>
+                            <span className="text-sm font-bold text-purple-400">{c.leads}</span>
+                          </div>
+                          <div className="text-left md:text-right">
+                            <span className="text-[10px] text-gray-500 block uppercase font-bold">CPL</span>
+                            <span className={`text-xs font-extrabold px-2 py-0.5 rounded ${c.cpl < 10000 ? 'bg-emerald-950/80 text-emerald-400' : c.cpl < 18000 ? 'bg-amber-950/80 text-amber-400' : 'bg-red-950/80 text-red-400'}`}>
+                              ${Number(c.cpl).toLocaleString("es-CO")} COP
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* DETALLE EXPANDIBLE CON ACCESO RÁPIDO */}
+                      {isExpanded && (
+                        <div className="px-5 pb-5 pt-1 bg-surface/30 border-t border-border/30 flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs">
+                          <div className="flex flex-wrap gap-4 text-gray-400">
+                            <div><span className="text-gray-500 block text-[10px] uppercase font-bold">Impresiones:</span> <span className="text-gray-200 font-semibold">{Number(c.impressions || 0).toLocaleString()}</span></div>
+                            <div><span className="text-gray-500 block text-[10px] uppercase font-bold">Clics en anuncio:</span> <span className="text-gray-200 font-semibold">{Number(c.clicks || 0).toLocaleString()}</span></div>
+                            <div><span className="text-gray-500 block text-[10px] uppercase font-bold">CTR aprox:</span> <span className="text-gray-200 font-semibold">{c.impressions ? ((c.clicks / c.impressions) * 100).toFixed(2) + "%" : "0%"}</span></div>
+                            <div><span className="text-gray-500 block text-[10px] uppercase font-bold">ID Meta:</span> <span className="font-mono text-[10px] text-gray-400">{c.id}</span></div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={(e) => abrirEditarCampana(c, e)}
+                              className="px-3 py-1.5 rounded-lg bg-surface border border-border hover:bg-surfaceHover text-purple-300 font-semibold text-xs flex items-center gap-1.5 transition-all"
+                            >
+                              <Edit2 className="w-3 h-3" /> Modificar Presupuesto / Datos
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); toggleEstadoCampana(c.id, c.status); }}
+                              className={`px-3 py-1.5 rounded-lg border font-semibold text-xs flex items-center gap-1.5 transition-all ${
+                                isActive
+                                  ? "bg-amber-950/30 border-amber-800/60 text-amber-300 hover:bg-amber-900/40"
+                                  : "bg-emerald-950/30 border-emerald-800/60 text-emerald-300 hover:bg-emerald-900/40"
+                              }`}
+                            >
+                              {isActive ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}
+                              {isActive ? "Pausar campaña" : "Activar campaña"}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
                 })}
               </div>
             </div>
@@ -5223,6 +5442,233 @@ export default function CRMApp() {
 
       {/* MODAL AJUSTES: TEMA Y NOTIFICACIONES */}
       {showAjustes && <AjustesPanel onClose={() => setShowAjustes(false)} />}
+
+      {/* MODAL CREAR NUEVA CAMPAÑA EN META ADS */}
+      {showCrearCampModal && (
+        <div className="fixed inset-0 z-50 bg-scrim flex justify-center overflow-y-auto p-3 sm:p-4 pt-[calc(0.75rem_+_var(--safe-area-inset-top))] pb-[calc(0.75rem_+_var(--safe-area-inset-bottom))] backdrop-blur-md">
+          <div className="w-full max-w-md my-auto bg-surface border border-border rounded-2xl p-6 space-y-4 shadow-2xl flex flex-col">
+            <div className="flex items-center justify-between border-b border-border pb-3">
+              <div className="flex items-center gap-2 text-purple-400">
+                <Plus className="w-5 h-5" />
+                <h3 className="text-base font-bold text-gray-100">Crear Campaña en Meta Ads</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowCrearCampModal(false)}
+                className="text-gray-400 hover:text-white p-1 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={crearNuevaCampanaAds} className="space-y-4">
+              <div>
+                <label className="text-xs text-gray-400 block mb-1 font-semibold">
+                  Nombre de la Campaña *
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Ej: Retornos Pareja - Marzo 2026"
+                  value={nuevaCampNombre}
+                  onChange={(e) => setNuevaCampNombre(e.target.value)}
+                  className="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs text-gray-400 block mb-1 font-semibold">
+                  Presupuesto Diario (COP) *
+                </label>
+                <div className="relative">
+                  <span className="absolute left-3 top-2 text-xs text-gray-500 font-mono">$</span>
+                  <input
+                    type="number"
+                    min="1000"
+                    step="1000"
+                    placeholder="Ej: 30000"
+                    value={nuevaCampPresupuesto}
+                    onChange={(e) => setNuevaCampPresupuesto(e.target.value)}
+                    className="w-full bg-background border border-border rounded-lg pl-7 pr-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500"
+                    required
+                  />
+                </div>
+                <p className="text-[10px] text-gray-500 mt-1">Presupuesto asignado a nivel de campaña por día en Pesos Colombianos.</p>
+              </div>
+
+              <div>
+                <label className="text-xs text-gray-400 block mb-1 font-semibold">
+                  Objetivo de la Campaña
+                </label>
+                <select
+                  value={nuevaCampObjetivo}
+                  onChange={(e) => setNuevaCampObjetivo(e.target.value)}
+                  className="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500"
+                >
+                  <option value="OUTCOME_LEADS">Clientes potenciales (Leads / Mensajes)</option>
+                  <option value="OUTCOME_ENGAGEMENT">Interacción (Mensajes a WhatsApp)</option>
+                  <option value="OUTCOME_TRAFFIC">Tráfico</option>
+                  <option value="OUTCOME_AWARENESS">Reconocimiento</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="text-xs text-gray-400 block mb-1 font-semibold">
+                  Estado Inicial
+                </label>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setNuevaCampEstado("ACTIVE")}
+                    className={`flex-1 py-2 rounded-lg text-xs font-bold border transition-all ${
+                      nuevaCampEstado === "ACTIVE"
+                        ? "bg-emerald-950/60 border-emerald-800 text-emerald-300"
+                        : "bg-surface border-border text-gray-400 hover:text-white"
+                    }`}
+                  >
+                    Activa inmediatamente
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setNuevaCampEstado("PAUSED")}
+                    className={`flex-1 py-2 rounded-lg text-xs font-bold border transition-all ${
+                      nuevaCampEstado === "PAUSED"
+                        ? "bg-amber-950/60 border-amber-800 text-amber-300"
+                        : "bg-surface border-border text-gray-400 hover:text-white"
+                    }`}
+                  >
+                    Pausada (Borrador)
+                  </button>
+                </div>
+              </div>
+
+              <div className="pt-2 flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowCrearCampModal(false)}
+                  disabled={guardandoCampana}
+                  className="flex-1 py-2.5 rounded-xl bg-surface border border-border text-gray-300 hover:bg-surfaceHover text-xs font-medium transition-colors disabled:opacity-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={guardandoCampana}
+                  className="flex-1 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  {guardandoCampana ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+                  {guardandoCampana ? "Creando en Meta..." : "Crear Campaña"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL EDITAR CAMPAÑA EXISTENTE / MODIFICAR PRESUPUESTO */}
+      {campanaEditando && (
+        <div className="fixed inset-0 z-50 bg-scrim flex justify-center overflow-y-auto p-3 sm:p-4 pt-[calc(0.75rem_+_var(--safe-area-inset-top))] pb-[calc(0.75rem_+_var(--safe-area-inset-bottom))] backdrop-blur-md">
+          <div className="w-full max-w-md my-auto bg-surface border border-border rounded-2xl p-6 space-y-4 shadow-2xl flex flex-col">
+            <div className="flex items-center justify-between border-b border-border pb-3">
+              <div className="flex items-center gap-2 text-purple-400">
+                <Edit2 className="w-5 h-5" />
+                <h3 className="text-base font-bold text-gray-100">Modificar Campaña Meta Ads</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCampanaEditando(null)}
+                className="text-gray-400 hover:text-white p-1 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={guardarEdicionCampana} className="space-y-4">
+              <div>
+                <label className="text-xs text-gray-400 block mb-1 font-semibold">
+                  Nombre de la Campaña
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editCampNombre}
+                  onChange={(e) => setEditCampNombre(e.target.value)}
+                  className="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs text-gray-400 block mb-1 font-semibold">
+                  Presupuesto Diario (COP)
+                </label>
+                <div className="relative">
+                  <span className="absolute left-3 top-2 text-xs text-gray-500 font-mono">$</span>
+                  <input
+                    type="number"
+                    min="1000"
+                    step="1000"
+                    placeholder="Ej: 50000"
+                    value={editCampPresupuesto}
+                    onChange={(e) => setEditCampPresupuesto(e.target.value)}
+                    className="w-full bg-background border border-border rounded-lg pl-7 pr-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500"
+                    required
+                  />
+                </div>
+                <p className="text-[10px] text-gray-500 mt-1">Presupuesto diario en Meta Ads para esta campaña.</p>
+              </div>
+
+              <div>
+                <label className="text-xs text-gray-400 block mb-1 font-semibold">
+                  Estado
+                </label>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setEditCampEstado("ACTIVE")}
+                    className={`flex-1 py-2 rounded-lg text-xs font-bold border transition-all flex items-center justify-center gap-1.5 ${
+                      editCampEstado === "ACTIVE"
+                        ? "bg-emerald-950/60 border-emerald-800 text-emerald-300"
+                        : "bg-surface border-border text-gray-400 hover:text-white"
+                    }`}
+                  >
+                    <Play className="w-3.5 h-3.5 fill-current" /> Activa
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditCampEstado("PAUSED")}
+                    className={`flex-1 py-2 rounded-lg text-xs font-bold border transition-all flex items-center justify-center gap-1.5 ${
+                      editCampEstado === "PAUSED"
+                        ? "bg-amber-950/60 border-amber-800 text-amber-300"
+                        : "bg-surface border-border text-gray-400 hover:text-white"
+                    }`}
+                  >
+                    <Pause className="w-3.5 h-3.5 fill-current" /> Pausada
+                  </button>
+                </div>
+              </div>
+
+              <div className="pt-2 flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCampanaEditando(null)}
+                  disabled={guardandoCampana}
+                  className="flex-1 py-2.5 rounded-xl bg-surface border border-border text-gray-300 hover:bg-surfaceHover text-xs font-medium transition-colors disabled:opacity-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={guardandoCampana}
+                  className="flex-1 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  {guardandoCampana ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                  {guardandoCampana ? "Guardando en Meta..." : "Guardar Cambios"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -48,6 +48,7 @@ import {
 import {
   MessageSquare, Users, DollarSign, TrendingUp, Brain, Send, Bot, Phone,
   CheckCircle2, Clock, Plus, Ban, Settings, Edit2, Trash2, ArrowUp, ArrowDown,
+  ChevronsUp, ChevronsDown,
   Wallet, Target, TrendingDown, Award, Calendar, Shield, X,
   Mic, Paperclip, ArrowLeft, Info, ListTodo, CheckSquare, Square, MailOpen,
   Sparkles, Play, Pause, RefreshCw, Image as ImageIcon, ChevronDown, ChevronRight, ChevronLeft, Download,
@@ -409,6 +410,9 @@ export default function CRMApp() {
     const cliSub = supabase.channel("r-cli").on("postgres_changes", { event: "*", schema: "public", table: "clientes" }, () => { refrescarLista(); refrescarClientes(); }).subscribe();
     const pagSub = supabase.channel("r-pag").on("postgres_changes", { event: "*", schema: "public", table: "pagos" }, fetchTodosPagos).subscribe();
     const tarSub = supabase.channel("r-tar").on("postgres_changes", { event: "*", schema: "public", table: "tareas" }, fetchTodasTareas).subscribe();
+    const pipeSub = supabase.channel("r-pipe").on("postgres_changes", { event: "*", schema: "public", table: "pipeline_etapas" }, () => {
+      fetchPipelineEtapas();
+    }).subscribe();
     const rrSub = supabase.channel("r-rr").on("postgres_changes", { event: "*", schema: "public", table: "respuestas_rapidas" }, () => {
       void actualizarRespuestasRapidas().then(setRespuestasRapidas);
     }).subscribe();
@@ -420,6 +424,7 @@ export default function CRMApp() {
       supabase.removeChannel(cliSub);
       supabase.removeChannel(pagSub);
       supabase.removeChannel(tarSub);
+      supabase.removeChannel(pipeSub);
       supabase.removeChannel(rrSub);
     };
   }, []);
@@ -1459,10 +1464,15 @@ export default function CRMApp() {
 
   async function fetchPipelineEtapas() {
     const { data } = await supabase.from("pipeline_etapas").select("*").order("orden", { ascending: true });
+    const etapasEliminadasSet = obtenerEtapasEliminadas();
     if (!data || data.length === 0) {
       // Sin etapas en la base el CRM queda degradado; la etapa Vencidos no se
       // inventa porque el traspaso solo puede mover a etapas que existen.
-      setPipelineEtapas(ETAPAS_DEFAULT.filter((e) => e.clave !== CLAVE_VENCIDOS));
+      setPipelineEtapas(
+        ETAPAS_DEFAULT.filter(
+          (e) => e.clave !== CLAVE_VENCIDOS && !etapasEliminadasSet.has(e.clave) && !etapasEliminadasSet.has(normalizarEstado(e.clave))
+        )
+      );
       return;
     }
 
@@ -1472,9 +1482,10 @@ export default function CRMApp() {
 
     data.forEach((e: any) => {
       if (e.es_spam || e.es_archivado || e.clave === "en_seguimiento") return;
-      // Etapas retiradas del pipeline (por si quedaron filas viejas en la BD)
-      if (ETAPAS_ELIMINADAS.includes(String(e.clave).replace(/_templo$/, ""))) return;
+      // Etapas retiradas del pipeline (por si quedaron filas viejas en la BD o borradas por el usuario)
+      const baseClave = String(e.clave).replace(/_templo$/, "");
       const claveNorm = normalizarEstado(e.clave);
+      if (etapasEliminadasSet.has(baseClave) || etapasEliminadasSet.has(claveNorm)) return;
       if (clavesVistas.has(claveNorm)) return;
       clavesVistas.add(claveNorm);
 
@@ -1489,20 +1500,18 @@ export default function CRMApp() {
       });
     });
 
-    // Garantizar que las etapas base siempre existan
-    ETAPAS_DEFAULT.forEach((def) => {
-      if (!limpias.some((e) => e.clave === def.clave)) {
-        // La etapa Vencidos NO se rellena: si no está en la base, el traspaso
-        // automático no la puede usar (mandaría el chat a una etapa inexistente,
-        // y el chat desaparecería del pipeline). Se crea con la migración
-        // supabase/migrations/20260919_vencidos_a_whatsapp_personal.sql.
-        if (def.clave === CLAVE_VENCIDOS) return;
-        limpias.push({
-          id: def.clave,
-          ...def,
-        });
-      }
-    });
+    // Solo para una instalación desde cero absoluta se usan etapas base por defecto
+    // Si la base ya tiene etapas, NO inyectar etapas por defecto que el usuario haya borrado.
+    if (limpias.length === 0) {
+      ETAPAS_DEFAULT.forEach((def) => {
+        if (!etapasEliminadasSet.has(def.clave) && def.clave !== CLAVE_VENCIDOS) {
+          limpias.push({
+            id: def.clave,
+            ...def,
+          });
+        }
+      });
+    }
 
     limpias.sort((a, b) => (Number(a.orden) || 0) - (Number(b.orden) || 0));
     setPipelineEtapas(limpias);
@@ -2950,7 +2959,29 @@ export default function CRMApp() {
     fetchTodosPagos();
   }
 
-  // ===================== PIPELINE UNIFICADO =====================
+  // Etapas retiradas/eliminadas manualmente del pipeline: se persisten en localStorage
+  // para que si fetchPipelineEtapas() o ETAPAS_DEFAULT intentan recrearlas, no vuelvan a aparecer.
+  function obtenerEtapasEliminadas(): Set<string> {
+    if (typeof window === "undefined") return new Set(ETAPAS_ELIMINADAS);
+    try {
+      const guardadas = JSON.parse(localStorage.getItem("tm_etapas_eliminadas") || "[]");
+      return new Set([...ETAPAS_ELIMINADAS, ...guardadas]);
+    } catch {
+      return new Set(ETAPAS_ELIMINADAS);
+    }
+  }
+
+  function registrarEtapaEliminada(clave: string) {
+    if (typeof window === "undefined" || !clave) return;
+    try {
+      const set = obtenerEtapasEliminadas();
+      set.add(clave);
+      set.add(normalizarEstado(clave));
+      localStorage.setItem("tm_etapas_eliminadas", JSON.stringify(Array.from(set)));
+    } catch (e) {
+      console.error("Error guardando etapa eliminada en localStorage:", e);
+    }
+  }
   async function agregarEtapaPipeline(cuentaResponsable: "meta_business" | "evolution" = "meta_business") {
     const etapasValidas = pipelineEtapas.filter(e => !e.es_spam && !e.es_archivado);
     const paletaDefault = PALETA_COLORES[etapasValidas.length % PALETA_COLORES.length];
@@ -2995,28 +3026,83 @@ export default function CRMApp() {
       return;
     }
     if (!confirm(`¿Eliminar la etapa "${etapa.nombre}"? Los clientes en esta etapa pasarán a "Nuevo Lead".`)) return;
+
+    // Registrar en memoria y almacenamiento local para que no vuelva a regenerarse
+    registrarEtapaEliminada(etapa.clave);
+
+    // Mover clientes en esa etapa a nuevo_lead
     await supabase.from("clientes").update({ estado: "nuevo_lead" }).eq("estado", etapa.clave);
-    await supabase.from("pipeline_etapas").delete().eq("id", id);
-    setPipelineEtapas(pipelineEtapas.filter((e) => e.id !== id));
+
+    // Eliminar de Supabase por id y por clave
+    try {
+      if (etapa.id && etapa.id !== etapa.clave) {
+        await supabase.from("pipeline_etapas").delete().eq("id", etapa.id);
+      }
+      await supabase.from("pipeline_etapas").delete().eq("clave", etapa.clave);
+    } catch (e) {
+      console.error("Error al borrar etapa de pipeline_etapas:", e);
+    }
+
+    // Reordenar las etapas restantes limpiamente 1, 2, 3...
+    const restantes = pipelineEtapas
+      .filter((e) => e.id !== id && e.clave !== etapa.clave)
+      .sort((a, b) => (Number(a.orden) || 0) - (Number(b.orden) || 0))
+      .map((e, index) => ({ ...e, orden: index + 1 }));
+
+    setPipelineEtapas(restantes);
+    guardarNuevoOrdenPipeline(restantes);
+
     fetchTodosClientes();
     fetchConversaciones(false);
   }
 
-  async function moverEtapaPipeline(idA: string, idB: string) {
-    const a = pipelineEtapas.find(e => e.id === idA);
-    const b = pipelineEtapas.find(e => e.id === idB);
-    if (!a || !b) return;
-    const tempOrden = a.orden;
-    const nuevas = pipelineEtapas.map(e => {
-      if (e.id === idA) return { ...e, orden: b.orden };
-      if (e.id === idB) return { ...e, orden: tempOrden };
-      return e;
-    }).sort((x, y) => x.orden - y.orden);
-    setPipelineEtapas(nuevas);
+  // Guarda en lote el orden limpio 1, 2, 3... de todas las etapas
+  async function guardarNuevoOrdenPipeline(etapasOrdenadas: any[]) {
     try {
-      await supabase.from("pipeline_etapas").update({ orden: b.orden }).eq("id", idA);
-      await supabase.from("pipeline_etapas").update({ orden: tempOrden }).eq("id", idB);
-    } catch (e) { console.error(e); }
+      const updates = etapasOrdenadas
+        .filter((e) => e.id && e.id !== e.clave)
+        .map((e) =>
+          supabase.from("pipeline_etapas").update({ orden: e.orden }).eq("id", e.id)
+        );
+      await Promise.allSettled(updates);
+    } catch (e) {
+      console.error("Error persistiendo orden del pipeline:", e);
+    }
+  }
+
+  async function reordenarEtapa(id: string, nuevoIndice: number) {
+    const list = pipelineEtapas
+      .filter((e) => !e.es_spam && !e.es_archivado)
+      .sort((a, b) => (Number(a.orden) || 0) - (Number(b.orden) || 0));
+
+    const currentIndex = list.findIndex((e) => e.id === id);
+    if (currentIndex === -1) return;
+    const targetIndex = Math.max(0, Math.min(list.length - 1, nuevoIndice));
+    if (currentIndex === targetIndex) return;
+
+    const copia = [...list];
+    const [movida] = copia.splice(currentIndex, 1);
+    copia.splice(targetIndex, 0, movida);
+
+    // Asignar ordenes limpios correlativos 1, 2, 3...
+    const reordenadas = copia.map((e, idx) => ({ ...e, orden: idx + 1 }));
+
+    // Integrar con las demás etapas si existieran (spam/archivado)
+    const resto = pipelineEtapas.filter((e) => e.es_spam || e.es_archivado);
+    const resultadoFinal = [...reordenadas, ...resto];
+
+    setPipelineEtapas(resultadoFinal);
+    await guardarNuevoOrdenPipeline(reordenadas);
+  }
+
+  async function moverEtapaPipeline(idA: string, idB: string) {
+    const list = pipelineEtapas
+      .filter((e) => !e.es_spam && !e.es_archivado)
+      .sort((a, b) => (Number(a.orden) || 0) - (Number(b.orden) || 0));
+    const targetIdx = list.findIndex((e) => e.id === idB);
+    if (targetIdx !== -1) {
+      await reordenarEtapa(idA, targetIdx);
+    }
   }
 
   // Desplazamiento suave y selección de subcategorías
@@ -4444,29 +4530,39 @@ export default function CRMApp() {
                       const esApi = etapa.cuenta_responsable === "meta_business";
                       return (
                         <div key={etapa.id || etapa.clave} className={`bg-background p-3 rounded-xl border-l-4 ${etapa.color} border border-border space-y-2`}>
-                          <div className="flex items-center gap-1 mb-1">
-                            <div className="flex flex-col gap-0.5">
+                          <div className="flex items-center gap-1.5 mb-1">
+                            <div className="flex items-center gap-0.5 bg-surface p-0.5 rounded border border-border">
                               <button
-                                onClick={() => {
-                                  const list = pipelineEtapas.filter(e => !e.es_spam && !e.es_archivado).sort((a, b) => (Number(a.orden) || 0) - (Number(b.orden) || 0));
-                                  const i = list.findIndex(x => x.id === etapa.id);
-                                  if (i > 0) moverEtapaPipeline(etapa.id, list[i - 1].id);
-                                }}
+                                onClick={() => reordenarEtapa(etapa.id, 0)}
                                 disabled={idx === 0}
-                                className="text-gray-500 hover:text-white disabled:opacity-30"
+                                className="text-gray-400 hover:text-purple-300 disabled:opacity-20 p-0.5"
+                                title="Mover al principio"
                               >
-                                <ArrowUp className="w-3 h-3" />
+                                <ChevronsUp className="w-3.5 h-3.5" />
                               </button>
                               <button
-                                onClick={() => {
-                                  const list = pipelineEtapas.filter(e => !e.es_spam && !e.es_archivado).sort((a, b) => (Number(a.orden) || 0) - (Number(b.orden) || 0));
-                                  const i = list.findIndex(x => x.id === etapa.id);
-                                  if (i < list.length - 1) moverEtapaPipeline(etapa.id, list[i + 1].id);
-                                }}
-                                disabled={idx === arr.length - 1}
-                                className="text-gray-500 hover:text-white disabled:opacity-30"
+                                onClick={() => reordenarEtapa(etapa.id, idx - 1)}
+                                disabled={idx === 0}
+                                className="text-gray-400 hover:text-white disabled:opacity-20 p-0.5"
+                                title="Subir una posición"
                               >
-                                <ArrowDown className="w-3 h-3" />
+                                <ArrowUp className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                onClick={() => reordenarEtapa(etapa.id, idx + 1)}
+                                disabled={idx === arr.length - 1}
+                                className="text-gray-400 hover:text-white disabled:opacity-20 p-0.5"
+                                title="Bajar una posición"
+                              >
+                                <ArrowDown className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                onClick={() => reordenarEtapa(etapa.id, arr.length - 1)}
+                                disabled={idx === arr.length - 1}
+                                className="text-gray-400 hover:text-purple-300 disabled:opacity-20 p-0.5"
+                                title="Mover al final"
+                              >
+                                <ChevronsDown className="w-3.5 h-3.5" />
                               </button>
                             </div>
                             <input

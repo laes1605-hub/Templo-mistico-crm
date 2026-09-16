@@ -248,9 +248,9 @@ export default function AjustesPanel({ onClose }: { onClose: () => void }) {
   ];
 
   return (
-    <div className="fixed inset-0 bg-scrim backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
+    <div className="fixed inset-0 bg-scrim backdrop-blur-sm z-50 flex justify-center overflow-y-auto p-3 sm:p-4 pt-[calc(0.75rem_+_var(--safe-area-inset-top))] pb-[calc(0.75rem_+_var(--safe-area-inset-bottom))]" onClick={onClose}>
       <div
-        className="bg-surface border border-border rounded-2xl w-full max-w-sm p-5 shadow-2xl max-h-[85dvh] overflow-y-auto"
+        className="bg-surface border border-border rounded-2xl w-full max-w-sm p-5 shadow-2xl my-auto max-h-[92dvh] overflow-y-auto overscroll-contain"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-5">

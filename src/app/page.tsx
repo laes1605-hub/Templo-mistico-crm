@@ -3333,7 +3333,10 @@ export default function CRMApp() {
   const previewConvertido = convertirACOP(previewMonto, monedaPago, previewTasa, previewComision);
 
   return (
-    <div className="flex flex-col md:flex-row h-[100dvh] w-screen bg-background text-gray-200 overflow-hidden font-sans pt-[var(--safe-area-inset-top)]">
+    // w-full + max-w-[100vw] en vez de w-screen: si aparece una barra de scroll
+    // vertical, 100vw es más ancho que el área visible y la app "se corría" hacia
+    // la derecha, cortando el borde de la ventana del cliente.
+    <div className="flex flex-col md:flex-row h-[100dvh] w-full max-w-[100vw] bg-background text-gray-200 overflow-hidden font-sans pt-[var(--safe-area-inset-top)]">
       
       {/* BARRA NAVEGACIÓN */}
       {/* La altura incluye la zona de gestos/navegación de Android para que el
@@ -3372,7 +3375,7 @@ export default function CRMApp() {
       {/* CONTENIDO PRINCIPAL */}
       {/* El margen inferior despeja la barra de navegación, que ahora también
           cubre la zona de gestos de Android (safe-area-inset-bottom). */}
-      <main className="flex-1 flex overflow-hidden mb-[calc(4rem_+_var(--safe-area-inset-bottom))] md:mb-0 relative">
+      <main className="flex-1 min-w-0 flex overflow-hidden mb-[calc(4rem_+_var(--safe-area-inset-bottom))] md:mb-0 relative">
         
         {/* ================= CHATS ================= */}
         {tab === "chats" && (
@@ -3714,10 +3717,18 @@ export default function CRMApp() {
             </section>
 
             {selectedConv && clienteActual ? (
-              <div className="flex-1 flex w-full h-full absolute inset-0 md:relative bg-background z-20">
-                <section className={`flex-1 flex flex-col h-full min-h-0 overflow-hidden ${showMobileDetails ? "hidden md:flex" : "flex"}`}>
-                  <header className="h-16 px-3 md:px-6 border-b border-border bg-surface/80 backdrop-blur-md flex items-center justify-between gap-2 flex-shrink-0">
-                    <div className="flex items-center gap-3 min-w-0 flex-1 md:flex-none">
+              /* min-w-0: permite que la columna del chat encoja cuando la ficha del
+                    cliente está abierta; sin esto el ancho mínimo del compositor
+                    empujaba la ventana del cliente fuera de la pantalla. */
+                <div className="flex-1 min-w-0 flex w-full h-full absolute inset-0 md:relative bg-background z-20">
+                {/* El chat solo se oculta (para dejar ver la ficha) por debajo de
+                    xl; de md a xl la ficha se abre como panel superpuesto. */}
+                <section className={`flex-1 flex flex-col h-full min-h-0 min-w-0 overflow-hidden ${showMobileDetails ? "hidden xl:flex" : "flex"}`}>
+                  {/* Cabecera flexible: si la columna del chat queda estrecha, los
+                      botones de acción bajan a una segunda fila en vez de salirse
+                      de la pantalla (antes quedaban cortados por overflow-hidden). */}
+                  <header className="min-h-[4rem] px-3 md:px-6 py-2 md:py-0 border-b border-border bg-surface/80 backdrop-blur-md flex flex-wrap items-center justify-between gap-x-2 gap-y-2 flex-shrink-0">
+                    <div className="flex items-center gap-3 min-w-0 flex-1">
                       <button onClick={() => setSelectedConv(null)} className="md:hidden p-2 -ml-2 text-gray-400 hover:text-white flex-shrink-0"><ArrowLeft className="w-5 h-5" /></button>
                       <div className="w-10 h-10 rounded-full bg-surface border border-border flex items-center justify-center text-purple-400 font-bold overflow-hidden flex-shrink-0">
                         {clienteActual.foto_url
@@ -3736,7 +3747,7 @@ export default function CRMApp() {
                         </span>
                       </div>
                     </div>
-                    <div className="flex items-center gap-1.5 md:gap-2 flex-shrink-0">
+                    <div className="flex flex-wrap items-center justify-end gap-1.5 md:gap-2 min-w-0">
                       {!clienteActual.es_spam && esConversacionWhatsAppPersonal(selectedConv) && (
                         <button
                           onClick={llamarPorWhatsAppPersonal}
@@ -3757,7 +3768,7 @@ export default function CRMApp() {
                           }`}
                         >
                           <PhoneCall className={`w-3.5 h-3.5 ${llamandoWhatsApp ? "animate-pulse" : ""}`} />
-                          <span className="hidden sm:inline">{llamandoWhatsApp ? "Abriendo..." : contactoEnTelefono === null ? "Verificando..." : contactoEnTelefono ? "Llamar" : "Guardar contacto"}</span>
+                          <span className="hidden xl:inline">{llamandoWhatsApp ? "Abriendo..." : contactoEnTelefono === null ? "Verificando..." : contactoEnTelefono ? "Llamar" : "Guardar contacto"}</span>
                         </button>
                       )}
                       {!clienteActual.es_spam && (!lunaGlobalActiva ? (
@@ -3765,8 +3776,8 @@ export default function CRMApp() {
                           <Power className="w-3.5 h-3.5" /><span>Luna APAGADA</span>
                         </button>
                       ) : (
-                        <button onClick={toggleAgenteIA} className={`hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-all ${selectedConv.agente_activo ? "bg-purple-950/50 border-purple-700 text-purple-300" : "bg-surfaceHover border-border text-gray-400"}`}>
-                          <Bot className="w-3.5 h-3.5" /><span>{selectedConv.agente_activo ? "Luna: ON" : "Pausada"}</span>
+                        <button onClick={toggleAgenteIA} title={selectedConv.agente_activo ? "Luna respondiendo en este chat (clic para pausarla)" : "Luna pausada en este chat (clic para activarla)"} className={`hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-all ${selectedConv.agente_activo ? "bg-purple-950/50 border-purple-700 text-purple-300" : "bg-surfaceHover border-border text-gray-400"}`}>
+                          <Bot className="w-3.5 h-3.5" /><span className="hidden xl:inline">{selectedConv.agente_activo ? "Luna: ON" : "Pausada"}</span>
                         </button>
                       ))}
 
@@ -3805,7 +3816,7 @@ export default function CRMApp() {
                         title={clienteActual?.en_seguimiento ? "En seguimiento diario activo (clic para quitar check)" : "Activar en seguimiento diario (8:00 AM)"}
                       >
                         <BellRing className={`w-3.5 h-3.5 ${clienteActual?.en_seguimiento ? "text-cyan-400" : ""}`} />
-                        <span className="hidden sm:inline">Seguimiento</span>
+                        <span className="hidden 2xl:inline">Seguimiento</span>
                       </button>
 
                       {clienteActual?.en_seguimiento && estaPendienteSeguimientoHoy(clienteActual) && (
@@ -3816,7 +3827,7 @@ export default function CRMApp() {
                           title="Marcar revisado por hoy (sale de la lista de En seguimiento hasta mañana 8:00 AM)"
                         >
                           <CheckCircle2 className="w-3.5 h-3.5" />
-                          <span className="hidden sm:inline">Revisado hoy</span>
+                          <span className="hidden 2xl:inline">Revisado hoy</span>
                         </button>
                       )}
 
@@ -3834,7 +3845,9 @@ export default function CRMApp() {
                       )}
 
                       <button onClick={() => solicitarEliminarCliente(selectedConv)} className="p-2 text-red-400 hover:bg-red-950/30 rounded-lg border border-red-900/30 transition-colors" title="Eliminar"><Trash2 className="w-4 h-4" /></button>
-                      <button onClick={() => setShowMobileDetails(true)} className="md:hidden p-2 text-gray-400"><Info className="w-5 h-5" /></button>
+                      {/* Desde xl la ficha ya está fija a la derecha: el botón ℹ️
+                          solo hace falta cuando el panel se abre superpuesto. */}
+                      <button onClick={() => setShowMobileDetails(true)} className="xl:hidden p-2 text-gray-400" title="Ver ficha del cliente"><Info className="w-5 h-5" /></button>
                     </div>
                   </header>
 
@@ -3949,7 +3962,12 @@ export default function CRMApp() {
                         el botón de audio) fuera de la pantalla en el teléfono.
                         Ahora cada segmento trunca con "…" y el aviso va
                         compacto; el detalle completo está en el title. */}
-                    <div className="flex items-center gap-2 px-3 md:px-4 py-0.5 text-[11px] bg-background/50 border-b border-border/40 whitespace-nowrap min-w-0">
+                    {/* Sin whitespace-nowrap en el contenedor: obligaba a la barra
+                        a medir su texto completo (~610 px), y ese mínimo ensanchaba
+                        la ventana del cliente hasta sacar de la pantalla el panel
+                        de la ficha. Cada segmento trunca con "…" por separado, así
+                        la barra sigue siendo UNA sola línea y además puede encoger. */}
+                    <div className="flex items-center gap-2 px-3 md:px-4 py-0.5 text-[11px] bg-background/50 border-b border-border/40 min-w-0 overflow-hidden">
                       {(() => {
                         const et = getEtapa(clienteActual?.estado);
                         const esApi = et?.cuenta_responsable === "meta_business";
@@ -3964,9 +3982,9 @@ export default function CRMApp() {
                               <span className="hidden sm:inline">Responde desde:</span>
                               <span className="sm:hidden">Desde:</span>
                             </span>
-                            <span className={`font-semibold flex items-center gap-1 flex-shrink-0 ${esApi ? "text-indigo-400" : "text-blue-400"}`}>
-                              <span>{esApi ? "🌐" : "👤"}</span>
-                              <span className="hidden sm:inline">{cuentaTexto}</span>
+                            <span className={`font-semibold flex items-center gap-1 min-w-0 truncate ${esApi ? "text-indigo-400" : "text-blue-400"}`}>
+                              <span className="flex-shrink-0">{esApi ? "🌐" : "👤"}</span>
+                              <span className="hidden sm:inline truncate">{cuentaTexto}</span>
                               <span className="sm:hidden">{esApi ? "API" : "Personal"}</span>
                             </span>
                             <span className="text-gray-500 min-w-0 truncate">
@@ -3979,18 +3997,18 @@ export default function CRMApp() {
                       })()}
                       {clienteActual?.en_seguimiento && (
                         <span
-                          className="flex-shrink-0 flex items-center gap-1 text-cyan-400 font-medium"
+                          className="min-w-0 flex items-center gap-1 text-cyan-400 font-medium flex-shrink"
                           title={
                             estaPendienteSeguimientoHoy(clienteActual)
                               ? "En seguimiento: pendiente para hoy"
                               : "En seguimiento: ya revisado hoy"
                           }
                         >
-                          <BellRing className="w-3 h-3" />
-                          <span className="hidden sm:inline">
+                          <BellRing className="w-3 h-3 flex-shrink-0" />
+                          <span className="hidden sm:inline truncate">
                             {estaPendienteSeguimientoHoy(clienteActual) ? "Pendiente hoy" : "Revisado hoy ✓"}
                           </span>
-                          <span className="sm:hidden">
+                          <span className="sm:hidden flex-shrink-0">
                             {estaPendienteSeguimientoHoy(clienteActual) ? "Hoy" : "Hoy ✓"}
                           </span>
                         </span>
@@ -4021,7 +4039,11 @@ export default function CRMApp() {
                       </div>
                     ) : (
                       <form onSubmit={handleSendMessage} className="flex-1 min-w-0 flex flex-wrap items-center gap-1 md:gap-1.5">
-                        <input type="text" value={nuevoMensaje} onChange={(e) => setNuevoMensaje(e.target.value)} placeholder="Escribe un mensaje..." disabled={clienteActual.es_spam || isSending} className="flex-1 min-w-0 bg-background border border-border rounded-full px-3 md:px-4 py-2 md:py-2.5 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-purple-500 disabled:opacity-50" />
+                        {/* size={1}: sin esto el input mide ~360 px de ancho intrínseco
+                            y ese mínimo ensanchaba la ventana del cliente hasta
+                            sacar la ficha fuera de la pantalla. Con flex-1 sigue
+                            ocupando todo el ancho disponible. */}
+                        <input type="text" size={1} value={nuevoMensaje} onChange={(e) => setNuevoMensaje(e.target.value)} placeholder="Escribe un mensaje..." disabled={clienteActual.es_spam || isSending} className="flex-1 min-w-0 bg-background border border-border rounded-full px-3 md:px-4 py-2 md:py-2.5 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-purple-500 disabled:opacity-50" />
                         <button type="button" onClick={() => fileInputRef.current?.click()} disabled={clienteActual.es_spam || isSending} className="p-2 md:p-2.5 text-gray-400 hover:text-purple-400 hover:bg-surfaceHover rounded-full transition-colors disabled:opacity-40 flex-shrink-0" title="Enviar archivos"><Paperclip className="w-5 h-5" /></button>
                         <div className="relative flex-shrink-0">
                           <button type="button" onClick={() => setShowEtapaMenu((v) => !v)} disabled={isSending} className="p-2 md:p-2.5 text-gray-400 hover:text-purple-400 hover:bg-surfaceHover rounded-full transition-colors disabled:opacity-40" title="Cambiar etapa del cliente"><GitBranch className="w-5 h-5" /></button>
@@ -4044,12 +4066,18 @@ export default function CRMApp() {
                   </div>
                 </section>
 
-                <aside className={`w-full md:w-80 lg:w-96 border-l border-border bg-surface/95 overflow-y-auto absolute inset-0 z-30 md:relative flex flex-col ${!showMobileDetails ? "hidden md:flex" : "flex"}`}>
-                  <header className="md:hidden flex items-center p-4 border-b border-border bg-background sticky top-0 z-10">
+                {/* Ficha del cliente: se muestra fija a la derecha desde xl; por
+                    debajo se abre completa como panel superpuesto sobre el chat
+                    (antes se encajaba en columna desde md y la ventana del cliente
+                    quedaba tan estrecha que se cortaba). */}
+                <aside className={`w-full xl:w-96 max-h-full border-l border-border bg-surface/95 overflow-y-auto overscroll-contain absolute inset-0 z-30 xl:relative flex flex-col ${!showMobileDetails ? "hidden xl:flex" : "flex"}`}>
+                  <header className="xl:hidden flex items-center p-4 border-b border-border bg-background sticky top-0 z-10">
                     <button onClick={() => setShowMobileDetails(false)} className="p-2 -ml-2 text-gray-400"><ArrowLeft className="w-5 h-5" /></button>
                     <h2 className="font-bold ml-2">Ficha del Cliente</h2>
                   </header>
-                  <div className="p-5 space-y-5">
+                  {/* El relleno inferior despeja la barra de navegación/gestos de
+                      Android para que el último bloque de la ficha se vea entero. */}
+                  <div className="p-5 space-y-5 pb-[calc(2rem_+_var(--safe-area-inset-bottom))]">
                     <div className="text-center">
                       <div className="w-20 h-20 mx-auto rounded-full bg-surface border-2 border-purple-500 flex items-center justify-center text-2xl font-bold text-purple-300 mb-3 overflow-hidden shadow-lg shadow-purple-900/20">
                         {clienteActual.foto_url
@@ -4964,10 +4992,12 @@ export default function CRMApp() {
               </div>
             </div>
 
-            {/* MODAL ABONO */}
+            {/* MODAL ABONO
+                El contenedor con scroll y el my-auto de la tarjeta garantizan que
+                el modal se vea completo (y centrado) incluso en pantallas bajas. */}
             {abonoModalCliente && (
-              <div className="fixed inset-0 z-[70] bg-scrim flex items-center justify-center p-4 backdrop-blur-md">
-                <div className="w-full max-w-sm bg-surface border border-emerald-900/40 rounded-2xl p-6 space-y-4 shadow-2xl">
+              <div className="fixed inset-0 z-[70] bg-scrim flex justify-center overflow-y-auto p-3 sm:p-4 pt-[calc(0.75rem_+_var(--safe-area-inset-top))] pb-[calc(0.75rem_+_var(--safe-area-inset-bottom))] backdrop-blur-md">
+                <div className="w-full max-w-sm my-auto max-h-[92dvh] overflow-y-auto overscroll-contain bg-surface border border-emerald-900/40 rounded-2xl p-6 space-y-4 shadow-2xl">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2 text-emerald-400"><Coins className="w-5 h-5" /><h3 className="text-base font-bold text-gray-100">Registrar abono</h3></div>
                     <button onClick={() => setAbonoModalCliente(null)} className="text-gray-400 hover:text-white"><X className="w-5 h-5" /></button>
@@ -5001,8 +5031,8 @@ export default function CRMApp() {
 
             {/* MODAL REPROGRAMAR PAGO */}
             {reprogramarModal && (
-              <div className="fixed inset-0 z-[70] bg-scrim flex items-center justify-center p-4 backdrop-blur-md">
-                <div className="w-full max-w-sm bg-surface border border-amber-900/40 rounded-2xl p-6 space-y-4 shadow-2xl">
+              <div className="fixed inset-0 z-[70] bg-scrim flex justify-center overflow-y-auto p-3 sm:p-4 pt-[calc(0.75rem_+_var(--safe-area-inset-top))] pb-[calc(0.75rem_+_var(--safe-area-inset-bottom))] backdrop-blur-md">
+                <div className="w-full max-w-sm my-auto max-h-[92dvh] overflow-y-auto overscroll-contain bg-surface border border-amber-900/40 rounded-2xl p-6 space-y-4 shadow-2xl">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2 text-amber-300"><Calendar className="w-5 h-5" /><h3 className="text-base font-bold text-gray-100">Reprogramar pago</h3></div>
                     <button onClick={() => setReprogramarModal(null)} className="text-gray-400 hover:text-white"><X className="w-5 h-5" /></button>
@@ -5062,8 +5092,8 @@ export default function CRMApp() {
 
       {/* MODAL CONFIRMAR ELIMINACIÓN COMPLETA DEL CLIENTE */}
       {showDeleteConfirm && (
-        <div className="fixed inset-0 z-[60] bg-scrim flex items-center justify-center p-4 backdrop-blur-md">
-          <div className="w-full max-w-sm bg-surface border border-red-900/50 rounded-2xl p-6 space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 z-[60] bg-scrim flex justify-center overflow-y-auto p-3 sm:p-4 pt-[calc(0.75rem_+_var(--safe-area-inset-top))] pb-[calc(0.75rem_+_var(--safe-area-inset-bottom))] backdrop-blur-md">
+          <div className="w-full max-w-sm my-auto max-h-[92dvh] overflow-y-auto overscroll-contain bg-surface border border-red-900/50 rounded-2xl p-6 space-y-4 shadow-2xl">
             {resultadoEliminar ? (
               <>
                 <div className="flex items-center gap-3 text-emerald-400">
@@ -5124,8 +5154,8 @@ export default function CRMApp() {
 
       {/* MODAL IA */}
       {showAiModal && (
-        <div className="fixed inset-0 z-50 bg-scrim flex items-center justify-center p-4 backdrop-blur-md">
-          <div className="w-full max-w-2xl bg-surface border border-border rounded-2xl p-6 space-y-4 shadow-2xl max-h-[90vh] flex flex-col">
+        <div className="fixed inset-0 z-50 bg-scrim flex justify-center overflow-y-auto p-3 sm:p-4 pt-[calc(0.75rem_+_var(--safe-area-inset-top))] pb-[calc(0.75rem_+_var(--safe-area-inset-bottom))] backdrop-blur-md">
+          <div className="w-full max-w-2xl my-auto max-h-[92dvh] bg-surface border border-border rounded-2xl p-6 space-y-4 shadow-2xl flex flex-col">
             <div className="flex items-center justify-between border-b border-border pb-3"><div className="flex items-center gap-2 text-purple-400"><Sparkles className="w-5 h-5" /><h3 className="text-lg font-bold text-gray-100">Auditoría IA</h3></div><button onClick={() => setShowAiModal(false)} className="text-gray-400 hover:text-white"><X className="w-5 h-5" /></button></div>
             <div className="flex-1 overflow-y-auto space-y-4 pr-1">{loadingAiAds ? (<div className="p-12 text-center space-y-3"><Sparkles className="w-10 h-10 text-purple-500 animate-spin mx-auto" /><p className="text-sm text-gray-300 font-medium">Analizando métricas con OpenAI...</p></div>) : (<div className="prose prose-invert max-w-none text-xs md:text-sm leading-relaxed whitespace-pre-wrap text-gray-200 bg-background/80 p-5 rounded-xl border border-border">{aiRecommendation}</div>)}</div>
           </div>
@@ -5134,8 +5164,8 @@ export default function CRMApp() {
 
       {/* MODAL ADMIN */}
       {showAdmin && (
-        <div className="fixed inset-0 z-50 bg-scrim flex items-center justify-center p-4 backdrop-blur-sm">
-          <div className="w-full max-w-sm bg-surface border border-border rounded-2xl p-6 space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 z-50 bg-scrim flex justify-center overflow-y-auto p-3 sm:p-4 pt-[calc(0.75rem_+_var(--safe-area-inset-top))] pb-[calc(0.75rem_+_var(--safe-area-inset-bottom))] backdrop-blur-sm">
+          <div className="w-full max-w-sm my-auto max-h-[92dvh] overflow-y-auto overscroll-contain bg-surface border border-border rounded-2xl p-6 space-y-4 shadow-2xl">
             <div className="flex items-center justify-between"><div className="flex items-center gap-2"><Shield className="w-5 h-5 text-purple-400" /><h3 className="text-base font-bold text-gray-100">Panel Admin</h3></div><button onClick={() => { setShowAdmin(false); setBalances(null); setAdminSecret(""); }} className="text-gray-400 hover:text-white"><X className="w-5 h-5" /></button></div>
             <div className="space-y-2"><label className="text-xs text-gray-400">Clave admin</label><input type="password" placeholder="Ingresa tu clave admin" value={adminSecret} onChange={(e) => setAdminSecret(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") cargarSaldos(); }} className="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500" /></div>
             <button onClick={cargarSaldos} disabled={loadingBal} className="w-full bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-xs font-medium py-2.5 rounded-lg">{loadingBal ? "Consultando..." : "Ver saldos APIs"}</button>

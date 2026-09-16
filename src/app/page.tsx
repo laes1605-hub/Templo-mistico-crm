@@ -256,6 +256,9 @@ export default function CRMApp() {
   const [nuevaCampEstado, setNuevaCampEstado] = useState<"ACTIVE" | "PAUSED">("ACTIVE");
   const [nuevaCampFechaInicio, setNuevaCampFechaInicio] = useState<string>(() => new Date().toISOString().split("T")[0]);
   const [nuevaCampNumAnuncios, setNuevaCampNumAnuncios] = useState<number>(2);
+  const [nuevaCampCopy, setNuevaCampCopy] = useState<string>("");
+  const [nuevaCampCopies, setNuevaCampCopies] = useState<string[]>(["", "", "", "", ""]);
+  const [usarCopyVideo, setUsarCopyVideo] = useState<boolean>(true);
   const [whatsappNumbers, setWhatsappNumbers] = useState<any[]>([]);
   const [loadingWhatsappNumbers, setLoadingWhatsappNumbers] = useState(false);
   const [selectedWhatsappId, setSelectedWhatsappId] = useState<string>("");
@@ -1963,7 +1966,7 @@ export default function CRMApp() {
     }
   }
 
-  // Calcular preview completo dinámico
+  // Calcular preview completo dinámico - AHORA CON COPY DEL VIDEO O DEL AGENTE
   function calcularPreviewCampana() {
     const presupuestoNum = Number(nuevaCampPresupuesto) || 0;
     if (!presupuestoNum || !nuevaCampFechaInicio) {
@@ -1987,6 +1990,38 @@ export default function CRMApp() {
       const vidObj = pageVideos.find((v: any) => v.id === selectedVideoId);
       const waObj = whatsappNumbers.find((w: any) => w.id === selectedWhatsappId);
 
+      // Determinar copy base: del video seleccionado o del agente
+      const copyVideoBase = (vidObj?.description || vidObj?.title || "").trim();
+      const copyAgenteBase = nuevaCampCopy.trim();
+
+      // Construir lista de copies por anuncio (1-5)
+      const anunciosConCopy = Array.from({ length: nuevaCampNumAnuncios }, (_, i) => {
+        let copyFinal = "";
+        let origen = "";
+        if (usarCopyVideo) {
+          // Si usa copy del video, tomar descripción del video
+          if (copyVideoBase) {
+            copyFinal = nuevaCampCopies[i]?.trim() ? `${copyVideoBase}\n\n--- Variación ${i+1} ---\n${nuevaCampCopies[i]}` : copyVideoBase;
+            origen = nuevaCampCopies[i]?.trim() ? "video + agente" : "video";
+          } else {
+            copyFinal = nuevaCampCopies[i]?.trim() || copyAgenteBase || `🔮 ${nuevaCampNombre || "Templo Místico"} - Consulta espiritual personalizada. Escríbenos al WhatsApp y descubre tu destino. ✨`;
+            origen = nuevaCampCopies[i]?.trim() ? "agente variación" : (copyAgenteBase ? "agente" : "auto");
+          }
+        } else {
+          // Solo copy del agente
+          copyFinal = nuevaCampCopies[i]?.trim() || copyAgenteBase || `🔮 ${nuevaCampNombre || "Templo Místico"} - Amarres, retornos, tarot. Resultados garantizados. WhatsApp ahora.`;
+          origen = nuevaCampCopies[i]?.trim() ? "agente variación" : (copyAgenteBase ? "agente" : "auto");
+        }
+        return {
+          id: i + 1,
+          nombre: `${nuevaCampNombre || "Campaña"} - Anuncio ${i + 1}`,
+          cta: "Enviar WhatsApp",
+          copy: copyFinal,
+          copy_origen: origen,
+          copy_preview: copyFinal.substring(0, 120) + (copyFinal.length>120?"...":""),
+        };
+      });
+
       setPreviewCampana({
         nombre: nuevaCampNombre || "Campaña sin nombre",
         presupuesto: presupuestoNum,
@@ -2003,11 +2038,10 @@ export default function CRMApp() {
         horaFin: "23:59",
         resumenFechas: `${legibleInicio} → ${legibleFin} (${dias} días)`,
         numAnuncios: nuevaCampNumAnuncios,
-        anuncios: Array.from({ length: nuevaCampNumAnuncios }, (_, i) => ({
-          id: i + 1,
-          nombre: `${nuevaCampNombre || "Campaña"} - Anuncio ${i + 1}`,
-          cta: "Enviar WhatsApp",
-        })),
+        anuncios: anunciosConCopy,
+        copy_base_video: copyVideoBase,
+        copy_base_agente: copyAgenteBase,
+        usar_copy_video: usarCopyVideo,
         video: vidObj,
         whatsapp: waObj || { display_number: selectedWhatsappDisplay || "+57 305 402 1111", verified_name: "Templo Místico" },
         segmentacion: segmentacionGuardada,
@@ -2025,7 +2059,7 @@ export default function CRMApp() {
     if (showCrearCampModal) {
       calcularPreviewCampana();
     }
-  }, [nuevaCampNombre, nuevaCampPresupuesto, nuevaCampTipoPresupuesto, nuevaCampDias, nuevaCampFechaInicio, nuevaCampNumAnuncios, selectedVideoId, selectedWhatsappId, segmentacionGuardada, nuevaCampEstado, nuevaCampObjetivo, showCrearCampModal, pageVideos, whatsappNumbers]);
+  }, [nuevaCampNombre, nuevaCampPresupuesto, nuevaCampTipoPresupuesto, nuevaCampDias, nuevaCampFechaInicio, nuevaCampNumAnuncios, selectedVideoId, selectedWhatsappId, segmentacionGuardada, nuevaCampEstado, nuevaCampObjetivo, showCrearCampModal, pageVideos, whatsappNumbers, nuevaCampCopy, nuevaCampCopies, usarCopyVideo]);
 
   // Cargar WhatsApp y cuenta cuando se abre modal
   useEffect(() => {
@@ -2148,6 +2182,17 @@ export default function CRMApp() {
       const vidObj = pageVideos.find((v: any) => v.id === selectedVideoId);
       const waObj = whatsappNumbers.find((w: any) => w.id === selectedWhatsappId);
       
+      // Construir copies finales para enviar al backend - video o agente
+      const vidDesc = (vidObj?.description || "").trim();
+      const copyBase = usarCopyVideo && vidDesc ? vidDesc : nuevaCampCopy.trim();
+      const adCopiesFinal = Array.from({ length: nuevaCampNumAnuncios }, (_, i) => {
+        const variacion = nuevaCampCopies[i]?.trim() || "";
+        if (variacion) {
+          return copyBase ? `${copyBase}\n\n${variacion}` : variacion;
+        }
+        return copyBase || `${nuevaCampNombre.trim()} - Consulta espiritual por WhatsApp`;
+      });
+
       const payload = {
         name: nuevaCampNombre.trim(),
         budgetType: nuevaCampTipoPresupuesto,
@@ -2161,11 +2206,15 @@ export default function CRMApp() {
         status: nuevaCampEstado,
         selectedVideoId: selectedVideoId || undefined,
         videoTitle: vidObj?.title || undefined,
+        videoDescription: vidDesc || undefined,
         whatsappNumberId: selectedWhatsappId || waObj?.id,
         whatsappDisplayNumber: waObj?.display_number || selectedWhatsappDisplay || "+57 305 402 1111",
         whatsappVerifiedName: waObj?.verified_name || "Templo Místico",
         segmentation: segmentacionGuardada,
         pageId: undefined,
+        adCopies: adCopiesFinal,
+        adCopyBase: copyBase,
+        usarCopyVideo: usarCopyVideo,
         addBalanceAmount: recargaMonto ? Number(recargaMonto) : undefined,
       };
 
@@ -2199,6 +2248,9 @@ export default function CRMApp() {
         setNuevaCampPresupuesto("");
         setNuevaCampEstado("ACTIVE");
         setRecargaMonto("");
+        setNuevaCampCopy("");
+        setNuevaCampCopies(["", "", "", "", ""]);
+        setUsarCopyVideo(true);
         fetchCampanasAds();
       }
     } catch (err: any) {
@@ -5926,15 +5978,46 @@ export default function CRMApp() {
                     )}
                   </div>
 
-                  {/* VIDEO FAN PAGE */}
-                  <div>
-                    <div className="flex items-center justify-between mb-1"><label className="text-xs text-gray-300 font-bold flex items-center gap-1.5"><Video className="w-3.5 h-3.5 text-purple-400" /> Video Fan Page</label><button type="button" onClick={fetchVideosFanPage} className="text-[10px] text-purple-400 hover:text-purple-300 flex items-center gap-1"><RefreshCw className={`w-3 h-3 ${loadingVideos?'animate-spin':''}`} /> Refrescar</button></div>
+                  {/* VIDEO FAN PAGE + COPY DEL VIDEO */}
+                  <div className="p-3 rounded-xl bg-purple-950/10 border border-purple-800/20 space-y-2">
+                    <div className="flex items-center justify-between mb-1"><label className="text-xs text-gray-300 font-bold flex items-center gap-1.5"><Video className="w-3.5 h-3.5 text-purple-400" /> Video Fan Page + Copy</label><button type="button" onClick={fetchVideosFanPage} className="text-[10px] text-purple-400 hover:text-purple-300 flex items-center gap-1"><RefreshCw className={`w-3 h-3 ${loadingVideos?'animate-spin':''}`} /> Refrescar</button></div>
                     {pageVideos.length>0 ? (
                       <div className="space-y-2">
-                        <select value={selectedVideoId} onChange={(e)=>setSelectedVideoId(e.target.value)} className="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500 truncate">{pageVideos.map((v:any)=>(<option key={v.id} value={v.id}>{v.title} {v.length?`(${v.length}s)`:''}</option>))}</select>
-                        <div className="p-2 rounded-lg bg-surface/50 border border-border flex items-center gap-3">{pageVideos.find((v:any)=>v.id===selectedVideoId)?.picture && (<img src={pageVideos.find((v:any)=>v.id===selectedVideoId)?.picture} alt="thumb" className="w-12 h-12 object-cover rounded-md border border-border shrink-0" />)}<div className="min-w-0 text-[11px]"><p className="font-semibold text-gray-200 truncate">{pageVideos.find((v:any)=>v.id===selectedVideoId)?.title}</p><p className="text-gray-400 text-[10px] line-clamp-1">{pageVideos.find((v:any)=>v.id===selectedVideoId)?.description || "Video oficial Fan Page"}</p></div></div>
+                        <select value={selectedVideoId} onChange={(e)=>{ setSelectedVideoId(e.target.value); const v=pageVideos.find((x:any)=>x.id===e.target.value); if(v?.description && usarCopyVideo && !nuevaCampCopy){ setNuevaCampCopy(v.description); } }} className="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500 truncate">{pageVideos.map((v:any)=>(<option key={v.id} value={v.id}>{v.title} {v.length?`(${v.length}s)`:''}</option>))}</select>
+                        <div className="p-2 rounded-lg bg-surface/50 border border-border flex items-center gap-3">{pageVideos.find((v:any)=>v.id===selectedVideoId)?.picture && (<img src={pageVideos.find((v:any)=>v.id===selectedVideoId)?.picture} alt="thumb" className="w-12 h-12 object-cover rounded-md border border-border shrink-0" />)}<div className="min-w-0 text-[11px]"><p className="font-semibold text-gray-200 truncate">{pageVideos.find((v:any)=>v.id===selectedVideoId)?.title}</p><p className="text-gray-400 text-[10px] line-clamp-2">{pageVideos.find((v:any)=>v.id===selectedVideoId)?.description || "Video oficial Fan Page - sin descripción"}</p><span className="text-[8px] px-1 py-0.5 rounded bg-purple-950 text-purple-300 border border-purple-800 mt-1 inline-block">Copy original del video</span></div></div>
+                        {pageVideos.find((v:any)=>v.id===selectedVideoId)?.description && (
+                          <div className="p-2 rounded-lg bg-background/60 border border-border/50">
+                            <p className="text-[10px] text-gray-500 font-bold mb-1">📝 Copy que viene con el video seleccionado:</p>
+                            <p className="text-[11px] text-gray-300 whitespace-pre-wrap leading-snug max-h-20 overflow-y-auto">{pageVideos.find((v:any)=>v.id===selectedVideoId)?.description}</p>
+                          </div>
+                        )}
                       </div>
                     ) : (<div className="p-2.5 rounded-lg border border-dashed border-border text-center text-[11px] text-gray-400">Cargando videos...</div>)}
+                    <div className="flex gap-2 pt-1">
+                      <button type="button" onClick={()=>setUsarCopyVideo(true)} className={`flex-1 py-1.5 rounded-lg text-[10px] font-bold border ${usarCopyVideo?"bg-purple-600 border-purple-500 text-white":"bg-surface border-border text-gray-400"}`}>Usar copy del video</button>
+                      <button type="button" onClick={()=>setUsarCopyVideo(false)} className={`flex-1 py-1.5 rounded-lg text-[10px] font-bold border ${!usarCopyVideo?"bg-amber-600 border-amber-500 text-white":"bg-surface border-border text-gray-400"}`}>Usar copy del agente</button>
+                    </div>
+                  </div>
+
+                  {/* COPY DEL AGENTE - BASE + VARIACIONES 1-5 */}
+                  <div className="p-3 rounded-xl bg-amber-950/15 border border-amber-800/30 space-y-2">
+                    <label className="text-xs text-amber-300 font-bold flex items-center gap-1.5">✍️ Copy del Anuncio {usarCopyVideo?"(Base + variaciones)" : "(Del agente)"} <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-900 text-amber-200">{usarCopyVideo?"VIDEO + AGENTE":"SOLO AGENTE"}</span></label>
+                    <textarea placeholder={usarCopyVideo?"Copy base opcional del agente que se sumará al copy del video... Ej: ¡Oferta limitada! Consulta gratis hoy.":"Escribe el copy principal que llevará el anuncio... Ej: 🔮 ¿Sientes que tu pareja se aleja? Amarres efectivos, retornos en 24h. Escríbeme al WhatsApp ahora y te revelo tu destino..."} value={nuevaCampCopy} onChange={(e)=>setNuevaCampCopy(e.target.value)} rows={3} className="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-amber-500 resize-y" />
+                    <p className="text-[9px] text-gray-500">{usarCopyVideo?"Si dejas vacío, se usa solo el copy que ya trae el video. Si escribes algo, se combinará.":"Este será el texto principal del anuncio. Puedes añadir variaciones por cada anuncio abajo."}</p>
+                    
+                    {/* VARIACIONES POR ANUNCIO */}
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] text-gray-400 font-bold">Variaciones por anuncio (opcional) - para probar {nuevaCampNumAnuncios} copies diferentes:</label>
+                      {Array.from({ length: nuevaCampNumAnuncios }, (_, i) => (
+                        <div key={i} className="flex gap-1.5 items-start">
+                          <span className="text-[9px] font-bold text-gray-500 mt-2 w-6">#{i+1}</span>
+                          <textarea placeholder={`Variación ${i+1} - Ej: ${i===0?"Versión directa" : i===1?"Versión emocional" : i===2?"Versión con testimonio" : "Otra prueba A/B"}...`} value={nuevaCampCopies[i] || ""} onChange={(e)=>{ const cp=[...nuevaCampCopies]; cp[i]=e.target.value; setNuevaCampCopies(cp); }} rows={2} className="flex-1 bg-background border border-border rounded-lg px-2.5 py-1.5 text-[11px] text-gray-200 focus:outline-none focus:border-amber-500 resize-y" />
+                        </div>
+                      ))}
+                    </div>
+                    <div className="text-[9px] text-amber-200/70 bg-background/50 p-1.5 rounded border border-amber-900/30">
+                      💡 Tip: Usa el copy del video para mantener autenticidad + añade variaciones del agente para probar ganchos diferentes. El preview abajo mostrará exactamente cómo quedará cada anuncio.
+                    </div>
                   </div>
 
                   {/* SEGMENTACION GUARDADA */}
@@ -5976,10 +6059,10 @@ export default function CRMApp() {
                 </div>
               </div>
 
-              {/* PREVIEW COMPLETO - SIEMPRE VISIBLE */}
+              {/* PREVIEW COMPLETO - SIEMPRE VISIBLE CON COPY DEL VIDEO O AGENTE */}
               {previewCampana ? (
                 <div className="p-4 rounded-xl bg-gradient-to-br from-purple-950/30 via-background to-emerald-950/20 border border-purple-800/40 space-y-3">
-                  <h4 className="text-xs font-bold text-purple-300 flex items-center gap-2">👁️ Vista Previa Completa de Campaña <span className="text-[9px] px-1.5 py-0.5 rounded bg-purple-900 text-purple-200">EN VIVO</span></h4>
+                  <h4 className="text-xs font-bold text-purple-300 flex items-center gap-2">👁️ Vista Previa Completa de Campaña <span className="text-[9px] px-1.5 py-0.5 rounded bg-purple-900 text-purple-200">EN VIVO</span> <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-900 text-amber-200">COPY: {previewCampana.usar_copy_video?"VIDEO + AGENTE":"AGENTE"}</span></h4>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[11px]">
                     <div className="space-y-1.5 bg-background/70 p-2.5 rounded-lg border border-border">
                       <p className="font-bold text-gray-100 text-xs">{previewCampana.nombre}</p>
@@ -5991,17 +6074,51 @@ export default function CRMApp() {
                       <p className="text-amber-300">IVA 19%: +${previewCampana.iva.toLocaleString("es-CO")} COP</p>
                       <p className="text-emerald-400 font-bold">Total factura: ${previewCampana.totalConIva.toLocaleString("es-CO")} COP</p>
                       <p className="text-purple-300">Diario aprox: ${previewCampana.diario.toLocaleString("es-CO")} COP</p>
-                      <p className="text-[10px] text-gray-500 mt-1">Anuncios: {previewCampana.anuncios.map((a:any)=>a.nombre).join(", ").substring(0,80)}...</p>
                     </div>
                   </div>
+
+                  {/* COPY PREVIEW POR ANUNCIO - NUEVO REQUERIMIENTO */}
+                  <div className="space-y-2">
+                    <p className="text-[11px] font-bold text-amber-300">✍️ Copy con el que va cada anuncio ({previewCampana.usar_copy_video?"del video seleccionado o del agente" : "del agente"}):</p>
+                    <div className="grid grid-cols-1 gap-2 max-h-72 overflow-y-auto pr-1">
+                      {previewCampana.anuncios.map((ad:any, idx:number)=>(
+                        <div key={ad.id} className="p-2.5 rounded-lg bg-background/80 border border-border space-y-1">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-bold text-gray-200">{ad.nombre}</span>
+                            <span className="text-[8px] px-1.5 py-0.5 rounded bg-surface border border-border text-gray-400">{ad.copy_origen}</span>
+                          </div>
+                          <div className="flex gap-2 items-start">
+                            {previewCampana.video?.picture && <img src={previewCampana.video.picture} alt="thumb" className="w-8 h-8 rounded object-cover border border-border shrink-0 mt-0.5" />}
+                            <div className="flex-1 min-w-0">
+                              <p className="text-[11px] text-gray-200 whitespace-pre-wrap leading-snug">{ad.copy}</p>
+                              <p className="text-[9px] text-gray-500 mt-1">CTA: {ad.cta} • Video: {previewCampana.video?.title || "Video Fan Page"} → WhatsApp {previewCampana.whatsapp?.display_number}</p>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    {previewCampana.copy_base_video && (
+                      <div className="p-2 rounded-lg bg-purple-950/20 border border-purple-800/30 text-[10px]">
+                        <p className="text-purple-300 font-bold">📹 Copy original del video seleccionado:</p>
+                        <p className="text-gray-400 whitespace-pre-wrap mt-1">{previewCampana.copy_base_video.substring(0,300)}{previewCampana.copy_base_video.length>300?"...":""}</p>
+                      </div>
+                    )}
+                    {previewCampana.copy_base_agente && (
+                      <div className="p-2 rounded-lg bg-amber-950/20 border border-amber-800/30 text-[10px]">
+                        <p className="text-amber-300 font-bold">🤖 Copy colocado por el agente:</p>
+                        <p className="text-gray-300 whitespace-pre-wrap mt-1">{previewCampana.copy_base_agente}</p>
+                      </div>
+                    )}
+                  </div>
+
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[10px]">
-                    <div className="bg-background/60 p-2 rounded-lg border border-border/50"><p className="font-bold text-gray-300 mb-1">🎯 Segmentación</p><p className="text-gray-400">País: {previewCampana.segmentacion?.location?.countries?.join(", ")} • Edad: {previewCampana.segmentacion?.age?.min}-{previewCampana.segmentacion?.age?.max}</p><p className="text-gray-400">Intereses: {previewCampana.segmentacion?.interests?.slice(0,3).join(", ")}</p><p className="text-emerald-300">Solo WhatsApp placements: {previewCampana.segmentacion?.placements?.length || 4} (FB/IG feed/story/reels)</p></div>
+                    <div className="bg-background/60 p-2 rounded-lg border border-border/50"><p className="font-bold text-gray-300 mb-1">🎯 Segmentación Guardada</p><p className="text-gray-400">País: {previewCampana.segmentacion?.location?.countries?.join(", ") || "CO"} • Edad: {previewCampana.segmentacion?.age?.min}-{previewCampana.segmentacion?.age?.max}</p><p className="text-gray-400">Intereses: {previewCampana.segmentacion?.interests?.slice(0,3).join(", ")}</p><p className="text-emerald-300">Solo WhatsApp placements: {previewCampana.segmentacion?.placements?.length || 4} (FB/IG feed/story/reels)</p></div>
                     <div className="bg-background/60 p-2 rounded-lg border border-border/50"><p className="font-bold text-gray-300 mb-1">💬 WhatsApp + Video</p><p className="text-gray-400">Número: <span className="text-gray-200">{previewCampana.whatsapp?.display_number}</span> ({previewCampana.whatsapp?.verified_name})</p><p className="text-gray-400">Video: {previewCampana.video?.title || "Video Fan Page seleccionado"}</p><p className="text-[9px] text-gray-500 mt-1">Campañas únicamente dirigidas a WhatsApp, nada de Messenger ni demás plataformas, solo WhatsApp.</p></div>
                   </div>
                   {recargaMonto && Number(recargaMonto)>0 && (<div className="p-2 rounded-lg bg-emerald-950/30 border border-emerald-800/40 text-[11px] text-emerald-200">💳 Con esta creación se intentará recargar <span className="font-bold">${Number(recargaMonto).toLocaleString("es-CO")} COP</span> a la cuenta publicitaria {accountInfo?.id || ""}</div>)}
                 </div>
               ) : (
-                <div className="p-3 rounded-xl border border-dashed border-border text-center text-[11px] text-gray-500">Completa presupuesto y fecha de inicio para ver la vista previa completa con valores, segmentación y fechas con hora</div>
+                <div className="p-3 rounded-xl border border-dashed border-border text-center text-[11px] text-gray-500">Completa presupuesto y fecha de inicio para ver la vista previa completa con valores, segmentación, fechas con hora y copy del anuncio (video o agente)</div>
               )}
 
               <div className="pt-2 flex gap-2 sticky bottom-0 bg-surface">

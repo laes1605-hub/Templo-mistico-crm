@@ -219,7 +219,10 @@ export async function POST(req: Request) {
       whatsappVerifiedName,
       segmentation, // saved segmentation
       pageId, // optional
-      adCopies, // optional array of ad copy variations
+      adCopies, // optional array of ad copy variations - copy del video o del agente
+      videoDescription,
+      adCopyBase,
+      usarCopyVideo,
       addBalanceAmount, // optional saldo a cargar
     } = body;
 
@@ -262,7 +265,12 @@ export async function POST(req: Request) {
 
     const finalSegmentation = segmentation || defaultSegmentation;
 
-    // Preview completo que siempre se muestra
+    // Determinar copy base - del video seleccionado o del agente
+    const copyVideoOriginal = (videoDescription || "").trim();
+    const copyAgenteOriginal = (adCopyBase || "").trim();
+    const usarVideoFlag = usarCopyVideo !== undefined ? Boolean(usarCopyVideo) : true;
+
+    // Preview completo que siempre se muestra - CON COPY
     const previewCompleto = {
       nombre: name.trim(),
       objetivo: objective,
@@ -288,18 +296,31 @@ export async function POST(req: Request) {
         legible_fin: horario.legibleFin,
         resumen: `${horario.legibleInicio} → ${horario.legibleFin} (${duracionDias} días)`,
       },
+      copy: {
+        video_original: copyVideoOriginal,
+        agente_base: copyAgenteOriginal,
+        usar_video: usarVideoFlag,
+        origen: usarVideoFlag ? (copyVideoOriginal ? "video + agente" : "agente") : "agente",
+      },
       anuncios: {
         total: numeroAnuncios,
-        detalle: Array.from({ length: numeroAnuncios }, (_, i) => ({
-          index: i + 1,
-          nombre: `${name.trim()} - Anuncio ${i + 1}`,
-          video_id: selectedVideoId || `auto_${i + 1}`,
-          video_title: videoTitle || `Creativo ${i + 1}`,
-          copy_variacion: adCopies?.[i] || `Variación ${i + 1} - Prueba A/B`,
-          cta: "Enviar mensaje por WhatsApp",
-          destino: "whatsapp",
-        })),
-        estrategia: `Se probarán ${numeroAnuncios} variaciones para identificar ganador rápido`,
+        detalle: Array.from({ length: numeroAnuncios }, (_, i) => {
+          const copyFinal = adCopies?.[i] || (usarVideoFlag && copyVideoOriginal ? copyVideoOriginal : copyAgenteOriginal) || `${name.trim()} - Anuncio ${i+1}`;
+          return {
+            index: i + 1,
+            nombre: `${name.trim()} - Anuncio ${i + 1}`,
+            video_id: selectedVideoId || `auto_${i + 1}`,
+            video_title: videoTitle || `Creativo ${i + 1}`,
+            video_description: copyVideoOriginal,
+            copy: copyFinal,
+            copy_preview: copyFinal.substring(0,120) + (copyFinal.length>120?"...":""),
+            copy_variacion: adCopies?.[i] || `Variación ${i + 1}`,
+            copy_origen: usarVideoFlag ? (copyVideoOriginal ? (adCopies?.[i] && adCopies[i]!==copyVideoOriginal ? "video + agente variación" : "video") : "agente") : "agente",
+            cta: "Enviar mensaje por WhatsApp",
+            destino: "whatsapp",
+          };
+        }),
+        estrategia: `Se probarán ${numeroAnuncios} variaciones de copy para identificar ganador rápido - Copy: ${usarVideoFlag ? "del video seleccionado + agente" : "del agente"}`,
       },
       whatsapp: {
         numero_id: whatsappNumberId || "auto",

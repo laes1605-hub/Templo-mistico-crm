@@ -180,11 +180,17 @@ function triggerAnchorDownload(blob: Blob, filename: string) {
   a.href = objectUrl;
   a.download = filename;
   a.rel = "noopener";
+  a.target = "_self";
   a.style.display = "none";
   document.body.appendChild(a);
   a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(objectUrl), 4000);
+  // Se da tiempo al navegador para iniciar la descarga del blob antes de revocar
+  setTimeout(() => {
+    try {
+      a.remove();
+      URL.revokeObjectURL(objectUrl);
+    } catch {}
+  }, 30000);
 }
 
 function base64DeBytes(u8: Uint8Array): string {
@@ -205,26 +211,109 @@ const sanearNombre = (n: string): string => n.replace(/[^\w.\-]+/g, "_").slice(0
 
 async function guardarNativoCapacitor(files: File[], titulo: string): Promise<boolean> {
   try {
-    const { Filesystem, FilesystemDirectory } = await import("@capacitor/filesystem");
+    const { Filesystem, Directory } = await import("@capacitor/filesystem");
     const { Share } = await import("@capacitor/share");
-    const sello = Date.now();
-    const uris: string[] = [];
-    for (let i = 0; i < files.length; i++) {
-      const { uri } = await Filesystem.writeFile({
-        path: `descargas/${sello}-${i + 1}-${sanearNombre(files[i].name)}`,
-        data: await archivoABase64(files[i]),
-        directory: FilesystemDirectory.Documents,
-      });
-      uris.push(uri);
-    }
+
+    // En Android 10 e inferiores, Directory.Documents requiere permiso de almacenamiento
     try {
-      await Share.share({ files: uris, title: titulo });
-    } catch (e: any) {
-      console.warn("Hoja de compartir cerrada:", e);
+      if (typeof Filesystem.checkPermissions === "function") {
+        const perm = await Filesystem.checkPermissions();
+        if (perm?.publicStorage !== "granted" && typeof Filesystem.requestPermissions === "function") {
+          await Filesystem.requestPermissions();
+        }
+      }
+    } catch (permErr) {
+      console.warn("No se pudo verificar permisos de almacenamiento:", permErr);
     }
-    alert(
-      `${files.length === 1 ? "El archivo quedó guardado" : "Los archivos quedaron guardados"} en este teléfono (Documentos › Descargas).\n\nSi se abrió la hoja de compartir, elige Galería, Archivos u otra app para moverlos.`
-    );
+
+    const uris: string[] = [];
+    const carpeta = "Descargas-CRM";
+    const nombresGuardados: string[] = [];
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const nombreLimpio = sanearNombre(file.name);
+      const dataBase64 = await archivoABase64(file);
+
+      let saved = false;
+      let lastUri = "";
+
+      // 1. Intentar escribir en Documents/Descargas-CRM/<nombre>
+      try {
+        const res = await Filesystem.writeFile({
+          path: `${carpeta}/${nombreLimpio}`,
+          data: dataBase64,
+          directory: Directory.Documents,
+          recursive: true,
+        });
+        lastUri = res.uri;
+        saved = true;
+      } catch (eDoc) {
+        console.warn(`No se pudo guardar en Documents/${carpeta}, intentando raíz de Documents:`, eDoc);
+        try {
+          const res = await Filesystem.writeFile({
+            path: nombreLimpio,
+            data: dataBase64,
+            directory: Directory.Documents,
+          });
+          lastUri = res.uri;
+          saved = true;
+        } catch (eDocRoot) {
+          console.warn("No se pudo guardar en raíz de Documents, intentando Data:", eDocRoot);
+        }
+      }
+
+      // 2. Si falla Documents (por restricciones del OS), respaldo en Data para poder compartirlo
+      if (!saved) {
+        try {
+          const res = await Filesystem.writeFile({
+            path: nombreLimpio,
+            data: dataBase64,
+            directory: Directory.Data,
+            recursive: true,
+          });
+          lastUri = res.uri;
+          saved = true;
+        } catch (eData) {
+          console.error("Fallo definitivo guardando archivo con Filesystem:", eData);
+        }
+      }
+
+      if (saved && lastUri) {
+        uris.push(lastUri);
+        nombresGuardados.push(nombreLimpio);
+      }
+    }
+
+    if (uris.length === 0) {
+      return false;
+    }
+
+    // Comprobar si se puede compartir
+    let compartido = false;
+    try {
+      const can = typeof Share.canShare === "function" ? await Share.canShare() : { value: true };
+      if (can.value) {
+        await Share.share({
+          files: uris,
+          title: titulo,
+          dialogTitle: files.length === 1 ? "Guardar o compartir imagen" : "Guardar o compartir imágenes",
+        });
+        compartido = true;
+      }
+    } catch (e: any) {
+      if (e?.name !== "AbortError") {
+        console.warn("Hoja de compartir cerrada o no completada:", e);
+      }
+    }
+
+    if (!compartido) {
+      alert(
+        files.length === 1
+          ? `La imagen quedó guardada directamente en tu teléfono (carpeta Documentos / Descargas-CRM).`
+          : `Se guardaron ${uris.length} imágenes en tu teléfono (carpeta Documentos / Descargas-CRM).`
+      );
+    }
     return true;
   } catch (e) {
     console.error("Error guardando con Capacitor:", e);
@@ -235,11 +324,19 @@ async function guardarNativoCapacitor(files: File[], titulo: string): Promise<bo
 async function distribuirArchivos(files: File[], titulo: string): Promise<void> {
   if (files.length === 0) return;
 
+  // 1. Si estamos en Capacitor Nativo (APK Android/iOS)
   if (isNative()) {
     if (await guardarNativoCapacitor(files, titulo)) return;
   }
 
-  if (typeof navigator !== "undefined" && typeof navigator.canShare === "function") {
+  // 2. Si estamos en el navegador en un móvil o dispositivo táctil con Web Share API
+  // Verificamos si es móvil / táctil para que en computadores/escritorio vaya directo
+  // a la carpeta de Descargas estándar mediante descarga de archivo nativa del navegador.
+  const isTouchDevice =
+    typeof window !== "undefined" &&
+    ("ontouchstart" in window || (navigator && navigator.maxTouchPoints > 0));
+
+  if (isTouchDevice && typeof navigator !== "undefined" && typeof navigator.canShare === "function") {
     try {
       if (navigator.canShare({ files })) {
         await navigator.share({ files, title: titulo });
@@ -250,9 +347,10 @@ async function distribuirArchivos(files: File[], titulo: string): Promise<void> 
     }
   }
 
+  // 3. Descarga directa al computador o navegador móvil como archivo
   for (const file of files) {
     triggerAnchorDownload(file, file.name);
-    await new Promise((r) => setTimeout(r, 350));
+    await new Promise((r) => setTimeout(r, 400));
   }
 }
 

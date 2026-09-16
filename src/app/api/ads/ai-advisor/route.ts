@@ -80,6 +80,7 @@ REGLAS DE ORO DE TEMPLO MÍSTICO:
 - La campaña debe programarse de 00:01 del día inicial a 23:59 del día final.
 - El presupuesto puede extenderse todo lo que se desee según el ritmo de conversión.
 - Selecciona el mejor video de la Fan Page para apalancarte de su autoridad o engagement previo.
+- El COPY es el TEXTO QUE VA DENTRO DEL POST (la publicación) que acompaña al video. NUNCA uses el nombre del archivo del video (ej: "Auto_Cropped_AR_4_X_5_DCO_1.mp4") como copy: ese es un nombre técnico de edición. Si un video no trae texto en el post, propone un copy nuevo del agente.
 
 Genera una propuesta estructurada con:
 1. 🎬 VIDEO SELECCIONADO DE LA FAN PAGE: Cuál video de la lista reutilizar y por qué su ángulo conecta mejor con las campañas ganadoras.

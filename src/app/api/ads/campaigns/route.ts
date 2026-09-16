@@ -16,6 +16,26 @@ function getMetaCredentials() {
   return { metaToken, adAccountId };
 }
 
+// Genera horario estricto: Inicio 00:01 del día inicial y Fin 23:59 del día final
+function calcularHorarioCampana(diasTotales: number, fechaInicioBase?: Date) {
+  const ahora = fechaInicioBase ? new Date(fechaInicioBase) : new Date();
+
+  // Inicio: hoy (o fecha base) fijado a las 00:01:00
+  const fechaInicio = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate(), 0, 1, 0, 0);
+
+  // Fin: N días después fijado a las 23:59:59
+  const dias = Math.max(1, diasTotales);
+  const fechaFin = new Date(fechaInicio.getFullYear(), fechaInicio.getMonth(), fechaInicio.getDate() + dias - 1, 23, 59, 59, 999);
+
+  return {
+    startTimeIso: fechaInicio.toISOString(),
+    stopTimeIso: fechaFin.toISOString(),
+    startTimeMeta: Math.floor(fechaInicio.getTime() / 1000),
+    stopTimeMeta: Math.floor(fechaFin.getTime() / 1000),
+    dias
+  };
+}
+
 export async function GET() {
   try {
     const { metaToken, adAccountId } = getMetaCredentials();
@@ -29,7 +49,7 @@ export async function GET() {
       });
     }
 
-    const fields = "id,name,status,effective_status,objective,daily_budget,lifetime_budget,insights{spend,clicks,impressions,actions}";
+    const fields = "id,name,status,effective_status,objective,start_time,stop_time,daily_budget,lifetime_budget,insights{spend,clicks,impressions,actions},adsets{id,name,daily_budget,lifetime_budget,start_time,end_time,ads{id,name,creative{id,name,video_id,image_url}}}";
     const url = `https://graph.facebook.com/v19.0/act_${adAccountId}/campaigns?fields=${fields}&limit=100&access_token=${encodeURIComponent(metaToken)}`;
 
     const res = await fetch(url, { cache: "no-store" });
@@ -75,11 +95,25 @@ export async function GET() {
       const cpl = leads > 0 ? Math.round(spend / leads) : 0;
       const status = c.effective_status || c.status || "UNKNOWN";
 
+      // Extraer video IDs o creativos asociados para saber qué videos funcionaron mejor
+      const videosUsed: string[] = [];
+      if (c.adsets?.data) {
+        c.adsets.data.forEach((adset: any) => {
+          if (adset.ads?.data) {
+            adset.ads.data.forEach((ad: any) => {
+              if (ad.creative?.video_id) videosUsed.push(ad.creative.video_id);
+            });
+          }
+        });
+      }
+
       return {
         id: c.id,
         name: c.name,
         status: status,
         objective: c.objective || "",
+        startTime: c.start_time || null,
+        stopTime: c.stop_time || null,
         dailyBudget: c.daily_budget ? Math.round(Number(c.daily_budget) / 100) : 0,
         lifetimeBudget: c.lifetime_budget ? Math.round(Number(c.lifetime_budget) / 100) : 0,
         spend,
@@ -87,6 +121,7 @@ export async function GET() {
         impressions,
         leads,
         cpl,
+        videosUsed: Array.from(new Set(videosUsed)),
         currency: "COP"
       };
     });
@@ -109,16 +144,18 @@ export async function GET() {
   }
 }
 
-// POST: Crear una nueva campaña directamente en Meta Ads
+// POST: Crear una nueva campaña en Meta Ads con horario estricto 00:01 a 23:59 y asignación de video
 export async function POST(req: Request) {
   try {
     const {
       name,
-      budgetType = "lifetime", // "lifetime" (presupuesto total) o "daily" (diario)
+      budgetType = "lifetime",
       budgetAmount,
       days = 4,
       objective = "OUTCOME_LEADS",
-      status = "PAUSED"
+      status = "PAUSED",
+      selectedVideoId, // Video seleccionado de la Fan Page
+      videoTitle
     } = await req.json();
 
     if (!name || !name.trim()) {
@@ -136,20 +173,23 @@ export async function POST(req: Request) {
     const totalBudget = Number(budgetAmount) || 0;
     const duracionDias = Math.max(1, Number(days) || 4);
 
+    // Calcular estricto horario: Inicia 00:01 del día inicial y termina 23:59 del día final
+    const horario = calcularHorarioCampana(duracionDias);
+
     const payload: Record<string, any> = {
       name: name.trim(),
       objective: objective || "OUTCOME_LEADS",
       status: status === "ACTIVE" ? "ACTIVE" : "PAUSED",
-      special_ad_categories: [], // Lista vacía requerida por Meta
+      special_ad_categories: [],
+      start_time: horario.startTimeIso,
+      stop_time: horario.stopTimeIso,
       access_token: metaToken
     };
 
     if (totalBudget > 0) {
       if (budgetType === "lifetime") {
-        // Presupuesto total: en centavos
         payload.lifetime_budget = Math.round(totalBudget * 100);
       } else {
-        // Presupuesto diario
         payload.daily_budget = Math.round(totalBudget * 100);
       }
     }
@@ -175,17 +215,21 @@ export async function POST(req: Request) {
       status: payload.status,
       budgetType,
       budgetAmount: totalBudget,
-      days: duracionDias
+      days: duracionDias,
+      startTime: horario.startTimeIso,
+      stopTime: horario.stopTimeIso,
+      selectedVideoId,
+      videoTitle
     });
   } catch (error: any) {
     return NextResponse.json({ error: error.message || "Error interno al crear campaña" }, { status: 500 });
   }
 }
 
-// PATCH: Modificar nombre, presupuesto (total o diario), extensión de días y/o estado de una campaña existente
+// PATCH: Modificar presupuesto, extender duración todo lo deseado (00:01 a 23:59) y estado
 export async function PATCH(req: Request) {
   try {
-    const { campaignId, name, budgetType, budgetAmount, days, status } = await req.json();
+    const { campaignId, name, budgetType, budgetAmount, days, status, extendDays } = await req.json();
 
     if (!campaignId) {
       return NextResponse.json({ error: "Falta el ID de la campaña." }, { status: 400 });
@@ -205,12 +249,18 @@ export async function PATCH(req: Request) {
       body.name = name.trim();
     }
 
+    // Extender duración todo lo que el usuario/agente decida: fijando siempre fin a las 23:59:59
+    const diasTotales = Number(days || extendDays);
+    if (!isNaN(diasTotales) && diasTotales > 0) {
+      const horario = calcularHorarioCampana(diasTotales);
+      body.stop_time = horario.stopTimeIso;
+    }
+
     const amountNum = Number(budgetAmount);
     if (!isNaN(amountNum) && amountNum > 0) {
       if (budgetType === "daily") {
         body.daily_budget = Math.round(amountNum * 100);
       } else {
-        // Por defecto presupuesto total (lifetime)
         body.lifetime_budget = Math.round(amountNum * 100);
       }
     }
@@ -240,8 +290,9 @@ export async function PATCH(req: Request) {
         name: body.name,
         lifetimeBudget: body.lifetime_budget ? Math.round(body.lifetime_budget / 100) : undefined,
         dailyBudget: body.daily_budget ? Math.round(body.daily_budget / 100) : undefined,
+        stopTime: body.stop_time,
         status: body.status,
-        daysExtended: days || undefined
+        daysExtended: diasTotales || undefined
       }
     });
   } catch (error: any) {

@@ -54,7 +54,7 @@ import {
   Sparkles, Play, Pause, RefreshCw, Image as ImageIcon, ChevronDown, ChevronRight, ChevronLeft, Download,
   Archive, ArchiveRestore, Search, AlertTriangle, GitBranch, Check, Zap, Type,
   StickyNote, FileText, Coins, Globe, Percent, Save, Eye, EyeOff, Palette, Power, User, Landmark, UserPlus,
-  PhoneCall, BellRing
+  PhoneCall, BellRing, Video
 } from "lucide-react";
 
 // Normaliza estados antiguos o con sufijo _templo al pipeline unificado
@@ -267,6 +267,9 @@ export default function CRMApp() {
   const [generandoEstrategia, setGenerandoEstrategia] = useState(false);
   const [topCampanasGuardadas, setTopCampanasGuardadas] = useState<any[]>([]);
   const [campanasFallidasGuardadas, setCampanasFallidasGuardadas] = useState<any[]>([]);
+  const [pageVideos, setPageVideos] = useState<any[]>([]);
+  const [loadingVideos, setLoadingVideos] = useState(false);
+  const [selectedVideoId, setSelectedVideoId] = useState<string>("");
 
   const [isEditingNombre, setIsEditingNombre] = useState(false);
   const [tempNombre, setTempNombre] = useState("");
@@ -401,6 +404,7 @@ export default function CRMApp() {
     cargarConfigDivisas();
     cargarConfigGeneral();
     cargarMemoriaAds();
+    fetchVideosFanPage();
     void actualizarRespuestasRapidas().then(setRespuestasRapidas);
     // Recalcular mensajes no leídos (cubre los que llegaron con la app cerrada)
     sincronizarNoLeidos();
@@ -1874,6 +1878,25 @@ export default function CRMApp() {
     }
   }
 
+  // Cargar videos subidos a la Fan Page de Facebook
+  async function fetchVideosFanPage() {
+    setLoadingVideos(true);
+    try {
+      const res = await fetch("/api/ads/videos");
+      const data = await res.json();
+      if (data.videos && Array.isArray(data.videos)) {
+        setPageVideos(data.videos);
+        if (data.videos.length > 0 && !selectedVideoId) {
+          setSelectedVideoId(data.videos[0].id);
+        }
+      }
+    } catch (err) {
+      console.warn("Error cargando videos de Fan Page:", err);
+    } finally {
+      setLoadingVideos(false);
+    }
+  }
+
   // Guardar campaña en el Top 3 de mejores o en lo que no funciona
   function marcarMemoriaAds(campana: any, tipo: "top" | "fail") {
     if (typeof window === "undefined" || !campana) return;
@@ -1940,6 +1963,7 @@ export default function CRMApp() {
 
     setGuardandoCampana(true);
     try {
+      const vidObj = pageVideos.find(v => v.id === selectedVideoId);
       const res = await fetch("/api/ads/campaigns", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1949,14 +1973,16 @@ export default function CRMApp() {
           budgetAmount: presupuestoNum,
           days: nuevaCampDias,
           objective: nuevaCampObjetivo,
-          status: nuevaCampEstado
+          status: nuevaCampEstado,
+          selectedVideoId: selectedVideoId || undefined,
+          videoTitle: vidObj?.title || undefined
         }),
       });
       const data = await res.json();
       if (!res.ok || data.error) {
         alert(data.error || "No se pudo crear la campaña en Meta Ads.");
       } else {
-        alert(`¡Campaña "${nuevaCampNombre}" creada con éxito en Meta Ads!`);
+        alert(`¡Campaña "${nuevaCampNombre}" creada con éxito en Meta Ads!\nHorario programado: 00:01 a 23:59 (${nuevaCampDias} días).`);
         setShowCrearCampModal(false);
         setNuevaCampNombre("");
         setNuevaCampPresupuesto("");
@@ -2035,7 +2061,7 @@ export default function CRMApp() {
     }
   }
 
-  // Generar propuesta de nueva campaña con IA basada en las mejores
+  // Generar propuesta de nueva campaña con IA basada en las mejores y videos de la Fan Page
   async function generarCampanaConIA() {
     setGenerandoEstrategia(true);
     setShowAiModal(true);
@@ -2048,7 +2074,8 @@ export default function CRMApp() {
           action: "generate_strategy",
           campaigns: campanas,
           topCampaigns: topCampanasGuardadas,
-          failedCampaigns: campanasFallidasGuardadas
+          failedCampaigns: campanasFallidasGuardadas,
+          pageVideos: pageVideos
         }),
       });
       const data = await res.json();
@@ -5612,6 +5639,62 @@ export default function CRMApp() {
                 />
               </div>
 
+              {/* SELECCIÓN DE VIDEO DE LA PÁGINA DE FACEBOOK */}
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-xs text-gray-300 font-semibold flex items-center gap-1.5">
+                    <Video className="w-3.5 h-3.5 text-purple-400" />
+                    Video de la Fan Page a Reutilizar
+                  </label>
+                  <button
+                    type="button"
+                    onClick={fetchVideosFanPage}
+                    className="text-[10px] text-purple-400 hover:text-purple-300 flex items-center gap-1"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${loadingVideos ? 'animate-spin' : ''}`} /> Refrescar videos
+                  </button>
+                </div>
+                {pageVideos.length > 0 ? (
+                  <div className="space-y-2">
+                    <select
+                      value={selectedVideoId}
+                      onChange={(e) => setSelectedVideoId(e.target.value)}
+                      className="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500 truncate"
+                    >
+                      {pageVideos.map((v) => (
+                        <option key={v.id} value={v.id}>
+                          {v.title} {v.length ? `(${v.length}s)` : ''}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="p-2 rounded-lg bg-surface/50 border border-border flex items-center gap-3">
+                      {pageVideos.find(v => v.id === selectedVideoId)?.picture && (
+                        <img
+                          src={pageVideos.find(v => v.id === selectedVideoId)?.picture}
+                          alt="Video thumbnail"
+                          className="w-12 h-12 object-cover rounded-md border border-border shrink-0"
+                        />
+                      )}
+                      <div className="min-w-0 text-[11px]">
+                        <p className="font-semibold text-gray-200 truncate">
+                          {pageVideos.find(v => v.id === selectedVideoId)?.title}
+                        </p>
+                        <p className="text-gray-400 text-[10px] line-clamp-1">
+                          {pageVideos.find(v => v.id === selectedVideoId)?.description || "Video subido a la página oficial de Facebook"}
+                        </p>
+                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-purple-950 text-purple-300 border border-purple-800">
+                          Fan Page Facebook
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="p-2.5 rounded-lg border border-dashed border-border text-center text-[11px] text-gray-400">
+                    Cargando videos de la Fan Page...
+                  </div>
+                )}
+              </div>
+
               <div>
                 <label className="text-xs text-gray-400 block mb-1 font-semibold">
                   Modalidad de Presupuesto
@@ -5652,11 +5735,14 @@ export default function CRMApp() {
 
               {nuevaCampTipoPresupuesto === "lifetime" && (
                 <div>
-                  <label className="text-xs text-gray-400 block mb-1 font-semibold">
-                    Duración Estimada (Días)
-                  </label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-xs text-gray-400 font-semibold">
+                      Duración de la Campaña (Días)
+                    </label>
+                    <span className="text-[10px] text-purple-400 font-mono">00:01 a 23:59</span>
+                  </div>
                   <div className="flex gap-2">
-                    {[3, 4, 7, 8, 15].map((d) => (
+                    {[3, 4, 7, 8, 14, 21, 30].map((d) => (
                       <button
                         key={d}
                         type="button"
@@ -5667,10 +5753,13 @@ export default function CRMApp() {
                             : "bg-surface border-border text-gray-400 hover:text-white"
                         }`}
                       >
-                        {d} días
+                        {d}d
                       </button>
                     ))}
                   </div>
+                  <p className="text-[10px] text-gray-500 mt-1">
+                    Inicia a las <strong>00:01</strong> del día de lanzamiento y finaliza a las <strong>23:59</strong> del último día.
+                  </p>
                 </div>
               )}
 
@@ -5849,16 +5938,19 @@ export default function CRMApp() {
 
               {editCampTipoPresupuesto === "lifetime" && (
                 <div>
-                  <label className="text-xs text-gray-400 block mb-1 font-semibold">
-                    Extender Duración a (Días Totales)
-                  </label>
-                  <div className="flex gap-2">
-                    {[4, 6, 8, 10, 14, 21, 30].map((d) => (
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-xs text-gray-400 font-semibold">
+                      Extender Duración a (Días Totales)
+                    </label>
+                    <span className="text-[10px] text-purple-400 font-mono">Fin: 23:59</span>
+                  </div>
+                  <div className="flex flex-wrap gap-2 mb-2">
+                    {[4, 6, 8, 10, 14, 21, 30, 45, 60].map((d) => (
                       <button
                         key={d}
                         type="button"
                         onClick={() => setEditCampDias(d)}
-                        className={`flex-1 py-1.5 rounded-lg text-xs font-bold border transition-all ${
+                        className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-all ${
                           editCampDias === d
                             ? "bg-purple-600 border-purple-500 text-white"
                             : "bg-surface border-border text-gray-400 hover:text-white"
@@ -5867,6 +5959,18 @@ export default function CRMApp() {
                         {d}d
                       </button>
                     ))}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] text-gray-400">O ingresa días personalizados:</span>
+                    <input
+                      type="number"
+                      min="1"
+                      max="365"
+                      value={editCampDias}
+                      onChange={(e) => setEditCampDias(Math.max(1, Number(e.target.value) || 1))}
+                      className="w-20 bg-background border border-border rounded px-2 py-1 text-xs text-gray-200 text-center"
+                    />
+                    <span className="text-[11px] text-gray-400">días (termina 23:59)</span>
                   </div>
                 </div>
               )}
@@ -6065,6 +6169,51 @@ export default function CRMApp() {
                 )}
               </div>
 
+              {/* SECCIÓN VIDEOS DE LA FAN PAGE */}
+              <div className="space-y-2 pt-2 border-t border-border">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-purple-400 flex items-center gap-1.5">
+                    <Video className="w-4 h-4" /> Videos Disponibles en Fan Page ({pageVideos.length})
+                  </h4>
+                  <button
+                    type="button"
+                    onClick={fetchVideosFanPage}
+                    className="text-[10px] text-purple-400 hover:text-purple-300 flex items-center gap-1"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${loadingVideos ? 'animate-spin' : ''}`} /> Sincronizar
+                  </button>
+                </div>
+                <p className="text-[11px] text-gray-400 leading-tight">
+                  El agente selecciona los videos subidos a tu página oficial de Facebook con mayor interacción o vistas para apalancar el tráfico orgánico y la autoridad de marca.
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-44 overflow-y-auto pr-1">
+                  {pageVideos.map((v) => (
+                    <div key={v.id} className="p-2 rounded-xl bg-surface/50 border border-border flex items-center gap-2.5">
+                      {v.picture ? (
+                        <img src={v.picture} alt="Miniatura" className="w-10 h-10 object-cover rounded-md border border-border shrink-0" />
+                      ) : (
+                        <div className="w-10 h-10 rounded-md bg-purple-950 flex items-center justify-center shrink-0 text-purple-400 font-bold text-xs">VID</div>
+                      )}
+                      <div className="min-w-0 text-[11px]">
+                        <p className="font-semibold text-gray-200 truncate">{v.title}</p>
+                        <p className="text-[10px] text-gray-400">{v.views ? `${v.views.toLocaleString()} vistas • ` : ''}{v.length ? `${v.length}s` : 'Video'}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* REGLAS DE TIEMPO DEL AGENTE */}
+              <div className="p-3 rounded-xl bg-purple-950/20 border border-purple-800/40 text-[11px] text-purple-300 space-y-1">
+                <div className="flex items-center gap-1.5 font-bold text-purple-200">
+                  <Clock className="w-3.5 h-3.5 text-purple-400" />
+                  Reglas de Horario y Extensión Ilimitada
+                </div>
+                <p>• <strong>Inicio exacto:</strong> 00:01 del día inicial de pauta.</p>
+                <p>• <strong>Cierre exacto:</strong> 23:59 del último día del ciclo.</p>
+                <p>• <strong>Extensión continua:</strong> Puedes extender la duración todos los días que quieras (8, 14, 21, 30+ días) sin reiniciar el aprendizaje del algoritmo.</p>
+              </div>
+
               {/* BOTÓN DISPARAR ESTRATEGIA EVOLUTIVA */}
               <div className="pt-3 border-t border-border">
                 <button
@@ -6077,10 +6226,10 @@ export default function CRMApp() {
                   className="w-full py-3 rounded-xl bg-gradient-to-r from-purple-600 via-indigo-600 to-amber-600 hover:opacity-95 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-purple-900/30 transition-all"
                 >
                   <Sparkles className="w-4 h-4" />
-                  {generandoEstrategia ? "Generando con IA..." : "Crear Nueva Estrategia Basada en las Mejores Campañas"}
+                  {generandoEstrategia ? "Generando con IA..." : "Crear Nueva Estrategia Reutilizando Videos de la Fan Page"}
                 </button>
                 <p className="text-[10px] text-gray-400 text-center mt-2">
-                  La IA construirá 2 propuestas completas de copy, ángulos de video/imagen y estructura de presupuesto (4 a 8 días) combinando lo ganador y descartando lo fallido.
+                  La IA elegirá el mejor video de Facebook, diseñará copys ganadores y programará el presupuesto de 00:01 a 23:59.
                 </p>
               </div>
             </div>

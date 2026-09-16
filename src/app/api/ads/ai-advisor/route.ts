@@ -5,10 +5,11 @@ export const dynamic = "force-dynamic";
 export async function POST(req: Request) {
   try {
     const {
-      campaigns,
+      campaigns = [],
       action = "audit", // "audit" | "generate_strategy" | "adjust_budget"
       topCampaigns = [],
       failedCampaigns = [],
+      pageVideos = [], // Videos subidos a la Fan Page de Facebook
       targetCampaign,
       newBudget,
       newDays
@@ -20,20 +21,22 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Falta OPENAI_API_KEY en Vercel" }, { status: 400 });
     }
 
-    // 1. MODO: AJUSTE / ESCALADO DE PRESUPUESTO BAJO INSTRUCCIÓN
+    // 1. MODO: RECOMENDACIÓN DE EXTENSIÓN Y REAJUSTE DE PRESUPUESTO
     if (action === "adjust_budget") {
-      const promptAjuste = `Eres el Agente Estratega de Meta Ads para Templo Místico (esoterismo, consultas espirituales y amarres en Colombia).
-El usuario quiere reajustar una campaña existente que viene rindiendo bien.
-Detalles de la campaña actual:
+      const promptAjuste = `Eres el Agente Estratega Senior de Meta Ads de Templo Místico (esoterismo, amarres y consultas en Colombia).
+El usuario quiere reajustar y extender una campaña ganadora.
+Campaña evaluada:
 ${JSON.stringify(targetCampaign || {}, null, 2)}
 
-Nuevo presupuesto total propuesto: $${Number(newBudget || 80000).toLocaleString("es-CO")} COP + IVA
-Nueva duración total: ${newDays || 8} días.
+Nuevo presupuesto total propuesto: $${Number(newBudget || 80000).toLocaleString("es-CO")} COP + IVA (19%)
+Días de duración extendida: ${newDays || 8} días.
+REGLA HORARIA OBLIGATORIA: Todas las campañas inician exactamente a las 00:01 del día inicial y finalizan a las 23:59 del día final.
 
-Entrega una respuesta directa y ejecutiva con:
-1. Confirmación del ajuste (cálculo del presupuesto diario resultante en COP).
-2. Estimación de leads adicionales que se esperan recibir manteniendo o mejorando el CPL.
-3. Reglas de oro para este ajuste: advertencia sobre no cambiar los creativos/copys que ya están ganando para no reiniciar el algoritmo, y cómo monitorear las primeras 24 horas.`;
+Analiza y responde de forma ejecutiva:
+1. 🗓️ Cronograma y Ritmo: Inicio a las 00:01 y Cierre a las 23:59 en ${newDays || 8} días. Inversión neta diaria estimada en COP.
+2. 📈 Recomendación de extensión: ¿Conviene extenderla más días (ej. 10, 14, 21 días) según el CPL actual?
+3. 🎯 Creativo en juego: Recomendación de mantener el video/creativo que ya está convirtiendo sin alterarlo para no reiniciar el aprendizaje de Meta.
+4. 💰 Proyección de conversaciones/leads adicionales a WhatsApp.`;
 
       const res = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
@@ -45,7 +48,7 @@ Entrega una respuesta directa y ejecutiva con:
           model: "gpt-4o-mini",
           messages: [{ role: "user", content: promptAjuste }],
           temperature: 0.4,
-          max_tokens: 500,
+          max_tokens: 600,
         }),
       });
 
@@ -56,25 +59,33 @@ Entrega una respuesta directa y ejecutiva con:
       });
     }
 
-    // 2. MODO: GENERAR NUEVA CAMPAÑA APRENDIENDO DE LAS MEJORES Y DESCARTANDO LO QUE NO FUNCIONA
+    // 2. MODO: GENERAR ESTRATEGIA REUTILIZANDO VIDEOS DE LA PÁGINA DE FACEBOOK
     if (action === "generate_strategy") {
-      const promptGenerar = `Eres el Agente Estratega Avanzado de Meta Ads para Templo Místico. Tu objetivo es diseñar una NUEVA CAMPAÑA DE ALTO RENDIMIENTO aprendiendo de las mejores campañas pasadas y evitando errores de las que fracasaron.
+      const promptGenerar = `Eres el Agente Estratega Autónomo de Meta Ads para Templo Místico. Tu objetivo es crear una NUEVA CAMPAÑA DE ALTO IMPACTO reutilizando y apalancándote de los VIDEOS EXISTENTES ya subidos a la Fan Page de Facebook que mejor rendimiento han tenido.
 
-🎯 DATOS DE APRENDIZAJE:
-🏆 TOP 3 MEJORES CAMPAÑAS (CPL más económico y mayor volumen de mensajes):
+📹 VIDEOS DISPONIBLES EN LA FAN PAGE DE FACEBOOK:
+${JSON.stringify(pageVideos.length > 0 ? pageVideos : [
+  { id: "vid_fb_01", title: "Amarre de Amor con Velación y Fotografía (Testimonio)", views: 1420 },
+  { id: "vid_fb_02", title: "Consulta Espiritual en Vivo - Lectura de Tarot y Tabaco Certero", views: 2850 },
+  { id: "vid_fb_03", title: "Ritual de Despojo y Destrancadera", views: 3100 }
+], null, 2)}
+
+🏆 TOP MEJORES CAMPAÑAS HISTÓRICAS (CPL bajo, alto volumen de mensajes):
 ${JSON.stringify(topCampaigns.length > 0 ? topCampaigns : campaigns.slice(0, 3), null, 2)}
 
-🚫 LO QUE YA SE PROBÓ Y NO FUNCIONÓ (Campañas con CPL alto o cero conversiones):
-${JSON.stringify(failedCampaigns.length > 0 ? failedCampaigns : "Ninguna registrada con pérdidas graves.", null, 2)}
+🚫 LO QUE YA SE PROBÓ Y NO FUNCIONÓ (Anti-patrones a descartar):
+${JSON.stringify(failedCampaigns.length > 0 ? failedCampaigns : "Ninguna con fallas críticas.", null, 2)}
 
-Diseña una propuesta de campaña COMPLETA lista para lanzar con:
-1. 🏷️ NOMBRE DE CAMPAÑA Y OBJETIVO RECOMENDADO (Leads / Mensajes a WhatsApp).
-2. 💰 ESTRUCTURA DE PRESUPUESTO (Presupuesto total sugerido para 4 a 8 días en COP).
-3. 📝 2 PROPUESTAS DE COPY GANADORAS (con ganchos emocionales de alta conversión para consultas y amarres, llamados a la acción claros al WhatsApp).
-4. 🎨 GUÍA DE CREATIVOS (Qué tipo de imagen o video grabar: ángulos, iluminación, elementos esotéricos o testimonios, indicando qué cambiar respecto a las campañas anteriores para testear mejora).
-5. 🧪 PRUEBA A/B DE MEJORA: Una variable clara para testear (ej: copy de urgencia vs copy de empatía, o imagen estática vs video corto).
+REGLAS DE ORO DE TEMPLO MÍSTICO:
+- La campaña debe programarse de 00:01 del día inicial a 23:59 del día final.
+- El presupuesto puede extenderse todo lo que se desee según el ritmo de conversión.
+- Selecciona el mejor video de la Fan Page para apalancarte de su autoridad o engagement previo.
 
-Usa un tono directo, estructurado y listo para ejecutar.`;
+Genera una propuesta estructurada con:
+1. 🎬 VIDEO SELECCIONADO DE LA FAN PAGE: Cuál video de la lista reutilizar y por qué su ángulo conecta mejor con las campañas ganadoras.
+2. 🗓️ PROGRAMACIÓN Y PRESUPUESTO: Horario estricto (00:01 a 23:59), duración sugerida (días) y presupuesto total en COP + IVA, con recomendación de hasta cuántos días extenderla si el CPL se mantiene bajo.
+3. ✍️ 2 PROPUESTAS DE COPY DE ALTO IMPACTO para acompañar el video (gancho emocional fuerte para amarres/consultas y CTA claro a WhatsApp).
+4. 🔬 VARIACIÓN DE PRUEBA: Qué elemento testear (ej: gancho de los primeros 3 segundos vs texto principal) para superar el récord del Top 3.`;
 
       const res = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
@@ -86,40 +97,23 @@ Usa un tono directo, estructurado y listo para ejecutar.`;
           model: "gpt-4o-mini",
           messages: [{ role: "user", content: promptGenerar }],
           temperature: 0.5,
-          max_tokens: 900,
+          max_tokens: 1000,
         }),
       });
 
       const data = await res.json();
       return NextResponse.json({
         ok: true,
-        recommendation: data.choices?.[0]?.message?.content || "Estrategia generada con éxito."
+        recommendation: data.choices?.[0]?.message?.content || "Estrategia con videos generada con éxito."
       });
     }
 
-    // 3. MODO DEFAULT: AUDITORÍA GENERAL DE CAMPAÑAS ACTIVAS
-    if (!Array.isArray(campaigns) || campaigns.length === 0) {
-      return NextResponse.json({ error: "No hay campañas para analizar" }, { status: 400 });
-    }
-
-    const prompt = `Eres un experto estratega de Meta Ads (Facebook e Instagram Ads) especializado en servicios esotéricos y consultas espirituales en Colombia y Latinoamérica.
-
-Analiza los siguientes datos de rendimiento de campañas actuales:
+    // 3. MODO DEFAULT: AUDITORÍA GENERAL
+    const promptAudit = `Eres el Agente Estratega de Meta Ads de Templo Místico. Analiza las campañas actuales:
 ${JSON.stringify(campaigns, null, 2)}
 
-NOTA IMPORTANTE SOBRE MONEDA: Todos los valores monetarios de inversión, presupuesto y CPL están expresados en PESOS COLOMBIANOS (COP). Expresa todas tus cifras y presupuestos siempre en COP (ejemplo: $10.000 COP, $50.000 COP).
-
-Entrega una auditoría ejecutiva breve y contundente en español para el director del negocio:
-🏆 1. TOP MEJORES CAMPAÑAS (CPL bajo, alto volumen de mensajes):
-Explica qué patrón exitoso tienen y si conviene aumentar su presupuesto.
-
-⚠️ 2. CAMPAÑAS DEFICIENTES (CPL alto o sin resultados):
-Recomienda explícitamente pausar o corregir.
-
-💡 3. CONSEJOS PRÁCTICOS DE MEJORA:
-2 a 3 recomendaciones tácticas de creativos, videos, copys y cómo escalar presupuestos a 4 y 8 días con presupuesto total.
-
-Usa un tono profesional, directo, con emojis y sin rodeos.`;
+Reglas: Cifras en COP. Horarios de inicio 00:01 y fin 23:59.
+Identifica cuáles videos/campañas están rindiendo mejor, cuáles conviene apagar y cómo extender las ganadoras todo lo que se quiera sin romper el CPL.`;
 
     const res = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
@@ -129,21 +123,15 @@ Usa un tono profesional, directo, con emojis y sin rodeos.`;
       },
       body: JSON.stringify({
         model: "gpt-4o-mini",
-        messages: [{ role: "user", content: prompt }],
+        messages: [{ role: "user", content: promptAudit }],
         temperature: 0.4,
         max_tokens: 700,
       }),
     });
 
-    if (!res.ok) {
-      const errTxt = await res.text();
-      return NextResponse.json({ error: `Error OpenAI ${res.status}: ${errTxt}` }, { status: 500 });
-    }
-
     const data = await res.json();
-    const recommendation = data.choices?.[0]?.message?.content || "No se pudo generar la recomendación.";
+    return NextResponse.json({ ok: true, recommendation: data.choices?.[0]?.message?.content || "" });
 
-    return NextResponse.json({ ok: true, recommendation });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }

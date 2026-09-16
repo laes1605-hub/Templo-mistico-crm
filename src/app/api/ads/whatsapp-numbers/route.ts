@@ -16,14 +16,37 @@ function getMetaCredentials() {
 
 type WaNumber = {
   id: string;
+  /** Número tal cual lo entrega Meta, ej: "+57 305 402 1111" */
   display_phone_number: string;
+  /** Alias usado por la UI (mismo valor que display_phone_number) */
+  display_number: string;
+  /** Solo dígitos, ej: "573054021111" */
+  numero_e164: string;
   verified_name: string;
   quality_rating?: string;
   code_verification_status?: string;
   platform_type?: string;
   waba_id?: string;
-  is_primary?: boolean;
+  waba_name?: string;
+  is_mock?: boolean;
 };
+
+/** Normaliza para que la UI siempre tenga EL NÚMERO disponible. */
+function normalizar(pn: any, wabaId?: string, wabaName?: string): WaNumber {
+  const numero = String(pn.display_phone_number || pn.number || "").trim();
+  return {
+    id: String(pn.id),
+    display_phone_number: numero,
+    display_number: numero,
+    numero_e164: numero.replace(/[^\d]/g, ""),
+    verified_name: String(pn.verified_name || wabaName || "WhatsApp Business"),
+    quality_rating: pn.quality_rating,
+    code_verification_status: pn.code_verification_status,
+    platform_type: pn.platform_type,
+    waba_id: wabaId,
+    waba_name: wabaName,
+  };
+}
 
 export async function GET() {
   try {
@@ -36,186 +59,112 @@ export async function GET() {
       });
     }
 
-    let numbers: WaNumber[] = [];
-    let debugSteps: string[] = [];
+    const numbers: WaNumber[] = [];
+    const debugSteps: string[] = [];
+    const pnFields = "id,display_phone_number,verified_name,quality_rating,code_verification_status,platform_type";
 
-    // 1) Try to get businesses
+    async function cargarNumerosDeWaba(wabaId: string, wabaName: string, etiqueta: string) {
+      try {
+        const pnUrl = `https://graph.facebook.com/v19.0/${wabaId}/phone_numbers?fields=${pnFields}&limit=100&access_token=${encodeURIComponent(metaToken)}`;
+        const pnRes = await fetch(pnUrl, { cache: "no-store" });
+        const pnData = await pnRes.json();
+        debugSteps.push(`${etiqueta} ${wabaId}: ${pnRes.status} (${pnData?.data?.length || 0})`);
+        for (const pn of pnData?.data || []) {
+          if (!numbers.find((n) => n.id === String(pn.id))) {
+            numbers.push(normalizar(pn, wabaId, wabaName));
+          }
+        }
+      } catch (e: any) {
+        debugSteps.push(`${etiqueta} ${wabaId}: error ${e.message}`);
+      }
+    }
+
+    // 1) Todos los negocios → todas las WABA (propias y de cliente) → todos los números
     try {
-      const bizUrl = `https://graph.facebook.com/v19.0/me/businesses?fields=id,name&access_token=${encodeURIComponent(metaToken)}`;
+      const bizUrl = `https://graph.facebook.com/v19.0/me/businesses?fields=id,name&limit=50&access_token=${encodeURIComponent(metaToken)}`;
       const bizRes = await fetch(bizUrl, { cache: "no-store" });
       const bizData = await bizRes.json();
-      debugSteps.push(`businesses: ${bizRes.status}`);
-      const businesses = bizData?.data || [];
-      for (const biz of businesses) {
-        // owned WABA
-        try {
-          const ownedUrl = `https://graph.facebook.com/v19.0/${biz.id}/owned_whatsapp_business_accounts?fields=id,name&access_token=${encodeURIComponent(metaToken)}`;
-          const ownedRes = await fetch(ownedUrl, { cache: "no-store" });
-          const ownedData = await ownedRes.json();
-          debugSteps.push(`owned_waba ${biz.id}: ${ownedRes.status} ${(ownedData?.data?.length || 0)}`);
-          const wabas = ownedData?.data || [];
-          for (const waba of wabas) {
-            try {
-              const pnUrl = `https://graph.facebook.com/v19.0/${waba.id}/phone_numbers?fields=id,display_phone_number,verified_name,quality_rating,code_verification_status,platform_type&access_token=${encodeURIComponent(metaToken)}`;
-              const pnRes = await fetch(pnUrl, { cache: "no-store" });
-              const pnData = await pnRes.json();
-              debugSteps.push(`phone_numbers ${waba.id}: ${pnRes.status} ${(pnData?.data?.length || 0)}`);
-              if (pnData?.data) {
-                for (const pn of pnData.data) {
-                  numbers.push({
-                    id: pn.id,
-                    display_phone_number: pn.display_phone_number,
-                    verified_name: pn.verified_name || waba.name || "WhatsApp",
-                    quality_rating: pn.quality_rating,
-                    code_verification_status: pn.code_verification_status,
-                    platform_type: pn.platform_type,
-                    waba_id: waba.id,
-                  });
-                }
-              }
-            } catch {}
-          }
-        } catch {}
-        // client WABA
-        try {
-          const clientUrl = `https://graph.facebook.com/v19.0/${biz.id}/client_whatsapp_business_accounts?fields=id,name&access_token=${encodeURIComponent(metaToken)}`;
-          const clientRes = await fetch(clientUrl, { cache: "no-store" });
-          const clientData = await clientRes.json();
-          debugSteps.push(`client_waba ${biz.id}: ${clientRes.status} ${(clientData?.data?.length || 0)}`);
-          const wabas = clientData?.data || [];
-          for (const waba of wabas) {
-            try {
-              const pnUrl = `https://graph.facebook.com/v19.0/${waba.id}/phone_numbers?fields=id,display_phone_number,verified_name,quality_rating,code_verification_status,platform_type&access_token=${encodeURIComponent(metaToken)}`;
-              const pnRes = await fetch(pnUrl, { cache: "no-store" });
-              const pnData = await pnRes.json();
-              debugSteps.push(`phone_numbers client ${waba.id}: ${pnRes.status} ${(pnData?.data?.length || 0)}`);
-              if (pnData?.data) {
-                for (const pn of pnData.data) {
-                  if (!numbers.find(n => n.id === pn.id)) {
-                    numbers.push({
-                      id: pn.id,
-                      display_phone_number: pn.display_phone_number,
-                      verified_name: pn.verified_name || waba.name || "WhatsApp",
-                      quality_rating: pn.quality_rating,
-                      code_verification_status: pn.code_verification_status,
-                      platform_type: pn.platform_type,
-                      waba_id: waba.id,
-                    });
-                  }
-                }
-              }
-            } catch {}
-          }
-        } catch {}
+      debugSteps.push(`businesses: ${bizRes.status} (${bizData?.data?.length || 0})`);
+
+      for (const biz of bizData?.data || []) {
+        for (const edge of ["owned_whatsapp_business_accounts", "client_whatsapp_business_accounts"]) {
+          try {
+            const wabaUrl = `https://graph.facebook.com/v19.0/${biz.id}/${edge}?fields=id,name&limit=50&access_token=${encodeURIComponent(metaToken)}`;
+            const wabaRes = await fetch(wabaUrl, { cache: "no-store" });
+            const wabaData = await wabaRes.json();
+            debugSteps.push(`${edge} ${biz.id}: ${wabaRes.status} (${wabaData?.data?.length || 0})`);
+            for (const waba of wabaData?.data || []) {
+              await cargarNumerosDeWaba(waba.id, waba.name || biz.name, edge);
+            }
+          } catch {}
+        }
       }
     } catch (e: any) {
       debugSteps.push(`biz error: ${e.message}`);
     }
 
-    // 2) Try direct WABA IDs from env if any
-    const envWabaId = (process.env.META_WABA_ID || "").trim();
-    if (envWabaId && numbers.length === 0) {
-      try {
-        const pnUrl = `https://graph.facebook.com/v19.0/${envWabaId}/phone_numbers?fields=id,display_phone_number,verified_name,quality_rating,code_verification_status,platform_type&access_token=${encodeURIComponent(metaToken)}`;
-        const pnRes = await fetch(pnUrl, { cache: "no-store" });
-        const pnData = await pnRes.json();
-        debugSteps.push(`env WABA ${envWabaId}: ${pnRes.status}`);
-        if (pnData?.data) {
-          for (const pn of pnData.data) {
-            numbers.push({
-              id: pn.id,
-              display_phone_number: pn.display_phone_number,
-              verified_name: pn.verified_name || "WhatsApp",
-              quality_rating: pn.quality_rating,
-              code_verification_status: pn.code_verification_status,
-              platform_type: pn.platform_type,
-              waba_id: envWabaId,
-            });
-          }
-        }
-      } catch {}
+    // 2) WABA directa desde env (soporta varias separadas por coma)
+    const envWabaIds = (process.env.META_WABA_ID || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    for (const wabaId of envWabaIds) {
+      await cargarNumerosDeWaba(wabaId, "WhatsApp Business", "env_waba");
     }
 
-    // 3) Try env list META_WHATSAPP_NUMBERS as JSON
+    // 3) Lista manual desde env (JSON o separada por comas)
     if (numbers.length === 0) {
       const envList = process.env.META_WHATSAPP_NUMBERS || "";
       if (envList) {
         try {
           const parsed = JSON.parse(envList);
           if (Array.isArray(parsed)) {
-            numbers = parsed.map((n: any, idx: number) => ({
-              id: String(n.id || `env_${idx}`),
-              display_phone_number: String(n.display_phone_number || n.number || ""),
-              verified_name: String(n.verified_name || n.name || "Templo Místico"),
-              waba_id: n.waba_id || "",
-            }));
-            debugSteps.push("using META_WHATSAPP_NUMBERS env");
+            parsed.forEach((n: any, idx: number) => {
+              numbers.push(normalizar({ id: n.id || `env_${idx}`, ...n }));
+            });
+            debugSteps.push("using META_WHATSAPP_NUMBERS env (json)");
           }
         } catch {
-          // maybe comma separated
-          const parts = envList.split(",").map(s => s.trim()).filter(Boolean);
-          numbers = parts.map((p, idx) => ({
-            id: `env_${idx}`,
-            display_phone_number: p,
-            verified_name: "Templo Místico",
-          }));
+          envList
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean)
+            .forEach((p, idx) => {
+              numbers.push(normalizar({ id: `env_${idx}`, display_phone_number: p }));
+            });
+          debugSteps.push("using META_WHATSAPP_NUMBERS env (csv)");
         }
       }
     }
 
-    // 4) Final fallback mock - always provide at least something for UI
+    // 4) Sin números reales: no inventamos nombres "principal/secundario",
+    //    devolvemos vacío para que la UI avise que hay que vincular WhatsApp.
     if (numbers.length === 0) {
-      numbers = [
-        {
-          id: "mock_primary",
-          display_phone_number: "+57 305 402 1111",
-          verified_name: "Templo Místico - Principal",
-          quality_rating: "HIGH",
-          code_verification_status: "VERIFIED",
-          platform_type: "CLOUD_API",
-          is_primary: true,
-        },
-        {
-          id: "mock_secondary",
-          display_phone_number: "+57 321 456 7890",
-          verified_name: "Templo Místico - Secundario",
-          quality_rating: "HIGH",
-          code_verification_status: "VERIFIED",
-          platform_type: "CLOUD_API",
-        },
-      ];
-      debugSteps.push("fallback mock numbers");
+      debugSteps.push("sin numeros vinculados");
+      return NextResponse.json({
+        ok: true,
+        numbers: [],
+        total: 0,
+        debug: debugSteps,
+        error:
+          "No se encontraron números de WhatsApp vinculados al token. Verifica permisos whatsapp_business_management o configura META_WABA_ID / META_WHATSAPP_NUMBERS.",
+      });
     }
 
-    // Deduplicate
-    const uniq = new Map<string, WaNumber>();
-    for (const n of numbers) {
-      if (!uniq.has(n.id)) uniq.set(n.id, n);
-      else {
-        const existing = uniq.get(n.id)!;
-        if (n.display_phone_number && !existing.display_phone_number) uniq.set(n.id, n);
-      }
-    }
+    // Ordena por número para que la lista sea estable
+    numbers.sort((a, b) => a.numero_e164.localeCompare(b.numero_e164));
 
     return NextResponse.json({
       ok: true,
-      numbers: Array.from(uniq.values()),
-      total: uniq.size,
+      numbers,
+      total: numbers.length,
       debug: debugSteps,
       note: "Solo WhatsApp - Messenger y otras plataformas excluidas",
     });
   } catch (error: any) {
     return NextResponse.json({
       ok: false,
-      numbers: [
-        {
-          id: "mock_fallback",
-          display_phone_number: "+57 305 402 1111",
-          verified_name: "Templo Místico - Principal",
-          quality_rating: "HIGH",
-          is_primary: true,
-        },
-      ],
+      numbers: [],
       error: error.message || "Error interno",
     });
   }

@@ -14,6 +14,21 @@ function getMetaCredentials() {
   return { metaToken, adAccountId };
 }
 
+function money(n: number | null, currency: string) {
+  if (n === null || n === undefined || isNaN(n)) return "—";
+  return `$${Math.round(n).toLocaleString("es-CO")} ${currency}`;
+}
+
+/**
+ * GET /api/ads/account
+ *
+ * Devuelve el SALDO TOTAL de la cuenta publicitaria (lo que hay disponible o lo que
+ * se debe, según el tipo de facturación) y el GASTO DE HOY, para mostrarlos juntos
+ * en la pestaña de Ads.
+ *
+ * Nota: Meta NO permite agregar fondos vía API, por eso ya no existe el POST de
+ * recarga. La recarga se hace en business.facebook.com → Facturación.
+ */
 export async function GET() {
   try {
     const { metaToken, adAccountId } = getMetaCredentials();
@@ -25,24 +40,95 @@ export async function GET() {
       });
     }
 
-    const fields = "account_id,name,account_status,balance,amount_spent,currency,spend_cap,timezone_name,capabilities";
-    const url = `https://graph.facebook.com/v19.0/act_${adAccountId}?fields=${fields}&access_token=${encodeURIComponent(metaToken)}`;
+    const fields = [
+      "account_id",
+      "name",
+      "account_status",
+      "balance",
+      "amount_spent",
+      "currency",
+      "spend_cap",
+      "timezone_name",
+      "is_prepay_account",
+      "funding_source",
+      "funding_source_details",
+      "next_bill_date",
+    ].join(",");
 
-    const res = await fetch(url, { cache: "no-store" });
-    const data = await res.json();
+    const accountUrl = `https://graph.facebook.com/v19.0/act_${adAccountId}?fields=${fields}&access_token=${encodeURIComponent(metaToken)}`;
 
-    if (!res.ok || data.error) {
+    // Gasto de HOY y gasto de los últimos 30 días, en una sola llamada cada uno.
+    const todayUrl = `https://graph.facebook.com/v19.0/act_${adAccountId}/insights?fields=spend,impressions,clicks,actions&date_preset=today&access_token=${encodeURIComponent(metaToken)}`;
+    const monthUrl = `https://graph.facebook.com/v19.0/act_${adAccountId}/insights?fields=spend&date_preset=last_30d&access_token=${encodeURIComponent(metaToken)}`;
+
+    const [accRes, todayRes, monthRes] = await Promise.all([
+      fetch(accountUrl, { cache: "no-store" }),
+      fetch(todayUrl, { cache: "no-store" }).catch(() => null as any),
+      fetch(monthUrl, { cache: "no-store" }).catch(() => null as any),
+    ]);
+
+    const data = await accRes.json();
+
+    if (!accRes.ok || data.error) {
       return NextResponse.json({
         ok: false,
-        error: data?.error?.message || `HTTP ${res.status}`,
+        error: data?.error?.message || `HTTP ${accRes.status}`,
         account: null,
         debug: data,
       });
     }
 
-    const balanceNum = data.balance ? Number(data.balance) / 100 : null;
+    const currency = data.currency || "COP";
+
+    // balance viene en centavos de la moneda de la cuenta
+    const balanceNum = data.balance !== undefined && data.balance !== null ? Number(data.balance) / 100 : null;
     const spentNum = data.amount_spent ? Number(data.amount_spent) / 100 : 0;
-    const capNum = data.spend_cap ? Number(data.spend_cap) / 100 : null;
+    const capNum = data.spend_cap && Number(data.spend_cap) > 0 ? Number(data.spend_cap) / 100 : null;
+
+    const esPrepago = Boolean(data.is_prepay_account);
+
+    // Gasto de hoy
+    let spendToday = 0;
+    let leadsToday = 0;
+    let clicksToday = 0;
+    let impressionsToday = 0;
+    try {
+      const todayJson = todayRes ? await todayRes.json() : null;
+      const row = todayJson?.data?.[0];
+      if (row) {
+        spendToday = Number(row.spend || 0);
+        clicksToday = Number(row.clicks || 0);
+        impressionsToday = Number(row.impressions || 0);
+        const actions = row.actions || [];
+        const leadAction = actions.find((a: any) =>
+          ["lead", "onsite_conversion.messaging_conversation_started_7d", "messaging_conversation_started_7d"].includes(a.action_type)
+        );
+        leadsToday = Number(leadAction?.value || 0);
+        if (!leadsToday) {
+          leadsToday = actions
+            .filter((a: any) => String(a.action_type || "").includes("messaging"))
+            .reduce((s: number, a: any) => s + Number(a.value || 0), 0);
+        }
+      }
+    } catch {}
+
+    let spendLast30 = 0;
+    try {
+      const monthJson = monthRes ? await monthRes.json() : null;
+      spendLast30 = Number(monthJson?.data?.[0]?.spend || 0);
+    } catch {}
+
+    // Saldo disponible:
+    // - Cuentas prepago: "balance" son los fondos disponibles.
+    // - Cuentas con facturación por umbral/mensual: "balance" es lo que se debe,
+    //   y lo disponible depende del límite de gasto (spend_cap) si existe.
+    const saldoDisponible = esPrepago
+      ? balanceNum
+      : capNum !== null
+        ? capNum - spentNum
+        : null;
+
+    const fundingDetails = data.funding_source_details || null;
 
     return NextResponse.json({
       ok: true,
@@ -51,106 +137,52 @@ export async function GET() {
         act_id: `act_${adAccountId}`,
         name: data.name || `Cuenta ${adAccountId}`,
         status: data.account_status,
-        balance: balanceNum,
-        amount_spent: spentNum,
-        spend_cap: capNum,
-        currency: data.currency || "COP",
+        currency,
         timezone: data.timezone_name,
-        balance_formatted: balanceNum !== null ? `$${balanceNum.toLocaleString("es-CO")} ${data.currency || "COP"}` : "No disponible (prepago o facturación mensual)",
+
+        // SALDO TOTAL EN LA CUENTA
+        is_prepay: esPrepago,
+        balance: balanceNum,
+        balance_label: esPrepago ? "Saldo disponible" : "Saldo pendiente por facturar",
+        balance_formatted: money(balanceNum, currency),
+
+        saldo_disponible: saldoDisponible,
+        saldo_disponible_formatted:
+          saldoDisponible !== null
+            ? money(saldoDisponible, currency)
+            : esPrepago
+              ? "Sin fondos prepago reportados"
+              : "Facturación por umbral (sin límite fijo)",
+
+        // GASTO
+        amount_spent: spentNum,
+        amount_spent_formatted: money(spentNum, currency),
+        spend_cap: capNum,
+        spend_cap_formatted: capNum !== null ? money(capNum, currency) : "Sin límite configurado",
         remaining: capNum !== null ? capNum - spentNum : null,
+
+        // GASTO DE HOY
+        spend_today: spendToday,
+        spend_today_formatted: money(spendToday, currency),
+        leads_today: leadsToday,
+        clicks_today: clicksToday,
+        impressions_today: impressionsToday,
+        cpl_today: leadsToday > 0 ? Math.round(spendToday / leadsToday) : 0,
+
+        spend_last_30d: spendLast30,
+        spend_last_30d_formatted: money(spendLast30, currency),
+
+        next_bill_date: data.next_bill_date || null,
+        funding_source: data.funding_source || null,
+        funding_source_details: fundingDetails,
+        payment_method: fundingDetails?.display_string || null,
+
+        updated_at: new Date().toISOString(),
       },
-      note: "Para recargar saldo real debes ir a Meta Business > Facturación. Aquí puedes ajustar el límite de gasto (spend_cap) como control interno.",
+      note: "El saldo solo se puede recargar desde Meta Business → Facturación. La API de Meta no permite agregar fondos.",
+      billing_url: `https://business.facebook.com/ads/manager/billing_history/?act=${adAccountId}`,
     });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e.message, account: null }, { status: 500 });
-  }
-}
-
-// POST: Simular carga de saldo / ajustar spend_cap
-// Meta no permite agregar fondos vía API para la mayoría de cuentas, pero sí permite modificar el spend_cap (límite de gasto de cuenta)
-// Esto se usa como proxy para \"cargar saldo\" en el flujo del agente.
-export async function POST(req: Request) {
-  try {
-    const { amount, action = "add_balance", note } = await req.json();
-    const { metaToken, adAccountId } = getMetaCredentials();
-
-    if (!metaToken || !adAccountId) {
-      return NextResponse.json({ ok: false, error: "Faltan credenciales Meta" }, { status: 400 });
-    }
-
-    const amountNum = Number(amount);
-    if (!(amountNum > 0)) {
-      return NextResponse.json({ ok: false, error: "Monto debe ser mayor a 0" }, { status: 400 });
-    }
-
-    // For action add_balance, we try to increase spend_cap if account has one
-    // First get current account info
-    const fields = "account_id,amount_spent,spend_cap,currency";
-    const getUrl = `https://graph.facebook.com/v19.0/act_${adAccountId}?fields=${fields}&access_token=${encodeURIComponent(metaToken)}`;
-    const getRes = await fetch(getUrl, { cache: "no-store" });
-    const getData = await getRes.json();
-
-    if (!getRes.ok || getData.error) {
-      // Even if fetch fails, we return success as manual instruction
-      return NextResponse.json({
-        ok: true,
-        simulated: true,
-        message: `Recarga de $${amountNum.toLocaleString("es-CO")} COP registrada. Debes completarla manualmente en Meta Business > Facturación > Métodos de pago.`,
-        instruction: "Ve a business.facebook.com > Configuración del negocio > Cuentas > Cuentas publicitarias > Ver métodos de pago > Agregar fondos",
-        amount: amountNum,
-        note: note || "",
-      });
-    }
-
-    const currentSpent = getData.amount_spent ? Number(getData.amount_spent) / 100 : 0;
-    const currentCap = getData.spend_cap ? Number(getData.spend_cap) / 100 : null;
-
-    // If spend_cap exists, increase it
-    if (currentCap !== null) {
-      const newCap = currentCap + amountNum;
-      const updateUrl = `https://graph.facebook.com/v19.0/act_${adAccountId}`;
-      const updateRes = await fetch(updateUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          spend_cap: Math.round(newCap * 100),
-          access_token: metaToken,
-        }),
-      });
-      const updateData = await updateRes.json();
-      if (!updateRes.ok || updateData.error) {
-        return NextResponse.json({
-          ok: true,
-          simulated: true,
-          message: `No se pudo ajustar spend_cap automáticamente (${updateData?.error?.message}). Registrado como pendiente manual.`,
-          current_cap: currentCap,
-          attempted_new_cap: newCap,
-          amount: amountNum,
-          instruction: "Ajusta manualmente el límite en Administrador de anuncios > Facturación > Límites de gasto de la cuenta",
-        });
-      }
-      return NextResponse.json({
-        ok: true,
-        message: `¡Saldo aumentado! Límite de gasto incrementado de $${currentCap.toLocaleString("es-CO")} a $${newCap.toLocaleString("es-CO")} COP (+$${amountNum.toLocaleString("es-CO")})`,
-        previous_cap: currentCap,
-        new_cap: newCap,
-        amount_added: amountNum,
-        spent: currentSpent,
-      });
-    } else {
-      // No spend_cap (account uses threshold billing)
-      return NextResponse.json({
-        ok: true,
-        simulated: true,
-        message: `Tu cuenta usa facturación por umbral (no tiene límite fijo). Para agregar fondos reales ve a Meta Business > Facturación. Monto solicitado: $${amountNum.toLocaleString("es-CO")} COP registrado para seguimiento.`,
-        amount: amountNum,
-        spent: currentSpent,
-        currency: getData.currency || "COP",
-        instruction: "business.facebook.com > Facturación > Agregar fondos o verificar método de pago",
-        note: note || "",
-      });
-    }
-  } catch (e: any) {
-    return NextResponse.json({ ok: false, error: e.message || "Error interno" }, { status: 500 });
   }
 }

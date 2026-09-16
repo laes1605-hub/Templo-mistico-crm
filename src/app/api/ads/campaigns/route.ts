@@ -97,7 +97,7 @@ export async function GET() {
     }
 
     const fields =
-      "id,name,status,effective_status,objective,start_time,stop_time,daily_budget,lifetime_budget,insights{spend,clicks,impressions,actions},adsets{id,name,daily_budget,lifetime_budget,start_time,end_time,destination_type,ads{id,name,creative{id,name,video_id,image_url}}}";
+      "id,name,status,effective_status,objective,created_time,start_time,stop_time,daily_budget,lifetime_budget,insights{spend,clicks,impressions,actions},adsets{id,name,daily_budget,lifetime_budget,start_time,end_time,destination_type,targeting,ads{id,name,status,effective_status,created_time,updated_time,creative{id,name,video_id,thumbnail_url,image_url,object_story_spec}}}";
     const url = `https://graph.facebook.com/v19.0/act_${adAccountId}/campaigns?fields=${fields}&limit=100&access_token=${encodeURIComponent(metaToken)}`;
 
     const res = await fetch(url, { cache: "no-store" });
@@ -144,27 +144,96 @@ export async function GET() {
       const status = c.effective_status || c.status || "UNKNOWN";
 
       const videosUsed: string[] = [];
-      let numAnuncios = 0;
+      const anuncios: any[] = [];
       let destino = "whatsapp";
+
+      // Fechas reales de los anuncios (adsets): la campaña puede tener un rango
+      // y cada conjunto/anuncio el suyo. Mostramos ambos.
+      let adStart: number | null = null;
+      let adEnd: number | null = null;
+
       if (c.adsets?.data) {
         c.adsets.data.forEach((adset: any) => {
           if (adset.destination_type) destino = adset.destination_type;
+
+          const s = adset.start_time ? new Date(adset.start_time).getTime() : null;
+          const e = adset.end_time ? new Date(adset.end_time).getTime() : null;
+          if (s && (adStart === null || s < adStart)) adStart = s;
+          if (e && (adEnd === null || e > adEnd)) adEnd = e;
+
           if (adset.ads?.data) {
-            numAnuncios += adset.ads.data.length;
             adset.ads.data.forEach((ad: any) => {
-              if (ad.creative?.video_id) videosUsed.push(ad.creative.video_id);
+              const videoId =
+                ad.creative?.video_id ||
+                ad.creative?.object_story_spec?.video_data?.video_id ||
+                null;
+              if (videoId) videosUsed.push(String(videoId));
+              anuncios.push({
+                id: ad.id,
+                name: ad.name,
+                status: ad.effective_status || ad.status || "UNKNOWN",
+                videoId,
+                thumbnail: ad.creative?.thumbnail_url || ad.creative?.image_url || null,
+                createdTime: ad.created_time || null,
+                adsetId: adset.id,
+                adsetName: adset.name,
+                adsetStart: adset.start_time || null,
+                adsetEnd: adset.end_time || null,
+              });
             });
           }
         });
       }
+
+      const startTime = c.start_time || (adStart ? new Date(adStart).toISOString() : null);
+      const stopTime = c.stop_time || (adEnd ? new Date(adEnd).toISOString() : null);
+
+      const fmt = (iso: string | null) =>
+        iso
+          ? new Date(iso).toLocaleString("es-CO", {
+              weekday: "long",
+              year: "numeric",
+              month: "long",
+              day: "numeric",
+              hour: "2-digit",
+              minute: "2-digit",
+              hour12: true,
+              timeZone: "America/Bogota",
+            })
+          : null;
+
+      // Días restantes / transcurridos para saber de un vistazo cómo va
+      const ahora = Date.now();
+      const finMs = stopTime ? new Date(stopTime).getTime() : null;
+      const inicioMs = startTime ? new Date(startTime).getTime() : null;
+      const diasRestantes = finMs ? Math.max(0, Math.ceil((finMs - ahora) / 86400000)) : null;
+      const diasTotales = inicioMs && finMs ? Math.max(1, Math.ceil((finMs - inicioMs) / 86400000)) : null;
 
       return {
         id: c.id,
         name: c.name,
         status: status,
         objective: c.objective || "",
-        startTime: c.start_time || null,
-        stopTime: c.stop_time || null,
+        createdTime: c.created_time || null,
+
+        // FECHAS DE LA CAMPAÑA
+        startTime,
+        stopTime,
+        startDate: startTime ? startTime.split("T")[0] : null,
+        endDate: stopTime ? stopTime.split("T")[0] : null,
+        legibleInicio: fmt(startTime),
+        legibleFin: fmt(stopTime),
+
+        // FECHAS DE LOS ANUNCIOS (conjuntos)
+        adStartTime: adStart ? new Date(adStart).toISOString() : null,
+        adEndTime: adEnd ? new Date(adEnd).toISOString() : null,
+        legibleInicioAnuncio: fmt(adStart ? new Date(adStart).toISOString() : null),
+        legibleFinAnuncio: fmt(adEnd ? new Date(adEnd).toISOString() : null),
+
+        diasTotales,
+        diasRestantes,
+        vigente: finMs ? finMs > ahora : null,
+
         dailyBudget: c.daily_budget ? Math.round(Number(c.daily_budget) / 100) : 0,
         lifetimeBudget: c.lifetime_budget ? Math.round(Number(c.lifetime_budget) / 100) : 0,
         spend,
@@ -173,7 +242,8 @@ export async function GET() {
         leads,
         cpl,
         videosUsed: Array.from(new Set(videosUsed)),
-        numAnuncios: numAnuncios || 1,
+        anuncios,
+        numAnuncios: anuncios.length || 1,
         destination: destino,
         currency: "COP",
       };
@@ -184,6 +254,7 @@ export async function GET() {
       campaigns,
       currency: "COP",
       total: campaigns.length,
+      updatedAt: new Date().toISOString(),
       note: `Conectado a Meta API. ${campaigns.length} campañas cargadas. Solo WhatsApp.`,
     });
   } catch (error: any) {
@@ -213,17 +284,18 @@ export async function POST(req: Request) {
       startDate, // YYYY-MM-DD - super importante
       startTime = "00:01",
       endTime = "23:59",
-      numAds = 1, // 1-5
+      numAds = 1, // 1-5 => 1-5 VIDEOS DIFERENTES
+      selectedVideos, // array de videos distintos [{id,title,description,picture}]
       whatsappNumberId,
       whatsappDisplayNumber,
       whatsappVerifiedName,
       segmentation, // saved segmentation
+      segmentationName,
       pageId, // optional
       adCopies, // optional array of ad copy variations - copy del video o del agente
       videoDescription,
       adCopyBase,
       usarCopyVideo,
-      addBalanceAmount, // optional saldo a cargar
     } = body;
 
     if (!name || !name.trim()) {
@@ -243,7 +315,19 @@ export async function POST(req: Request) {
 
     const totalBudget = Number(budgetAmount) || 0;
     const duracionDias = Math.max(1, Number(days) || 4);
-    const numeroAnuncios = Math.min(5, Math.max(1, Number(numAds) || 1));
+
+    // La cantidad de anuncios = cantidad de VIDEOS DIFERENTES de la Fan Page.
+    // Si el cliente pide 3, son 3 videos distintos publicados en la página.
+    const videosElegidos: any[] = Array.isArray(selectedVideos)
+      ? selectedVideos.filter((v: any) => v && v.id)
+      : selectedVideoId
+        ? [{ id: selectedVideoId, title: videoTitle, description: videoDescription }]
+        : [];
+
+    const numeroAnuncios = Math.min(
+      5,
+      Math.max(1, videosElegidos.length || Number(numAds) || 1)
+    );
 
     // Validar fecha inicio - no puede ser pasado si es hoy? Permitir hoy o futuro
     const horario = calcularHorarioCampana(duracionDias, startDate, startTime, endTime);
@@ -304,23 +388,37 @@ export async function POST(req: Request) {
       },
       anuncios: {
         total: numeroAnuncios,
+        // 1 anuncio = 1 VIDEO DIFERENTE de los publicados en la Fan Page
+        videos_distintos: videosElegidos.length,
         detalle: Array.from({ length: numeroAnuncios }, (_, i) => {
-          const copyFinal = adCopies?.[i] || (usarVideoFlag && copyVideoOriginal ? copyVideoOriginal : copyAgenteOriginal) || `${name.trim()} - Anuncio ${i+1}`;
+          const vid = videosElegidos[i] || videosElegidos[0] || null;
+          const descVideo = (vid?.description || "").trim() || copyVideoOriginal;
+          const copyFinal =
+            adCopies?.[i] ||
+            (usarVideoFlag && descVideo ? descVideo : copyAgenteOriginal) ||
+            `${name.trim()} - Anuncio ${i + 1}`;
           return {
             index: i + 1,
             nombre: `${name.trim()} - Anuncio ${i + 1}`,
-            video_id: selectedVideoId || `auto_${i + 1}`,
-            video_title: videoTitle || `Creativo ${i + 1}`,
-            video_description: copyVideoOriginal,
+            video_id: vid?.id || selectedVideoId || `auto_${i + 1}`,
+            video_title: vid?.title || videoTitle || `Creativo ${i + 1}`,
+            video_thumbnail: vid?.picture || null,
+            video_description: descVideo,
             copy: copyFinal,
-            copy_preview: copyFinal.substring(0,120) + (copyFinal.length>120?"...":""),
+            copy_preview: copyFinal.substring(0, 120) + (copyFinal.length > 120 ? "..." : ""),
             copy_variacion: adCopies?.[i] || `Variación ${i + 1}`,
-            copy_origen: usarVideoFlag ? (copyVideoOriginal ? (adCopies?.[i] && adCopies[i]!==copyVideoOriginal ? "video + agente variación" : "video") : "agente") : "agente",
+            copy_origen: usarVideoFlag
+              ? descVideo
+                ? adCopies?.[i] && adCopies[i] !== descVideo
+                  ? "video + agente variación"
+                  : "video"
+                : "agente"
+              : "agente",
             cta: "Enviar mensaje por WhatsApp",
             destino: "whatsapp",
           };
         }),
-        estrategia: `Se probarán ${numeroAnuncios} variaciones de copy para identificar ganador rápido - Copy: ${usarVideoFlag ? "del video seleccionado + agente" : "del agente"}`,
+        estrategia: `Se publicarán ${numeroAnuncios} anuncios con ${videosElegidos.length || numeroAnuncios} videos DIFERENTES de la Fan Page para identificar el ganador - Copy: ${usarVideoFlag ? "del video seleccionado + agente" : "del agente"}`,
       },
       whatsapp: {
         numero_id: whatsappNumberId || "auto",
@@ -329,7 +427,7 @@ export async function POST(req: Request) {
         solo_whatsapp: true,
       },
       segmentacion: finalSegmentation,
-      saldo_recarga: addBalanceAmount ? Number(addBalanceAmount) : 0,
+      segmentacion_nombre: segmentationName || finalSegmentation?.nombre || "Segmentación por defecto",
     };
 
     // Intentar crear campaña real en Meta
@@ -376,9 +474,11 @@ export async function POST(req: Request) {
 
     const campaignId = campaignJson.id;
 
-    // Try to create adset with WhatsApp destination if we have page info
+    // Crear el conjunto de anuncios (WhatsApp) y UN ANUNCIO POR CADA VIDEO DIFERENTE
     let adsetId: string | null = null;
-    let adIds: string[] = [];
+    const adIds: string[] = [];
+    const adsCreados: any[] = [];
+    const adsErrores: any[] = [];
     let pageInfo = null;
 
     try {
@@ -386,35 +486,44 @@ export async function POST(req: Request) {
       const effectivePageId = pageId || pageInfo?.id;
 
       if (effectivePageId) {
-        // AdSet payload - WhatsApp only
+        // Targeting construido desde la SEGMENTACIÓN GUARDADA que eligió el usuario.
+        // Soporta tanto el formato interno como el targeting crudo de Meta.
+        const targeting: any = finalSegmentation.targeting_raw
+          ? { ...finalSegmentation.targeting_raw }
+          : {
+              geo_locations:
+                finalSegmentation.geo_locations ||
+                finalSegmentation.location || { countries: ["CO"] },
+              age_min: finalSegmentation.age_min || finalSegmentation.edad_min || 18,
+              age_max: finalSegmentation.age_max || finalSegmentation.edad_max || 65,
+              genders: finalSegmentation.genders || finalSegmentation.generos || [1, 2],
+            };
+
+        // Los placements se fuerzan para que el destino sea SOLO WhatsApp
+        targeting.publisher_platforms = ["facebook", "instagram"];
+        targeting.facebook_positions = ["feed", "story", "reels"];
+        targeting.instagram_positions = ["stream", "story", "reels"];
+
         const adsetPayload: any = {
           name: `${name.trim()} - AdSet WhatsApp`,
           campaign_id: campaignId,
-          daily_budget: budgetType === "daily" ? Math.round(totalBudget * 100) : Math.round((totalBudget / duracionDias) * 100),
+          daily_budget:
+            budgetType === "daily"
+              ? Math.round(totalBudget * 100)
+              : Math.round((totalBudget / duracionDias) * 100),
           lifetime_budget: budgetType === "lifetime" ? Math.round(totalBudget * 100) : undefined,
           billing_event: "IMPRESSIONS",
           optimization_goal: "CONVERSATIONS",
           bid_strategy: "LOWEST_COST_WITHOUT_CAP",
           start_time: horario.startTimeIso,
           end_time: horario.stopTimeIso,
-          targeting: {
-            geo_locations: finalSegmentation.location || { countries: ["CO"] },
-            age_min: finalSegmentation.age_min || 18,
-            age_max: finalSegmentation.age_max || 65,
-            genders: finalSegmentation.genders || [1, 2],
-            publisher_platforms: ["facebook", "instagram"],
-            facebook_positions: ["feed", "story", "reels"],
-            instagram_positions: ["stream", "story", "reels"],
-          },
-          promoted_object: {
-            page_id: effectivePageId,
-          },
-          destination_type: "WHATSAPP", // Force WhatsApp only
+          targeting,
+          promoted_object: { page_id: effectivePageId },
+          destination_type: "WHATSAPP",
           status: status === "ACTIVE" ? "ACTIVE" : "PAUSED",
           access_token: metaToken,
         };
 
-        // If lifetime, remove daily
         if (budgetType === "lifetime") {
           delete adsetPayload.daily_budget;
         } else {
@@ -428,32 +537,112 @@ export async function POST(req: Request) {
           body: JSON.stringify(adsetPayload),
         });
         const adsetJson = await adsetRes.json();
+
         if (adsetRes.ok && !adsetJson.error) {
           adsetId = adsetJson.id;
 
-          // Try to create ads (1-5) - simplified, would need creative creation
-          // For now we log intent, actual creative creation requires more steps
+          // Un anuncio por cada VIDEO DIFERENTE seleccionado de la Fan Page
+          const numeroWhatsapp = String(whatsappDisplayNumber || "").replace(/[^\d]/g, "");
+
           for (let i = 0; i < numeroAnuncios; i++) {
-            // Placeholder - real implementation would create creative then ad
-            adIds.push(`pending_ad_${i + 1}_${adsetId}`);
+            const vid = videosElegidos[i] || videosElegidos[0] || null;
+            const mensaje =
+              adCopies?.[i] ||
+              (usarVideoFlag && (vid?.description || copyVideoOriginal)) ||
+              copyAgenteOriginal ||
+              `${name.trim()} - Anuncio ${i + 1}`;
+
+            if (!vid?.id) {
+              adsErrores.push({ index: i + 1, error: "Sin video asignado para este anuncio" });
+              continue;
+            }
+
+            try {
+              // 1) Creative con el video de la página y CTA a WhatsApp
+              const creativePayload: any = {
+                name: `${name.trim()} - Creativo ${i + 1}`,
+                object_story_spec: {
+                  page_id: effectivePageId,
+                  video_data: {
+                    video_id: String(vid.id),
+                    message: mensaje,
+                    image_url: vid.picture || undefined,
+                    call_to_action: {
+                      type: "WHATSAPP_MESSAGE",
+                      value: {
+                        app_destination: "WHATSAPP",
+                        link: numeroWhatsapp
+                          ? `https://api.whatsapp.com/send?phone=${numeroWhatsapp}`
+                          : `https://api.whatsapp.com/send`,
+                      },
+                    },
+                  },
+                },
+                access_token: metaToken,
+              };
+
+              const creativeRes = await fetch(
+                `https://graph.facebook.com/v19.0/act_${adAccountId}/adcreatives`,
+                {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify(creativePayload),
+                }
+              );
+              const creativeJson = await creativeRes.json();
+
+              if (!creativeRes.ok || creativeJson.error) {
+                adsErrores.push({
+                  index: i + 1,
+                  video_id: vid.id,
+                  video_title: vid.title,
+                  error: creativeJson?.error?.message || `HTTP ${creativeRes.status}`,
+                });
+                continue;
+              }
+
+              // 2) Anuncio que usa ese creative
+              const adRes = await fetch(`https://graph.facebook.com/v19.0/act_${adAccountId}/ads`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  name: `${name.trim()} - Anuncio ${i + 1} (${vid.title || vid.id})`,
+                  adset_id: adsetId,
+                  creative: { creative_id: creativeJson.id },
+                  status: status === "ACTIVE" ? "ACTIVE" : "PAUSED",
+                  access_token: metaToken,
+                }),
+              });
+              const adJson = await adRes.json();
+
+              if (adRes.ok && !adJson.error) {
+                adIds.push(adJson.id);
+                adsCreados.push({
+                  index: i + 1,
+                  ad_id: adJson.id,
+                  creative_id: creativeJson.id,
+                  video_id: vid.id,
+                  video_title: vid.title || null,
+                });
+              } else {
+                adsErrores.push({
+                  index: i + 1,
+                  video_id: vid.id,
+                  video_title: vid.title,
+                  error: adJson?.error?.message || `HTTP ${adRes.status}`,
+                });
+              }
+            } catch (adErr: any) {
+              adsErrores.push({ index: i + 1, video_id: vid?.id, error: adErr.message });
+            }
           }
+        } else {
+          adsErrores.push({ error: adsetJson?.error?.message || "No se pudo crear el conjunto de anuncios" });
         }
       }
-    } catch (adsetErr) {
+    } catch (adsetErr: any) {
       console.warn("AdSet creation failed (non-blocking):", adsetErr);
-    }
-
-    // Handle add balance if requested
-    let balanceResult = null;
-    if (addBalanceAmount && Number(addBalanceAmount) > 0) {
-      try {
-        const balRes = await fetch(`${process.env.NEXT_PUBLIC_VERCEL_URL || ""}/api/ads/account`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ amount: Number(addBalanceAmount), note: `Recarga para campaña ${name.trim()}` }),
-        });
-        balanceResult = await balRes.json().catch(() => null);
-      } catch {}
+      adsErrores.push({ error: adsetErr.message });
     }
 
     return NextResponse.json({
@@ -479,11 +668,14 @@ export async function POST(req: Request) {
         name: whatsappVerifiedName,
       },
       segmentation: finalSegmentation,
+      segmentationName: segmentationName || finalSegmentation?.nombre || null,
       preview: previewCompleto,
       selectedVideoId,
       videoTitle,
-      balance: balanceResult,
-      message: `¡Campaña "${name.trim()}" creada! ${numeroAnuncios} anuncios • WhatsApp ${whatsappDisplayNumber || "principal"} • ${horario.legibleInicio} → ${horario.legibleFin}`,
+      videos: videosElegidos.map((v: any) => ({ id: v.id, title: v.title })),
+      ads_created: adsCreados,
+      ads_errors: adsErrores,
+      message: `¡Campaña "${name.trim()}" creada! ${adsCreados.length || numeroAnuncios} anuncios con videos diferentes • WhatsApp ${whatsappDisplayNumber || "—"} • ${horario.legibleInicio} → ${horario.legibleFin}`,
     });
   } catch (error: any) {
     return NextResponse.json({ error: error.message || "Error interno al crear campaña", preview: null }, { status: 500 });

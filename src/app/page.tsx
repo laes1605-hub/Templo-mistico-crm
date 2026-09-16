@@ -2046,6 +2046,8 @@ export default function CRMApp() {
       const data = await res.json();
       if (data.account) {
         setAccountInfo({ ...data.account, billing_url: data.billing_url });
+      } else if (data.error) {
+        setAccountInfo({ error: data.error, billing_url: data.billing_url });
       }
     } catch (err) {
       console.warn("Error cargando cuenta:", err);
@@ -5851,8 +5853,17 @@ export default function CRMApp() {
                   </p>
                 </>
               ) : (
-                <div className="text-[11px] text-gray-500 text-center py-4 border border-dashed border-border rounded-xl">
-                  {loadingAccount ? "Consultando saldo en Meta..." : "Sin datos de cuenta — verifica META_AD_ACCOUNT_ID y META_MARKETING_TOKEN"}
+                <div className="text-[11px] text-gray-400 text-center py-4 border border-dashed border-border rounded-xl px-4">
+                  {loadingAccount ? (
+                    "Consultando saldo en Meta..."
+                  ) : accountInfo?.error ? (
+                    <div className="space-y-1 text-amber-300">
+                      <p className="font-semibold">⚠️ Respuesta de Meta: {accountInfo.error}</p>
+                      <p className="text-[10px] text-gray-400">Asegúrate de que el token tenga acceso al ID de cuenta 1393659139005209.</p>
+                    </div>
+                  ) : (
+                    "Sin datos de cuenta — verifica META_AD_ACCOUNT_ID y META_MARKETING_TOKEN"
+                  )}
                 </div>
               )}
             </div>

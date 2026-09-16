@@ -1,76 +1,87 @@
 import { NextResponse } from "next/server";
+import { getMetaConfig } from "@/lib/meta-config";
 
 export const dynamic = "force-dynamic";
 
-function getMetaCredentials() {
-  const metaToken = (process.env.META_MARKETING_TOKEN || "")
-    .replace(/[\r\n\t "']/g, "")
-    .replace(/^Bearer\s+/i, "")
-    .trim();
-
-  let adAccountId = (process.env.META_AD_ACCOUNT_ID || "")
-    .replace(/[\r\n\t "']/g, "")
-    .replace(/^act_/, "")
-    .trim();
-
-  return { metaToken, adAccountId };
-}
-
-// GET: Obtener TODOS los videos publicados en la Fan Page (y como respaldo los de la cuenta publicitaria)
+// GET: Obtener TODOS los videos publicados en la Fan Page
 export async function GET() {
   try {
-    const { metaToken, adAccountId } = getMetaCredentials();
+    const { metaToken, adAccountId, pageId: configuredPageId } = await getMetaConfig();
 
     if (!metaToken) {
       return NextResponse.json({
         ok: false,
         videos: [],
-        error: "Falta META_MARKETING_TOKEN en variables de entorno."
+        error: "Falta META_MARKETING_TOKEN."
       });
     }
 
     let videos: any[] = [];
     let pageName = "";
-    let pageId = "";
+    let pageId = configuredPageId || "";
     const debug: string[] = [];
 
-    // 1. Videos publicados en la Fan Page (paginando para traerlos todos)
+    // 1. Videos publicados en la Fan Page
     try {
-      const accountsUrl = `https://graph.facebook.com/v19.0/me/accounts?fields=id,name,access_token&limit=50&access_token=${encodeURIComponent(metaToken)}`;
-      const accountsRes = await fetch(accountsUrl, { cache: "no-store" });
-      const accountsData = await accountsRes.json();
-      debug.push(`me/accounts: ${accountsRes.status} (${accountsData?.data?.length || 0})`);
+      let pageToken = metaToken;
 
-      if (accountsData?.data && accountsData.data.length > 0) {
-        const targetPage =
-          accountsData.data.find((p: any) =>
-            (p.name || "").toLowerCase().includes("templo") || (p.name || "").toLowerCase().includes("mistico")
-          ) || accountsData.data[0];
+      // Obtener page access token o validar la página
+      try {
+        const accountsUrl = `https://graph.facebook.com/v19.0/me/accounts?fields=id,name,access_token&limit=50&access_token=${encodeURIComponent(metaToken)}`;
+        const accountsRes = await fetch(accountsUrl, { cache: "no-store" });
+        const accountsData = await accountsRes.json();
+        debug.push(`me/accounts: ${accountsRes.status} (${accountsData?.data?.length || 0})`);
 
-        pageName = targetPage.name;
-        pageId = targetPage.id;
-        const pageToken = targetPage.access_token || metaToken;
+        if (accountsData?.data && accountsData.data.length > 0) {
+          const targetPage =
+            (configuredPageId && accountsData.data.find((p: any) => String(p.id) === String(configuredPageId))) ||
+            accountsData.data.find((p: any) =>
+              (p.name || "").toLowerCase().includes("templo") || (p.name || "").toLowerCase().includes("mistico")
+            ) || accountsData.data[0];
 
-        // El COPY REAL del video suele estar en el post del feed (campo "message"),
-        // no en "description" del video. Aquí se arma un mapa video_id -> texto del post.
+          if (targetPage) {
+            pageName = targetPage.name;
+            pageId = targetPage.id;
+            pageToken = targetPage.access_token || metaToken;
+          }
+        }
+      } catch (eAcc: any) {
+        debug.push(`me/accounts error: ${eAcc.message}`);
+      }
+
+      // Si no obtuvimos targetPage de me/accounts pero tenemos pageId configurado:
+      if (!pageName && pageId) {
+        try {
+          const pInfoRes = await fetch(`https://graph.facebook.com/v19.0/${pageId}?fields=id,name,access_token&access_token=${encodeURIComponent(metaToken)}`, { cache: "no-store" });
+          const pInfo = await pInfoRes.json();
+          if (pInfo?.name) {
+            pageName = pInfo.name;
+            if (pInfo.access_token) pageToken = pInfo.access_token;
+          }
+        } catch {}
+      }
+
+      if (pageId) {
         const copyPorVideo = new Map<string, { message: string; permalink: string; postId: string }>();
+
+        // Intentar traer posts para extraer el COPY REAL publicado
         try {
           let nextPost: string | null = `https://graph.facebook.com/v19.0/${pageId}/posts?fields=id,message,created_time,permalink_url,attachments{media_type,type,title,description,target}&limit=50&access_token=${encodeURIComponent(pageToken)}`;
           let pPost = 0;
           while (nextPost && pPost < 6) {
             const pRes: any = await fetch(nextPost, { cache: "no-store" });
             const pData: any = await pRes.json();
-            debug.push(`page posts p${pPost + 1}: ${pRes.status} (${pData?.data?.length || 0})${pData?.error ? " " + pData.error.message : ""}`);
+            debug.push(`page posts p${pPost + 1}: ${pRes.status} (${pData?.data?.length || 0})`);
 
             for (const post of pData?.data || []) {
+              const msgPost = String(post.message || "").trim();
               for (const att of post?.attachments?.data || []) {
                 const tipo = String(att.media_type || att.type || "").toLowerCase();
                 const targetId = att?.target?.id;
                 if (!targetId) continue;
                 if (!tipo.includes("video")) continue;
-                // El texto que el usuario escribió al publicar manda sobre todo lo demás
-                const texto = String(post.message || att.description || att.title || "").trim();
-                if (!copyPorVideo.has(String(targetId))) {
+                const texto = msgPost || String(att.description || att.title || "").trim();
+                if (!copyPorVideo.has(String(targetId)) || (!copyPorVideo.get(String(targetId))?.message && texto)) {
                   copyPorVideo.set(String(targetId), {
                     message: texto,
                     permalink: post.permalink_url || "",
@@ -86,6 +97,7 @@ export async function GET() {
           debug.push(`page posts error: ${ePosts.message}`);
         }
 
+        // Consultar videos directamente de la página
         const fields = "id,title,description,picture,source,permalink_url,length,created_time,updated_time,views";
         let next: string | null = `https://graph.facebook.com/v19.0/${pageId}/videos?fields=${fields}&limit=50&access_token=${encodeURIComponent(pageToken)}`;
         let paginas = 0;
@@ -98,10 +110,6 @@ export async function GET() {
           for (const v of vData?.data || []) {
             const delPost = copyPorVideo.get(String(v.id));
 
-            // Prioridad del COPY ORIGINAL:
-            // 1) texto del post publicado en la fan page (lo que se ve en Facebook)
-            // 2) description del video
-            // 3) title del video
             const copyReal =
               (delPost?.message || "").trim() ||
               String(v.description || "").trim() ||
@@ -115,7 +123,6 @@ export async function GET() {
                   ? "video_title"
                   : "sin_copy";
 
-            // Título legible para la lista
             const primeraLinea = copyReal.split("\n").find((l: string) => l.trim()) || "";
             const titulo =
               String(v.title || "").trim() ||
@@ -124,7 +131,6 @@ export async function GET() {
             videos.push({
               id: v.id,
               title: titulo,
-              // description = COPY ORIGINAL real del video en la fan page
               description: copyReal,
               copy_original: copyReal,
               copy_origen: origenCopy,
@@ -137,7 +143,7 @@ export async function GET() {
               createdTime: v.created_time,
               views: v.views || 0,
               origin: "page",
-              pageName,
+              pageName: pageName || "Fan Page Templo Místico",
               pageId,
             });
           }
@@ -150,7 +156,7 @@ export async function GET() {
       debug.push(`page videos error: ${errPage.message}`);
     }
 
-    // 2. Respaldo: videos subidos directamente a la cuenta de anuncios
+    // 2. Respaldo: videos de la cuenta publicitaria si no hubo de la página
     if (videos.length === 0 && adAccountId) {
       try {
         const adVideosUrl = `https://graph.facebook.com/v19.0/act_${adAccountId}/advideos?fields=id,title,description,picture,source,length,created_time&limit=100&access_token=${encodeURIComponent(metaToken)}`;
@@ -178,11 +184,9 @@ export async function GET() {
       }
     }
 
-    // Último recurso: los videos que aún no tienen copy se consultan uno por uno.
-    // Algunos videos exponen el texto en su propio nodo aunque el feed no lo traiga.
+    // Completar copys que falten buscando directamente el nodo de video
     const sinCopy = videos.filter((v) => !v.tiene_copy).slice(0, 25);
     if (sinCopy.length > 0) {
-      debug.push(`rellenando copy de ${sinCopy.length} videos`);
       await Promise.all(
         sinCopy.map(async (v) => {
           try {
@@ -213,7 +217,7 @@ export async function GET() {
     return NextResponse.json({
       ok: true,
       total: videos.length,
-      pageName,
+      pageName: pageName || "Templo Místico",
       pageId,
       videos,
       debug,

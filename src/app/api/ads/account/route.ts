@@ -1,18 +1,7 @@
 import { NextResponse } from "next/server";
+import { getMetaConfig } from "@/lib/meta-config";
 
 export const dynamic = "force-dynamic";
-
-function getMetaCredentials() {
-  const metaToken = (process.env.META_MARKETING_TOKEN || "")
-    .replace(/[\r\n\t "']/g, "")
-    .replace(/^Bearer\s+/i, "")
-    .trim();
-  let adAccountId = (process.env.META_AD_ACCOUNT_ID || "")
-    .replace(/[\r\n\t "']/g, "")
-    .replace(/^act_/, "")
-    .trim();
-  return { metaToken, adAccountId };
-}
 
 function money(n: number | null, currency: string) {
   if (n === null || n === undefined || isNaN(n)) return "—";
@@ -21,17 +10,11 @@ function money(n: number | null, currency: string) {
 
 /**
  * GET /api/ads/account
- *
- * Devuelve el SALDO TOTAL de la cuenta publicitaria (lo que hay disponible o lo que
- * se debe, según el tipo de facturación) y el GASTO DE HOY, para mostrarlos juntos
- * en la pestaña de Ads.
- *
- * Nota: Meta NO permite agregar fondos vía API, por eso ya no existe el POST de
- * recarga. La recarga se hace en business.facebook.com → Facturación.
+ * Devuelve el SALDO TOTAL de la cuenta publicitaria y el GASTO DE HOY.
  */
 export async function GET() {
   try {
-    const { metaToken, adAccountId } = getMetaCredentials();
+    const { metaToken, adAccountId } = await getMetaConfig();
     if (!metaToken || !adAccountId) {
       return NextResponse.json({
         ok: false,
@@ -56,13 +39,11 @@ export async function GET() {
     ].join(",");
 
     const accountUrl = `https://graph.facebook.com/v19.0/act_${adAccountId}?fields=${fields}&access_token=${encodeURIComponent(metaToken)}`;
-
-    // Gasto de HOY y gasto de los últimos 30 días, en una sola llamada cada uno.
     const todayUrl = `https://graph.facebook.com/v19.0/act_${adAccountId}/insights?fields=spend,impressions,clicks,actions&date_preset=today&access_token=${encodeURIComponent(metaToken)}`;
     const monthUrl = `https://graph.facebook.com/v19.0/act_${adAccountId}/insights?fields=spend&date_preset=last_30d&access_token=${encodeURIComponent(metaToken)}`;
 
     const [accRes, todayRes, monthRes] = await Promise.all([
-      fetch(accountUrl, { cache: "no-store" }),
+      fetch(accountUrl, { cache: "no-store" }).catch((e) => ({ ok: false, json: async () => ({ error: { message: e.message } }) } as any)),
       fetch(todayUrl, { cache: "no-store" }).catch(() => null as any),
       fetch(monthUrl, { cache: "no-store" }).catch(() => null as any),
     ]);
@@ -72,22 +53,18 @@ export async function GET() {
     if (!accRes.ok || data.error) {
       return NextResponse.json({
         ok: false,
-        error: data?.error?.message || `HTTP ${accRes.status}`,
+        error: data?.error?.message || `HTTP ${accRes.status || "Error"}`,
         account: null,
         debug: data,
       });
     }
 
     const currency = data.currency || "COP";
-
-    // balance viene en centavos de la moneda de la cuenta
     const balanceNum = data.balance !== undefined && data.balance !== null ? Number(data.balance) / 100 : null;
     const spentNum = data.amount_spent ? Number(data.amount_spent) / 100 : 0;
     const capNum = data.spend_cap && Number(data.spend_cap) > 0 ? Number(data.spend_cap) / 100 : null;
-
     const esPrepago = Boolean(data.is_prepay_account);
 
-    // Gasto de hoy
     let spendToday = 0;
     let leadsToday = 0;
     let clicksToday = 0;
@@ -118,10 +95,6 @@ export async function GET() {
       spendLast30 = Number(monthJson?.data?.[0]?.spend || 0);
     } catch {}
 
-    // Saldo disponible:
-    // - Cuentas prepago: "balance" son los fondos disponibles.
-    // - Cuentas con facturación por umbral/mensual: "balance" es lo que se debe,
-    //   y lo disponible depende del límite de gasto (spend_cap) si existe.
     const saldoDisponible = esPrepago
       ? balanceNum
       : capNum !== null
@@ -140,7 +113,6 @@ export async function GET() {
         currency,
         timezone: data.timezone_name,
 
-        // SALDO TOTAL EN LA CUENTA
         is_prepay: esPrepago,
         balance: balanceNum,
         balance_label: esPrepago ? "Saldo disponible" : "Saldo pendiente por facturar",
@@ -154,14 +126,12 @@ export async function GET() {
               ? "Sin fondos prepago reportados"
               : "Facturación por umbral (sin límite fijo)",
 
-        // GASTO
         amount_spent: spentNum,
         amount_spent_formatted: money(spentNum, currency),
         spend_cap: capNum,
         spend_cap_formatted: capNum !== null ? money(capNum, currency) : "Sin límite configurado",
         remaining: capNum !== null ? capNum - spentNum : null,
 
-        // GASTO DE HOY
         spend_today: spendToday,
         spend_today_formatted: money(spendToday, currency),
         leads_today: leadsToday,

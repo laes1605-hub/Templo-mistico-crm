@@ -20,7 +20,9 @@
     "test:tiempo": "node scripts/prueba-tiempo-chat.mjs",
     "test:eliminar": "sucrase-node scripts/prueba-eliminar-cliente.ts",
     "test:eliminar:sql": "node scripts/prueba-eliminar-cliente-sql.mjs",
-    "test:rr-storage": "node --conditions=import scripts/prueba-respuestas-rapidas-storage.mjs"
+    "test:rr-storage": "node --conditions=import scripts/prueba-respuestas-rapidas-storage.mjs",
+    "test:audio": "node scripts/prueba-reproductor-audio.mjs",
+    "test:remux": "node scripts/prueba-remux-ogg.mjs"
   },
   "dependencies": {
     "@capacitor-community/contacts": "^8.0.0",
@@ -43,6 +45,7 @@
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
     "autoprefixer": "^10.4.20",
+    "jsdom": "^30.0.1",
     "postcss": "^8.5.2",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.0.0"

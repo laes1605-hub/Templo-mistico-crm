@@ -1,8 +1,63 @@
 # Build Info - Templo Místico CRM
 
-**Fecha:** 2026-09-15 (rama `arena/01a0a6cd-templo-mistico-crm`)
+**Fecha:** 2026-09-16 (rama `arena/01a0ab64-templo-mistico-crm`)
 **Commit:** (ver git log)
-**Branch:** arena/01a0a6cd-templo-mistico-crm
+**Branch:** arena/01a0ab64-templo-mistico-crm
+
+## Build 2026-09-16: las notas de voz del chat vuelven a sonar (reproductor robusto)
+
+**Problema:** las notas de voz del chat no se reproducían y la burbuja se veía
+"vacía" (onda sin sentido, duración `…` y el botón de play sin efecto ni
+explicación).
+
+### Diagnóstico (verificado contra el proyecto real, no supuesto)
+
+- Los adjuntos están bien: en `mensajes` ya no queda ningún audio en `data:` ni
+  ninguna URL `http://` (mezcla de contenido bloqueada por el navegador). Las
+  notas apuntan o al bucket público `media-mensajes` o a Chatwoot
+  (`crmesteban.duckdns.org/rails/active_storage/...`).
+- Los objetos de Storage existen y son públicos: el objeto de una nota real
+  responde en `/storage/v1/object/info/public/...` con `size: 84229` y
+  `content_type: audio/ogg`.
+- El remuxer WebM→OGG está sano: con un WebM/Opus REAL generado por ffmpeg, el
+  `remuxWebmToOgg` del repo produce un OGG que ffmpeg/libopus decodifica entero
+  (3,01 s de audio con señal, RMS 0,088), con y sin el preroll de 300 ms y tanto
+  con tamaños conocidos como en versión "streaming" (Segment/Cluster sin
+  tamaño, que es lo que escribe MediaRecorder).
+- Conclusión: el fallo estaba en el reproductor del navegador, no en los
+  archivos ni en la migración a Storage.
+
+### Arreglo (`src/components/VoiceNotePlayer.tsx`)
+
+- El audio se resuelve UNA vez con `resolveMediaBlob` (fetch directo y, si el
+  navegador no puede, el proxy `/api/media/download`, que es el único que puede
+  poner el `api_access_token` de Chatwoot/Evolution) y esos bytes se le dan al
+  `<audio>` como `blob:` URL. Antes el elemento siempre recibía la URL remota
+  cruda: si el host no permitía CORS o exigía cabeceras, la reproducción HTML5
+  no arrancaba nunca y el único respaldo era el WebAudio.
+- La duración ahora sale exacta (el archivo ya está en memoria): con OGG/Opus y
+  `preload="metadata"` sobre URL remota el navegador a menudo no la calcula y la
+  burbuja se quedaba en `…`, que es justo el aspecto de "nota vacía".
+- El fallo ya no es silencioso: la burbuja muestra icono + mensaje + botón
+  **Reintentar** (antes `hasError` se asignaba y nunca se pintaba; `AlertCircle`
+  estaba importado sin usar y `onError` sólo podía ponerlo a `false`).
+- Un chat con cientos de notas ya no abre cientos de descargas simultáneas:
+  cola de 2 en paralelo (`pedirTurnoDeDescarga`), y se libera el `blob:` URL al
+  cerrar la burbuja.
+
+### Verificación
+
+- `npm run test:audio` (nuevo, `scripts/prueba-reproductor-audio.mjs`) — ✅ 22
+  comprobaciones: monta el componente real en jsdom y verifica que un audio que
+  sólo se consigue por el proxy acaba con `src="blob:..."` y suena, que un audio
+  imposible muestra el aviso y el botón Reintentar (y que reintentar vuelve a
+  descargar), y que la cola limita a 2 descargas. **La misma prueba falla en 6
+  puntos contra el reproductor anterior**, que dejaba `src` apuntando a la URL
+  de Chatwoot y la burbuja en `0:00 …` sin ningún aviso.
+- `npm run test:remux` ✅ · `npm run test:tiempo` ✅ (60) ·
+  `npm run test:rr-storage` ✅ · `npm run check:luna` ✅ (80)
+- `npx tsc --noEmit` ✅ · `npm run build` ✅
+- Es sólo web: se activa con el deploy de Vercel, sin rebuild del APK.
 
 ## Build 2026-09-15: ventana de 24 h, fechas en el chat, guardado en Google y etapa Vencidos
 

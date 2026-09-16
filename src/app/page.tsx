@@ -2098,24 +2098,27 @@ export default function CRMApp() {
       // Un anuncio = un VIDEO DIFERENTE de la Fan Page
       const videosElegidos = videosSeleccionadosObj;
       const copyAgenteBase = nuevaCampCopy.trim();
-      const copyVideoBase = (videosElegidos[0]?.description || videosElegidos[0]?.title || "").trim();
+      const copyVideoBase = String((videosElegidos[0] as any)?.copy_original || (videosElegidos[0] as any)?.description || "").trim();
 
       const anunciosConCopy = Array.from({ length: nuevaCampNumAnuncios }, (_, i) => {
-        const vid = videosElegidos[i] || null;
-        const descVideo = (vid?.description || vid?.title || "").trim();
+        const vid: any = videosElegidos[i] || null;
+        // Solo el COPY ORIGINAL real; el título NO es copy y no debe usarse como tal.
+        const descVideo = String(vid?.copy_original || vid?.description || "").trim();
         let copyFinal = "";
         let origen = "";
         if (usarCopyVideo) {
           if (descVideo) {
+            // COPY ORIGINAL tal cual está publicado en la fan page
             copyFinal = nuevaCampCopies[i]?.trim() ? `${descVideo}\n\n--- Variación ${i + 1} ---\n${nuevaCampCopies[i]}` : descVideo;
-            origen = nuevaCampCopies[i]?.trim() ? "video + agente" : "video";
+            origen = nuevaCampCopies[i]?.trim() ? "copy original del video + variación" : "copy original del video";
           } else {
-            copyFinal = nuevaCampCopies[i]?.trim() || copyAgenteBase || `🔮 ${nuevaCampNombre || "Templo Místico"} - Consulta espiritual personalizada. Escríbenos al WhatsApp y descubre tu destino. ✨`;
-            origen = nuevaCampCopies[i]?.trim() ? "agente variación" : (copyAgenteBase ? "agente" : "auto");
+            // Sin copy original: se usa lo que escriba el agente. NUNCA se inventa texto.
+            copyFinal = nuevaCampCopies[i]?.trim() || copyAgenteBase || "";
+            origen = nuevaCampCopies[i]?.trim() ? "agente variación" : (copyAgenteBase ? "agente" : "⚠️ este video no tiene copy — escribe uno");
           }
         } else {
-          copyFinal = nuevaCampCopies[i]?.trim() || copyAgenteBase || `🔮 ${nuevaCampNombre || "Templo Místico"} - Amarres, retornos, tarot. Resultados garantizados. WhatsApp ahora.`;
-          origen = nuevaCampCopies[i]?.trim() ? "agente variación" : (copyAgenteBase ? "agente" : "auto");
+          copyFinal = nuevaCampCopies[i]?.trim() || copyAgenteBase || "";
+          origen = nuevaCampCopies[i]?.trim() ? "agente variación" : (copyAgenteBase ? "agente" : "⚠️ falta copy — escribe uno");
         }
         return {
           id: i + 1,
@@ -2299,15 +2302,28 @@ export default function CRMApp() {
       // Copy por anuncio: cada uno usa la descripción de SU propio video
       const adCopiesFinal = Array.from({ length: nuevaCampNumAnuncios }, (_, i) => {
         const vid: any = videosElegidos[i];
-        const descVideo = (vid?.description || "").trim();
+        // COPY ORIGINAL del video publicado en la fan page
+        const descVideo = String(vid?.copy_original || vid?.description || "").trim();
         const base = usarCopyVideo && descVideo ? descVideo : nuevaCampCopy.trim();
         const variacion = nuevaCampCopies[i]?.trim() || "";
         if (variacion) return base ? `${base}\n\n${variacion}` : variacion;
-        return base || `${nuevaCampNombre.trim()} - Consulta espiritual por WhatsApp`;
+        return base;
       });
 
+      // Si algún anuncio quedaría sin texto, se avisa en vez de inventar copy
+      const sinCopy = adCopiesFinal
+        .map((c, i) => (c.trim() ? null : i + 1))
+        .filter(Boolean);
+      if (sinCopy.length > 0) {
+        alert(
+          `Los anuncios ${sinCopy.join(", ")} no tienen copy.\n\nEsos videos no traen texto publicado en la fan page, así que escribe un copy en "Copy del Anuncio" o en la variación correspondiente.`
+        );
+        setGuardandoCampana(false);
+        return;
+      }
+
       const copyBase = usarCopyVideo
-        ? (videosElegidos[0] as any)?.description?.trim() || nuevaCampCopy.trim()
+        ? String((videosElegidos[0] as any)?.copy_original || (videosElegidos[0] as any)?.description || "").trim() || nuevaCampCopy.trim()
         : nuevaCampCopy.trim();
 
       const payload = {
@@ -4574,6 +4590,13 @@ export default function CRMApp() {
                       const isVidMsg = isVideoMessage(msg);
                       const isDocMsg = isFileMessage(msg);
                       const slug = slugFoto(getDisplayName(clienteActual, selectedConv));
+                      // Sufijo único por mensaje (fecha + n.º) para que cada
+                      // adjunto descargado tenga su propio nombre y no se pisen.
+                      const sufijoMsg = (() => {
+                        const d = new Date(msg.creado_en || Date.now());
+                        const p2 = (n: number) => String(n).padStart(2, "0");
+                        return `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}-${idxMsg + 1}`;
+                      })();
                       const pieDeFoto = textoAdjuntoMultimedia(msg);
                       // Marca horizontal de fecha: se dibuja solo cuando el
                       // mensaje cambia de día respecto al anterior (o es el
@@ -4601,7 +4624,7 @@ export default function CRMApp() {
                                   <div className="space-y-2">
                                     <ChatImage
                                       src={msg.url_archivo}
-                                      filename={guessImageFilename(String(msg.url_archivo), `foto-${slug}-${isMe ? "enviada" : "cliente"}`)}
+                                      filename={guessImageFilename(String(msg.url_archivo), `foto-${slug}-${isMe ? "enviada" : "cliente"}-${sufijoMsg}`)}
                                     />
                                     {pieDeFoto && <p className="text-sm whitespace-pre-wrap leading-relaxed">{pieDeFoto}</p>}
                                   </div>
@@ -4612,7 +4635,7 @@ export default function CRMApp() {
                                   <div className="space-y-2">
                                     <ChatVideo
                                       src={msg.url_archivo}
-                                      filename={guessFilename(String(msg.url_archivo), `video-${slug}-${isMe ? "enviado" : "cliente"}.mp4`, "video/mp4")}
+                                      filename={guessFilename(String(msg.url_archivo), `video-${slug}-${isMe ? "enviado" : "cliente"}-${sufijoMsg}.mp4`, "video/mp4")}
                                       isMe={isMe}
                                     />
                                     {pieDeFoto && <p className="text-sm whitespace-pre-wrap leading-relaxed">{pieDeFoto}</p>}
@@ -6262,7 +6285,9 @@ export default function CRMApp() {
                               <div className="min-w-0 flex-1">
                                 <p className={`text-[11px] font-semibold truncate ${elegido ? "text-purple-200" : "text-gray-200"}`}>{v.title}</p>
                                 <p className="text-[9px] text-gray-500">{v.views ? `${Number(v.views).toLocaleString("es-CO")} vistas • ` : ""}{v.length ? `${v.length}s • ` : ""}{v.createdTime ? new Date(v.createdTime).toLocaleDateString("es-CO", { day:"2-digit", month:"short", year:"numeric" }) : ""}</p>
-                                {v.description && <p className="text-[9px] text-gray-500 line-clamp-1 mt-0.5">{v.description}</p>}
+                                {v.tiene_copy
+                                  ? <p className="text-[9px] text-gray-400 line-clamp-2 mt-0.5 whitespace-pre-wrap">📝 {v.copy_original || v.description}</p>
+                                  : <p className="text-[9px] text-amber-500/80 mt-0.5">⚠️ Sin copy publicado — tendrás que escribirlo</p>}
                               </div>
                               <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold shrink-0 ${elegido ? "bg-purple-600 text-white" : "bg-surface border border-border text-gray-500"}`}>{elegido ? `Anuncio ${pos+1}` : "Elegir"}</span>
                             </button>
@@ -6275,6 +6300,28 @@ export default function CRMApp() {
                       <button type="button" onClick={()=>setUsarCopyVideo(true)} className={`flex-1 py-1.5 rounded-lg text-[10px] font-bold border ${usarCopyVideo?"bg-purple-600 border-purple-500 text-white":"bg-surface border-border text-gray-400"}`}>Usar copy de cada video</button>
                       <button type="button" onClick={()=>setUsarCopyVideo(false)} className={`flex-1 py-1.5 rounded-lg text-[10px] font-bold border ${!usarCopyVideo?"bg-amber-600 border-amber-500 text-white":"bg-surface border-border text-gray-400"}`}>Usar copy del agente</button>
                     </div>
+
+                    {/* COPY ORIGINAL COMPLETO DE CADA VIDEO ELEGIDO */}
+                    {usarCopyVideo && videosSeleccionadosObj.length > 0 && (
+                      <div className="space-y-1.5 pt-1">
+                        <p className="text-[10px] font-bold text-purple-300">📝 Copy original publicado en la fan page:</p>
+                        {videosSeleccionadosObj.map((v: any, idx: number) => (
+                          <div key={v.id} className="p-2 rounded-lg bg-background/70 border border-border/60">
+                            <div className="flex items-center justify-between gap-2 mb-1">
+                              <span className="text-[9px] font-bold text-gray-300 truncate">Anuncio {idx + 1} · {v.title}</span>
+                              <span className={`text-[8px] px-1.5 py-0.5 rounded shrink-0 ${v.tiene_copy ? "bg-emerald-950 text-emerald-300 border border-emerald-800" : "bg-amber-950 text-amber-300 border border-amber-800"}`}>
+                                {v.copy_origen === "post" ? "texto del post" : v.copy_origen === "video_description" ? "descripción del video" : v.copy_origen === "video_node" ? "texto del video" : "sin copy"}
+                              </span>
+                            </div>
+                            {v.tiene_copy ? (
+                              <p className="text-[10px] text-gray-300 whitespace-pre-wrap leading-snug max-h-24 overflow-y-auto">{v.copy_original || v.description}</p>
+                            ) : (
+                              <p className="text-[10px] text-amber-400/90">Este video no tiene texto publicado. Escribe el copy abajo para este anuncio.</p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
 
                   {/* COPY DEL AGENTE - BASE + VARIACIONES 1-5 */}
@@ -6411,7 +6458,7 @@ export default function CRMApp() {
                     </div>
                     {previewCampana.copy_base_video && (
                       <div className="p-2 rounded-lg bg-purple-950/20 border border-purple-800/30 text-[10px]">
-                        <p className="text-purple-300 font-bold">📹 Copy original del video seleccionado:</p>
+                        <p className="text-purple-300 font-bold">📹 Copy original publicado en la fan page:</p>
                         <p className="text-gray-400 whitespace-pre-wrap mt-1">{previewCampana.copy_base_video.substring(0,300)}{previewCampana.copy_base_video.length>300?"...":""}</p>
                       </div>
                     )}

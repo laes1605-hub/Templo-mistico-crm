@@ -393,10 +393,11 @@ export async function POST(req: Request) {
         detalle: Array.from({ length: numeroAnuncios }, (_, i) => {
           const vid = videosElegidos[i] || videosElegidos[0] || null;
           const descVideo = (vid?.description || "").trim() || copyVideoOriginal;
+          // Nunca se inventa copy: si no hay texto real, queda vacío y se avisa.
           const copyFinal =
             adCopies?.[i] ||
             (usarVideoFlag && descVideo ? descVideo : copyAgenteOriginal) ||
-            `${name.trim()} - Anuncio ${i + 1}`;
+            "";
           return {
             index: i + 1,
             nombre: `${name.trim()} - Anuncio ${i + 1}`,

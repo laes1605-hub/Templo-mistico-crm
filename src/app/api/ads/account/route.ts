@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getMetaConfig } from "@/lib/meta-config";
+import { getMetaConfig, metaGraph } from "@/lib/meta-config";
 
 export const dynamic = "force-dynamic";
 
@@ -11,6 +11,10 @@ function money(n: number | null, currency: string) {
 /**
  * GET /api/ads/account
  * Devuelve el SALDO TOTAL de la cuenta publicitaria y el GASTO DE HOY.
+ *
+ * Robusto: si Meta rechaza algún campo opcional, reintenta con campos mínimos
+ * en vez de devolver error. Los detalles de pago se piden aparte (best-effort)
+ * para que nunca tumben la consulta principal.
  */
 export async function GET() {
   try {
@@ -23,7 +27,12 @@ export async function GET() {
       });
     }
 
-    const fields = [
+    const debug: string[] = [];
+    const tokenParam = `access_token=${encodeURIComponent(metaToken)}`;
+
+    // Campos principales. NOTA: NO pedir next_bill_date ni funding_source aquí:
+    // no existen / tumban toda la consulta en cuentas que no los soportan.
+    const coreFields = [
       "account_id",
       "name",
       "account_status",
@@ -32,45 +41,46 @@ export async function GET() {
       "currency",
       "spend_cap",
       "timezone_name",
-      "is_prepay_account",
-      "funding_source",
-      "funding_source_details",
-      "next_bill_date",
     ].join(",");
+    const extraFields = "is_prepay_account";
 
-    const accountUrl = `https://graph.facebook.com/v19.0/act_${adAccountId}?fields=${fields}&access_token=${encodeURIComponent(metaToken)}`;
-    const todayUrl = `https://graph.facebook.com/v19.0/act_${adAccountId}/insights?fields=spend,impressions,clicks,actions&date_preset=today&access_token=${encodeURIComponent(metaToken)}`;
-    const monthUrl = `https://graph.facebook.com/v19.0/act_${adAccountId}/insights?fields=spend&date_preset=last_30d&access_token=${encodeURIComponent(metaToken)}`;
+    async function leerCuenta(fields: string) {
+      const url = metaGraph(`/act_${adAccountId}?fields=${fields}&${tokenParam}`);
+      const res = await fetch(url, { cache: "no-store" });
+      const json = await res.json().catch(() => ({}));
+      return { res, json };
+    }
 
-    const [accRes, todayRes, monthRes] = await Promise.all([
-      fetch(accountUrl, { cache: "no-store" }).catch((e) => ({ ok: false, json: async () => ({ error: { message: e.message } }) } as any)),
-      fetch(todayUrl, { cache: "no-store" }).catch(() => null as any),
-      fetch(monthUrl, { cache: "no-store" }).catch(() => null as any),
-    ]);
+    // 1) Cuenta: intento con is_prepay_account, reintento sin él si Meta se queja
+    let { res: accRes, json: data } = await leerCuenta(`${coreFields},${extraFields}`);
+    if ((!accRes.ok || data?.error) && /100|field|param/i.test(String(data?.error?.code || "") + (data?.error?.message || ""))) {
+      debug.push(`cuenta con extras falló (${data?.error?.message || accRes.status}), reintentando mínimo`);
+      ({ res: accRes, json: data } = await leerCuenta(coreFields));
+    }
+    debug.push(`cuenta: ${accRes.status}${data?.error ? " " + data.error.message : ""}`);
 
-    const data = await accRes.json();
-
-    if (!accRes.ok || data.error) {
+    if (!accRes.ok || data?.error) {
       return NextResponse.json({
         ok: false,
-        error: data?.error?.message || `HTTP ${accRes.status || "Error"}`,
+        error: data?.error?.message
+          ? `Meta dice: ${data.error.message}`
+          : `No se pudo leer la cuenta act_${adAccountId} (HTTP ${accRes.status})`,
+        hint: "Verifica que el token tenga permiso ads_read y acceso a esta cuenta en Business Manager.",
         account: null,
-        debug: data,
+        debug,
       });
     }
 
-    const currency = data.currency || "COP";
-    const balanceNum = data.balance !== undefined && data.balance !== null ? Number(data.balance) / 100 : null;
-    const spentNum = data.amount_spent ? Number(data.amount_spent) / 100 : 0;
-    const capNum = data.spend_cap && Number(data.spend_cap) > 0 ? Number(data.spend_cap) / 100 : null;
-    const esPrepago = Boolean(data.is_prepay_account);
-
+    // 2) Gasto de hoy + últimos 30 días (llamadas separadas: si fallan, igual se muestra el saldo)
     let spendToday = 0;
     let leadsToday = 0;
     let clicksToday = 0;
     let impressionsToday = 0;
     try {
-      const todayJson = todayRes ? await todayRes.json() : null;
+      const todayUrl = metaGraph(`/act_${adAccountId}/insights?fields=spend,impressions,clicks,actions&date_preset=today&${tokenParam}`);
+      const todayRes = await fetch(todayUrl, { cache: "no-store" });
+      const todayJson = await todayRes.json().catch(() => null);
+      debug.push(`insights hoy: ${todayRes.status}`);
       const row = todayJson?.data?.[0];
       if (row) {
         spendToday = Number(row.spend || 0);
@@ -87,13 +97,38 @@ export async function GET() {
             .reduce((s: number, a: any) => s + Number(a.value || 0), 0);
         }
       }
-    } catch {}
+    } catch (e: any) {
+      debug.push(`insights hoy error: ${e.message}`);
+    }
 
     let spendLast30 = 0;
     try {
-      const monthJson = monthRes ? await monthRes.json() : null;
+      const monthUrl = metaGraph(`/act_${adAccountId}/insights?fields=spend&date_preset=last_30d&${tokenParam}`);
+      const monthRes = await fetch(monthUrl, { cache: "no-store" });
+      const monthJson = await monthRes.json().catch(() => null);
+      debug.push(`insights 30d: ${monthRes.status}`);
       spendLast30 = Number(monthJson?.data?.[0]?.spend || 0);
-    } catch {}
+    } catch (e: any) {
+      debug.push(`insights 30d error: ${e.message}`);
+    }
+
+    // 3) Método de pago (best-effort, nunca bloquea)
+    let paymentMethod: string | null = null;
+    try {
+      const payUrl = metaGraph(`/act_${adAccountId}?fields=funding_source_details&${tokenParam}`);
+      const payRes = await fetch(payUrl, { cache: "no-store" });
+      const payJson = await payRes.json().catch(() => null);
+      paymentMethod = payJson?.funding_source_details?.display_string || null;
+      debug.push(`pago: ${payRes.status}`);
+    } catch (e: any) {
+      debug.push(`pago error: ${e.message}`);
+    }
+
+    const currency = data.currency || "COP";
+    const balanceNum = data.balance !== undefined && data.balance !== null ? Number(data.balance) / 100 : null;
+    const spentNum = data.amount_spent ? Number(data.amount_spent) / 100 : 0;
+    const capNum = data.spend_cap && Number(data.spend_cap) > 0 ? Number(data.spend_cap) / 100 : null;
+    const esPrepago = data.is_prepay_account === true || data.is_prepay_account === 1;
 
     const saldoDisponible = esPrepago
       ? balanceNum
@@ -101,10 +136,9 @@ export async function GET() {
         ? capNum - spentNum
         : null;
 
-    const fundingDetails = data.funding_source_details || null;
-
     return NextResponse.json({
       ok: true,
+      debug,
       account: {
         id: data.account_id || adAccountId,
         act_id: `act_${adAccountId}`,
@@ -142,11 +176,7 @@ export async function GET() {
         spend_last_30d: spendLast30,
         spend_last_30d_formatted: money(spendLast30, currency),
 
-        next_bill_date: data.next_bill_date || null,
-        funding_source: data.funding_source || null,
-        funding_source_details: fundingDetails,
-        payment_method: fundingDetails?.display_string || null,
-
+        payment_method: paymentMethod,
         updated_at: new Date().toISOString(),
       },
       note: "El saldo solo se puede recargar desde Meta Business → Facturación. La API de Meta no permite agregar fondos.",

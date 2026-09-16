@@ -1,19 +1,7 @@
-import { getMetaConfig } from "@/lib/meta-config";
+import { getMetaConfig, metaGraph } from "@/lib/meta-config";
 import { NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
-
-function getMetaCredentials() {
-  const metaToken = (process.env.META_MARKETING_TOKEN || "")
-    .replace(/[\r\n\t "']/g, "")
-    .replace(/^Bearer\s+/i, "")
-    .trim();
-  let adAccountId = (process.env.META_AD_ACCOUNT_ID || "")
-    .replace(/[\r\n\t "']/g, "")
-    .replace(/^act_/, "")
-    .trim();
-  return { metaToken, adAccountId };
-}
 
 type Segmentacion = {
   id: string;
@@ -78,10 +66,14 @@ function extraerDeTargeting(t: any): Partial<Segmentacion> {
 /**
  * GET /api/ads/segmentations
  *
- * Devuelve TODAS las segmentaciones guardadas en la cuenta publicitaria:
- *  - Públicos guardados (saved_audiences)
- *  - Públicos personalizados (custom_audiences)
- *  - Segmentaciones usadas en los conjuntos de anuncios existentes (adsets)
+ * Devuelve las segmentaciones de la cuenta publicitaria configurada:
+ *  - Públicos guardados (saved_audiences) ← los del Administrador de anuncios
+ *  - Públicos personalizados (customaudiences)
+ *  - Segmentaciones usadas en conjuntos de anuncios existentes (adsets)
+ *
+ * NOTA: solo se piden campos que existen en la API. Pedir un campo inválido
+ * (p. ej. run_status) hace que Meta devuelva error en TODA la consulta y la
+ * lista llegue vacía o incompleta.
  */
 export async function GET() {
   try {
@@ -94,16 +86,21 @@ export async function GET() {
       });
     }
 
+    const tokenParam = `access_token=${encodeURIComponent(metaToken)}`;
     const segmentations: Segmentacion[] = [];
     const debug: string[] = [];
+    let nSaved = 0;
+    let nCustom = 0;
+    let nAdsets = 0;
 
     // 1) Públicos guardados (lo que en el Administrador de anuncios aparece como "Públicos guardados")
     try {
-      const url = `https://graph.facebook.com/v19.0/act_${adAccountId}/saved_audiences?fields=id,name,description,targeting,approximate_count,time_updated,run_status&limit=200&access_token=${encodeURIComponent(metaToken)}`;
+      const url = metaGraph(`/act_${adAccountId}/saved_audiences?fields=id,name,description,targeting,approximate_count,time_updated&limit=200&${tokenParam}`);
       const res = await fetch(url, { cache: "no-store" });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       debug.push(`saved_audiences: ${res.status} (${data?.data?.length || 0})${data?.error ? " " + data.error.message : ""}`);
       for (const sa of data?.data || []) {
+        nSaved++;
         segmentations.push({
           id: String(sa.id),
           nombre: sa.name || `Público guardado ${sa.id}`,
@@ -120,11 +117,12 @@ export async function GET() {
 
     // 2) Públicos personalizados (listas, lookalikes, retargeting)
     try {
-      const url = `https://graph.facebook.com/v19.0/act_${adAccountId}/customaudiences?fields=id,name,description,subtype,approximate_count_lower_bound,approximate_count_upper_bound,time_updated,delivery_status&limit=200&access_token=${encodeURIComponent(metaToken)}`;
+      const url = metaGraph(`/act_${adAccountId}/customaudiences?fields=id,name,description,subtype,approximate_count_lower_bound,approximate_count_upper_bound,time_updated&limit=200&${tokenParam}`);
       const res = await fetch(url, { cache: "no-store" });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       debug.push(`customaudiences: ${res.status} (${data?.data?.length || 0})${data?.error ? " " + data.error.message : ""}`);
       for (const ca of data?.data || []) {
+        nCustom++;
         segmentations.push({
           id: String(ca.id),
           nombre: ca.name || `Público personalizado ${ca.id}`,
@@ -142,12 +140,12 @@ export async function GET() {
     }
 
     // 3) Segmentaciones que ya se usan en conjuntos de anuncios existentes.
-    //    Muchas veces la segmentación "que necesito" nunca se guardó como público,
-    //    solo vive dentro de un adset: aquí también la ofrecemos.
+    //    Muchas veces la segmentación que se necesita nunca se guardó como público,
+    //    solo vive dentro de un adset: aquí también se ofrece.
     try {
-      const url = `https://graph.facebook.com/v19.0/act_${adAccountId}/adsets?fields=id,name,targeting,effective_status,updated_time,campaign{name}&limit=200&access_token=${encodeURIComponent(metaToken)}`;
+      const url = metaGraph(`/act_${adAccountId}/adsets?fields=id,name,targeting,effective_status,updated_time,campaign{name}&limit=200&${tokenParam}`);
       const res = await fetch(url, { cache: "no-store" });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       debug.push(`adsets: ${res.status} (${data?.data?.length || 0})${data?.error ? " " + data.error.message : ""}`);
       const vistos = new Set<string>();
       for (const adset of data?.data || []) {
@@ -162,6 +160,7 @@ export async function GET() {
         });
         if (vistos.has(huella)) continue;
         vistos.add(huella);
+        nAdsets++;
         segmentations.push({
           id: `adset_${adset.id}`,
           nombre: adset.name || `Conjunto ${adset.id}`,
@@ -178,12 +177,16 @@ export async function GET() {
     return NextResponse.json({
       ok: true,
       total: segmentations.length,
+      counts: { saved: nSaved, custom: nCustom, adsets: nAdsets },
+      ad_account_id: adAccountId,
       segmentations,
       debug,
       note:
         segmentations.length === 0
-          ? "No se encontraron segmentaciones guardadas. Verifica que el token tenga permiso ads_read sobre la cuenta."
-          : `${segmentations.length} segmentaciones encontradas (públicos guardados, personalizados y en uso).`,
+          ? `La cuenta act_${adAccountId} no devolvió segmentaciones. Verifica que el token tenga permiso ads_read sobre esa cuenta.`
+          : nSaved === 0
+            ? `${segmentations.length} segmentaciones en act_${adAccountId} (${nCustom} personalizados, ${nAdsets} en uso). Esta cuenta no tiene públicos guardados: créalos en el Administrador de anuncios → Públicos.`
+            : `${nSaved} públicos guardados + ${nCustom} personalizados + ${nAdsets} en uso (cuenta act_${adAccountId}).`,
     });
   } catch (error: any) {
     return NextResponse.json({ ok: false, segmentations: [], error: error.message }, { status: 500 });

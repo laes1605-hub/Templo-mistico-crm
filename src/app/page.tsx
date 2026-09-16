@@ -309,6 +309,7 @@ export default function CRMApp() {
   const [pageVideos, setPageVideos] = useState<any[]>([]);
   const [loadingVideos, setLoadingVideos] = useState(false);
   const [selectedVideoId, setSelectedVideoId] = useState<string>("");
+  const [videosNota, setVideosNota] = useState<string>("");
 
   const [isEditingNombre, setIsEditingNombre] = useState(false);
   const [tempNombre, setTempNombre] = useState("");
@@ -1961,6 +1962,8 @@ export default function CRMApp() {
           setSelectedVideoId(data.videos[0].id);
         }
       }
+      setVideosNota([data.pageWarning, data.note].filter(Boolean).join(" "));
+      if (data.error) setVideosNota(data.error);
     } catch (err) {
       console.warn("Error cargando videos de Fan Page:", err);
     } finally {
@@ -2047,7 +2050,7 @@ export default function CRMApp() {
       if (data.account) {
         setAccountInfo({ ...data.account, billing_url: data.billing_url });
       } else if (data.error) {
-        setAccountInfo({ error: data.error, billing_url: data.billing_url });
+        setAccountInfo({ error: data.error, hint: data.hint, debug: data.debug, billing_url: data.billing_url });
       }
     } catch (err) {
       console.warn("Error cargando cuenta:", err);
@@ -5821,7 +5824,7 @@ export default function CRMApp() {
                 </div>
               </div>
 
-              {accountInfo ? (
+              {accountInfo && !accountInfo.error ? (
                 <>
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                     <div className="p-3 rounded-xl bg-background border border-emerald-900/40">
@@ -5852,18 +5855,20 @@ export default function CRMApp() {
                     </a>
                   </p>
                 </>
+              ) : accountInfo?.error ? (
+                <div className="text-[11px] text-center py-4 border border-amber-800/50 bg-amber-950/20 rounded-xl px-4 space-y-1.5">
+                  <p className="font-semibold text-amber-300">⚠️ Respuesta de Meta: {accountInfo.error}</p>
+                  {accountInfo.hint && <p className="text-[10px] text-gray-400">{accountInfo.hint}</p>}
+                  {Array.isArray(accountInfo.debug) && accountInfo.debug.length > 0 && (
+                    <p className="text-[9px] text-gray-500 font-mono">{accountInfo.debug.join(" • ")}</p>
+                  )}
+                  <button type="button" onClick={() => { fetchAccountInfo(); }} className="text-[10px] text-emerald-400 hover:text-emerald-300 underline font-semibold">
+                    Reintentar consulta
+                  </button>
+                </div>
               ) : (
                 <div className="text-[11px] text-gray-400 text-center py-4 border border-dashed border-border rounded-xl px-4">
-                  {loadingAccount ? (
-                    "Consultando saldo en Meta..."
-                  ) : accountInfo?.error ? (
-                    <div className="space-y-1 text-amber-300">
-                      <p className="font-semibold">⚠️ Respuesta de Meta: {accountInfo.error}</p>
-                      <p className="text-[10px] text-gray-400">Asegúrate de que el token tenga acceso al ID de cuenta 1393659139005209.</p>
-                    </div>
-                  ) : (
-                    "Sin datos de cuenta — verifica META_AD_ACCOUNT_ID y META_MARKETING_TOKEN"
-                  )}
+                  {loadingAccount ? "Consultando saldo en Meta..." : "Sin datos de cuenta — verifica META_AD_ACCOUNT_ID y META_MARKETING_TOKEN"}
                 </div>
               )}
             </div>
@@ -6270,6 +6275,7 @@ export default function CRMApp() {
                       <label className="text-xs text-gray-300 font-bold flex items-center gap-1.5"><Video className="w-3.5 h-3.5 text-purple-400" /> Videos de la Fan Page</label>
                       <button type="button" onClick={fetchVideosFanPage} className="text-[10px] text-purple-400 hover:text-purple-300 flex items-center gap-1"><RefreshCw className={`w-3 h-3 ${loadingVideos?'animate-spin':''}`} /> Refrescar</button>
                     </div>
+                    {videosNota && <p className="text-[9px] text-gray-500 leading-snug">{videosNota}</p>}
 
                     <div className={`p-2 rounded-lg text-[10px] font-semibold border ${videosSeleccionadosObj.length === nuevaCampNumAnuncios ? "bg-emerald-950/40 border-emerald-800/50 text-emerald-300" : "bg-amber-950/40 border-amber-800/50 text-amber-300"}`}>
                       {videosSeleccionadosObj.length === nuevaCampNumAnuncios
@@ -6325,7 +6331,12 @@ export default function CRMApp() {
                               </span>
                             </div>
                             {v.tiene_copy ? (
-                              <p className="text-[10px] text-gray-300 whitespace-pre-wrap leading-snug max-h-24 overflow-y-auto">{v.copy_original || v.description}</p>
+                              <>
+                                <p className="text-[10px] text-gray-300 whitespace-pre-wrap leading-snug max-h-24 overflow-y-auto">{v.copy_original || v.description}</p>
+                                {v.permalink && (
+                                  <a href={v.permalink} target="_blank" rel="noreferrer" onClick={(e)=>e.stopPropagation()} className="text-[9px] text-purple-400 hover:text-purple-300 underline">Ver publicación original ↗ (verifica que el copy sea este)</a>
+                                )}
+                              </>
                             ) : (
                               <p className="text-[10px] text-amber-400/90">Este video no tiene texto publicado. Escribe el copy abajo para este anuncio.</p>
                             )}
@@ -6370,17 +6381,17 @@ export default function CRMApp() {
                         className="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500"
                       >
                         <option value="">— Elegir segmentación guardada —</option>
-                        <optgroup label="Públicos guardados">
+                        <optgroup label={`Públicos guardados (${segmentacionesGuardadas.filter((x:any)=>x.origen==="saved_audience").length})`}>
                           {segmentacionesGuardadas.filter((x:any)=>x.origen==="saved_audience").map((x:any)=>(
-                            <option key={x.id} value={x.id}>{x.nombre}{x.tamano_aprox?` (${Number(x.tamano_aprox).toLocaleString("es-CO")})`:""}</option>
+                            <option key={x.id} value={x.id}>{x.nombre}{typeof x.tamano_aprox === "number" ? ` (${x.tamano_aprox.toLocaleString("es-CO")})` : ""}</option>
                           ))}
                         </optgroup>
-                        <optgroup label="Públicos personalizados">
+                        <optgroup label={`Públicos personalizados (${segmentacionesGuardadas.filter((x:any)=>x.origen==="custom_audience").length})`}>
                           {segmentacionesGuardadas.filter((x:any)=>x.origen==="custom_audience").map((x:any)=>(
                             <option key={x.id} value={x.id}>{x.nombre}</option>
                           ))}
                         </optgroup>
-                        <optgroup label="Segmentaciones en uso (conjuntos de anuncios)">
+                        <optgroup label={`En uso en conjuntos (${segmentacionesGuardadas.filter((x:any)=>x.origen==="adset").length})`}>
                           {segmentacionesGuardadas.filter((x:any)=>x.origen==="adset").map((x:any)=>(
                             <option key={x.id} value={x.id}>{x.nombre}</option>
                           ))}
@@ -6404,13 +6415,16 @@ export default function CRMApp() {
                       <div><span className="text-gray-500">Intereses:</span><div className="flex flex-wrap gap-1 mt-1">{(segmentacionGuardada?.interests || []).slice(0,6).map((it:string,idx:number)=>(<span key={idx} className="text-[9px] px-1.5 py-0.5 rounded bg-purple-950 border border-purple-800 text-purple-300">{it}</span>))}{(segmentacionGuardada?.interests||[]).length===0 && <span className="text-gray-600">Sin intereses definidos</span>}</div></div>
                       <div className="flex justify-between"><span>Destino:</span><span className="text-emerald-300 font-bold">WHATSAPP_ONLY</span></div>
                     </div>
+                    {segmentacionesGuardadas.length > 0 && segmentacionesGuardadas.filter((x:any)=>x.origen==="saved_audience").length === 0 && !loadingSegmentaciones && (
+                      <p className="text-[10px] text-amber-300/90 bg-amber-950/20 border border-amber-800/40 rounded-lg p-2">⚠️ Esta cuenta publicitaria no tiene públicos guardados (o el token no tiene permiso ads_read). Los que ves son personalizados o segmentaciones en uso. Crea públicos en el Administrador de anuncios → Públicos.</p>
+                    )}
                     {segmentacionesNota && segmentacionesGuardadas.length > 0 && <p className="text-[9px] text-gray-500">{segmentacionesNota}</p>}
                   </div>
 
                   {/* SALDO CUENTA PUBLICITARIA (solo lectura - Meta no permite recargar por API) */}
                   <div className="p-3 rounded-xl bg-gray-900/60 border border-border space-y-2">
                     <div className="flex items-center justify-between"><label className="text-xs text-gray-300 font-bold">💳 Saldo Cuenta Publicitaria</label><button type="button" onClick={fetchAccountInfo} className="text-[10px] text-gray-400 hover:text-white flex items-center gap-1"><RefreshCw className={`w-3 h-3 ${loadingAccount?'animate-spin':''}`} /> Actualizar</button></div>
-                    {accountInfo ? (
+                    {accountInfo && !accountInfo.error ? (
                       <div className="text-[11px] space-y-1 bg-background/80 p-2.5 rounded-lg border border-border">
                         <div className="flex justify-between"><span className="text-gray-500">Cuenta:</span><span className="text-gray-200 font-mono truncate max-w-[60%] text-right">{accountInfo.name || accountInfo.id}</span></div>
                         <div className="flex justify-between"><span className="text-gray-500">Saldo total:</span><span className="text-emerald-400 font-bold">{accountInfo.saldo_disponible_formatted || accountInfo.balance_formatted}</span></div>
@@ -6418,6 +6432,8 @@ export default function CRMApp() {
                         <div className="flex justify-between"><span className="text-gray-500">Gastado total:</span><span className="text-gray-300">{accountInfo.amount_spent_formatted}</span></div>
                         <div className="flex justify-between"><span className="text-gray-500">Límite:</span><span className="text-gray-300">{accountInfo.spend_cap_formatted}</span></div>
                       </div>
+                    ) : accountInfo?.error ? (
+                      <div className="text-[11px] text-center py-2 px-2 border border-amber-800/50 bg-amber-950/20 rounded-lg text-amber-300">⚠️ {accountInfo.error}</div>
                     ) : (<div className="text-[11px] text-gray-500 text-center py-2 border border-dashed border-border rounded-lg">{loadingAccount?"Cargando cuenta...":"Sin datos de cuenta - verifica META_AD_ACCOUNT_ID"}</div>)}
                     <p className="text-[9px] text-gray-500">La API de Meta no permite recargar saldo. Hazlo en <a href={accountInfo?.billing_url || "https://business.facebook.com/billing_hub/accounts"} target="_blank" rel="noreferrer" className="text-emerald-400 underline">Meta Business → Facturación ↗</a></p>
                   </div>

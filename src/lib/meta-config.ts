@@ -1,5 +1,17 @@
 import { supabaseAdmin } from "./supabase-admin";
 
+/**
+ * Versión vigente de la API de Meta (Graph + Marketing).
+ * v19.0 venció en 2026: TODAS las llamadas deben usar esta constante.
+ * v25.0 es la versión actual recomendada por Meta (feb 2026).
+ */
+export const META_API_VERSION = "v25.0";
+
+export function metaGraph(path: string): string {
+  const p = path.startsWith("/") ? path : `/${path}`;
+  return `https://graph.facebook.com/${META_API_VERSION}${p}`;
+}
+
 export interface MetaWhatsappNumber {
   id: string;
   display_phone_number: string;

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getMetaConfig } from "@/lib/meta-config";
+import { getMetaConfig, metaGraph } from "@/lib/meta-config";
 
 export const dynamic = "force-dynamic";
 
@@ -43,7 +43,7 @@ export async function GET() {
     async function cargarNumerosDeWaba(wabaId: string, wabaName: string, etiqueta: string) {
       if (!metaToken) return;
       try {
-        const pnUrl = `https://graph.facebook.com/v19.0/${wabaId}/phone_numbers?fields=${pnFields}&limit=100&access_token=${encodeURIComponent(metaToken)}`;
+        const pnUrl = metaGraph(`/${wabaId}/phone_numbers?fields=${pnFields}&limit=100&access_token=${encodeURIComponent(metaToken)}`);
         const pnRes = await fetch(pnUrl, { cache: "no-store" });
         const pnData = await pnRes.json();
         debugSteps.push(`${etiqueta} ${wabaId}: ${pnRes.status} (${pnData?.data?.length || 0})`);
@@ -67,13 +67,13 @@ export async function GET() {
     // 2) Consultar en me/businesses por si hay más
     if (metaToken && numbers.length === 0) {
       try {
-        const bizUrl = `https://graph.facebook.com/v19.0/me/businesses?fields=id,name&limit=50&access_token=${encodeURIComponent(metaToken)}`;
+        const bizUrl = metaGraph(`/me/businesses?fields=id,name&limit=50&access_token=${encodeURIComponent(metaToken)}`);
         const bizRes = await fetch(bizUrl, { cache: "no-store" });
         const bizData = await bizRes.json();
         for (const biz of bizData?.data || []) {
           for (const edge of ["owned_whatsapp_business_accounts", "client_whatsapp_business_accounts"]) {
             try {
-              const wabaUrl = `https://graph.facebook.com/v19.0/${biz.id}/${edge}?fields=id,name&limit=50&access_token=${encodeURIComponent(metaToken)}`;
+              const wabaUrl = metaGraph(`/${biz.id}/${edge}?fields=id,name&limit=50&access_token=${encodeURIComponent(metaToken)}`);
               const wabaRes = await fetch(wabaUrl, { cache: "no-store" });
               const wabaData = await wabaRes.json();
               for (const waba of wabaData?.data || []) {

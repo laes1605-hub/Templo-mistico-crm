@@ -22,7 +22,7 @@ import {
   prepararImagenRR,
   adjuntoParaEnviar,
 } from "../lib/respuestas-rapidas";
-import { estaContactoGuardadoEnTelefono, guardarContactoEnTelefono, guardarContactoEnGoogle } from "../lib/contacts";
+import { estaContactoGuardadoEnTelefono, guardarContactoEnTelefono } from "../lib/contacts";
 import DivisorFecha from "../components/DivisorFecha";
 import VentanaWhatsApp from "../components/VentanaWhatsApp";
 import {
@@ -350,9 +350,6 @@ export default function CRMApp() {
   const rrFileInputRef = useRef<HTMLInputElement>(null);
   const [guardandoContacto, setGuardandoContacto] = useState(false);
   const [contactoGuardado, setContactoGuardado] = useState<"nativo" | "vcf" | null>(null);
-  // Guardado del contacto en la cuenta de Google (ficha .vcf → menú de compartir).
-  const [guardandoContactoGoogle, setGuardandoContactoGoogle] = useState(false);
-  const [contactoGoogleNotice, setContactoGoogleNotice] = useState("");
   // null = comprobando / sin acceso a agenda; true = puede llamar; false = debe guardarlo primero.
   const [contactoEnTelefono, setContactoEnTelefono] = useState<boolean | null>(null);
   const [llamandoWhatsApp, setLlamandoWhatsApp] = useState(false);
@@ -938,48 +935,6 @@ export default function CRMApp() {
       alert(e?.message || "No se pudo guardar el contacto en el teléfono.");
     } finally {
       setGuardandoContacto(false);
-    }
-  }
-
-  /**
-   * Guarda el contacto en la CUENTA DE GOOGLE (Google Contacts).
-   *
-   * La agenda donde escribe la APK no permite elegir cuenta, así que el camino
-   * sin configuración es exportar la ficha .vcf y abrir el menú de compartir
-   * del teléfono: ahí se elige Contactos/Google Contacts y la cuenta Google, y
-   * el contacto queda en la nube (y también visible en el teléfono).
-   */
-  async function guardarContactoClienteEnGoogle() {
-    if (!clienteActual || guardandoContactoGoogle) return;
-    const telefono = getTelefonoE164(clienteActual, selectedConv);
-    if (!telefono) {
-      alert("Este cliente no tiene un número de teléfono válido para guardarlo.");
-      return;
-    }
-
-    const nombre = getDisplayName(clienteActual, selectedConv);
-    setGuardandoContactoGoogle(true);
-    setContactoGoogleNotice("");
-    try {
-      const resultado = await guardarContactoEnGoogle(nombre, telefono);
-      if (resultado.metodo === "descarga") {
-        setContactoGoogleNotice(`Se descargó ${resultado.fileName}. Ábrelo en el teléfono y elige tu cuenta de Google.`);
-        alert(
-          `Se descargó ${resultado.fileName}.\n\n` +
-          "Ábrelo en el teléfono: Contactos te dejará elegir la cuenta de Google y ahí queda sincronizado."
-        );
-      } else if (resultado.metodo === "compartir_nativo") {
-        setContactoGoogleNotice(
-          'Elige "Contactos" y tu cuenta de Google. Si Contactos no aparece en el menú, la ficha quedó en Documentos › contactos para abrirla desde Archivos.'
-        );
-      } else {
-        setContactoGoogleNotice(`Elige "Contactos" y tu cuenta de Google en el menú que se abrió.`);
-      }
-    } catch (e: any) {
-      console.error("Error preparando el contacto para Google:", e);
-      alert(e?.message || "No se pudo preparar el contacto para la cuenta de Google.");
-    } finally {
-      setGuardandoContactoGoogle(false);
     }
   }
 
@@ -2122,7 +2077,6 @@ export default function CRMApp() {
     setSelectedConv(conv);
     setClienteActual(conv.clientes);
     setContactoGuardado(null);
-    setContactoGoogleNotice("");
     setContactoEnTelefono(null);
     setLlamandoWhatsApp(false);
     // Al abrir un chat, mantener la subcategoría si estamos en Por leer, En seguimiento o Archivados
@@ -4128,24 +4082,6 @@ export default function CRMApp() {
                         <UserPlus className="w-3.5 h-3.5" />
                         {guardandoContacto ? "Guardando contacto..." : contactoGuardado === "nativo" ? "Contacto guardado en el teléfono" : contactoGuardado === "vcf" ? "Contacto descargado (.vcf)" : "Guardar en teléfono"}
                       </button>
-                      {/* Cuenta de Google: la ficha .vcf se entrega al sistema para
-                          elegir Contactos/Google Contacts y la cuenta Google. */}
-                      <button
-                        onClick={guardarContactoClienteEnGoogle}
-                        disabled={guardandoContactoGoogle || !getTelefonoE164(clienteActual, selectedConv)}
-                        className="w-full mt-2 flex items-center justify-center gap-2 py-2 rounded-lg border text-xs font-semibold transition-all disabled:opacity-50 bg-emerald-950/20 border-emerald-800/50 text-emerald-300 hover:bg-emerald-900/40 hover:border-emerald-600"
-                        title="Exportar la ficha del contacto y guardarla en tu cuenta de Google (Google Contacts)"
-                      >
-                        <Globe className="w-3.5 h-3.5" />
-                        {guardandoContactoGoogle ? "Preparando contacto..." : "Guardar en cuenta Google"}
-                      </button>
-                      {contactoGoogleNotice && (
-                        <p className="text-[10px] text-emerald-300/90 mt-1.5 leading-relaxed">{contactoGoogleNotice}</p>
-                      )}
-                      <p className="text-[10px] text-gray-500 mt-1.5 leading-relaxed">
-                        Se abre el menú de compartir con la ficha lista: elige <span className="text-gray-300 font-semibold">Contactos</span> y tu cuenta
-                        de Google. Así el contacto queda en el teléfono y sincronizado en Google Contacts.
-                      </p>
                       {!clienteActual.es_spam && esConversacionWhatsAppPersonal(selectedConv) && (
                         <>
                           <button

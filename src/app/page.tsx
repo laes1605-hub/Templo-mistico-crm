@@ -245,15 +245,47 @@ export default function CRMApp() {
   const [adsQuery, setAdsQuery] = useState("");
   const [adsStatusFilter, setAdsStatusFilter] = useState<"all" | "ACTIVE" | "PAUSED">("all");
 
-  // Edición y creación de campañas
+  // Edición y creación de campañas - POTENCIADO
   const [showCrearCampModal, setShowCrearCampModal] = useState(false);
   const [guardandoCampana, setGuardandoCampana] = useState(false);
   const [nuevaCampNombre, setNuevaCampNombre] = useState("");
   const [nuevaCampPresupuesto, setNuevaCampPresupuesto] = useState("");
   const [nuevaCampTipoPresupuesto, setNuevaCampTipoPresupuesto] = useState<"lifetime" | "daily">("lifetime");
   const [nuevaCampDias, setNuevaCampDias] = useState<number>(4);
-  const [nuevaCampObjetivo, setNuevaCampObjetivo] = useState("OUTCOME_LEADS");
+  const [nuevaCampObjetivo, setNuevaCampObjetivo] = useState("OUTCOME_ENGAGEMENT");
   const [nuevaCampEstado, setNuevaCampEstado] = useState<"ACTIVE" | "PAUSED">("ACTIVE");
+  const [nuevaCampFechaInicio, setNuevaCampFechaInicio] = useState<string>(() => new Date().toISOString().split("T")[0]);
+  const [nuevaCampNumAnuncios, setNuevaCampNumAnuncios] = useState<number>(2);
+  const [nuevaCampCopy, setNuevaCampCopy] = useState<string>("");
+  const [nuevaCampCopies, setNuevaCampCopies] = useState<string[]>(["", "", "", "", ""]);
+  const [usarCopyVideo, setUsarCopyVideo] = useState<boolean>(true);
+  const [whatsappNumbers, setWhatsappNumbers] = useState<any[]>([]);
+  const [loadingWhatsappNumbers, setLoadingWhatsappNumbers] = useState(false);
+  const [selectedWhatsappId, setSelectedWhatsappId] = useState<string>("");
+  const [selectedWhatsappDisplay, setSelectedWhatsappDisplay] = useState<string>("");
+  const [accountInfo, setAccountInfo] = useState<any>(null);
+  const [loadingAccount, setLoadingAccount] = useState(false);
+  const [recargaMonto, setRecargaMonto] = useState<string>("");
+  const [recargandoSaldo, setRecargandoSaldo] = useState(false);
+  const [previewCampana, setPreviewCampana] = useState<any>(null);
+
+  // Segmentación guardada por defecto Templo Místico - WhatsApp ONLY
+  const [segmentacionGuardada, setSegmentacionGuardada] = useState<any>(() => {
+    try {
+      const saved = typeof window !== "undefined" ? localStorage.getItem("tm_ads_segmentacion") : null;
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return {
+      location: { countries: ["CO"] },
+      age_min: 18,
+      age_max: 65,
+      genders: [1, 2],
+      interests: ["Esoterismo", "Tarot", "Amarres de amor", "Espiritualidad", "Astrología"],
+      destination: "WHATSAPP_ONLY",
+      placements: ["facebook", "instagram"],
+      note: "Solo WhatsApp - Messenger excluido",
+    };
+  });
 
   const [campanaEditando, setCampanaEditando] = useState<any | null>(null);
   const [editCampNombre, setEditCampNombre] = useState("");
@@ -1897,6 +1929,179 @@ export default function CRMApp() {
     }
   }
 
+  // Cargar números de WhatsApp vinculados - SOLO WHATSAPP
+  async function fetchWhatsappNumbers() {
+    setLoadingWhatsappNumbers(true);
+    try {
+      const res = await fetch("/api/ads/whatsapp-numbers");
+      const data = await res.json();
+      if (data.numbers && Array.isArray(data.numbers)) {
+        setWhatsappNumbers(data.numbers);
+        if (data.numbers.length > 0 && !selectedWhatsappId) {
+          const principal = data.numbers.find((n: any) => n.is_mock && n.display_number.includes("305")) || data.numbers[0];
+          setSelectedWhatsappId(principal.id);
+          setSelectedWhatsappDisplay(principal.display_number);
+        }
+      }
+    } catch (err) {
+      console.warn("Error cargando números WhatsApp:", err);
+    } finally {
+      setLoadingWhatsappNumbers(false);
+    }
+  }
+
+  // Cargar info cuenta publicitaria para saldo
+  async function fetchAccountInfo() {
+    setLoadingAccount(true);
+    try {
+      const res = await fetch("/api/ads/account");
+      const data = await res.json();
+      if (data.account) {
+        setAccountInfo(data.account);
+      }
+    } catch (err) {
+      console.warn("Error cargando cuenta:", err);
+    } finally {
+      setLoadingAccount(false);
+    }
+  }
+
+  // Calcular preview completo dinámico - AHORA CON COPY DEL VIDEO O DEL AGENTE
+  function calcularPreviewCampana() {
+    const presupuestoNum = Number(nuevaCampPresupuesto) || 0;
+    if (!presupuestoNum || !nuevaCampFechaInicio) {
+      setPreviewCampana(null);
+      return;
+    }
+    try {
+      const dias = Math.max(1, nuevaCampDias);
+      const fechaInicio = new Date(nuevaCampFechaInicio + "T00:01:00");
+      const fechaFin = new Date(fechaInicio);
+      fechaFin.setDate(fechaFin.getDate() + dias - 1);
+      fechaFin.setHours(23, 59, 59, 999);
+
+      const iva = Math.round(presupuestoNum * 0.19);
+      const totalConIva = Math.round(presupuestoNum * 1.19);
+      const diario = nuevaCampTipoPresupuesto === "lifetime" ? Math.round(presupuestoNum / dias) : presupuestoNum;
+
+      const legibleInicio = fechaInicio.toLocaleString("es-CO", { weekday: "long", year: "numeric", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: true, timeZone: "America/Bogota" });
+      const legibleFin = fechaFin.toLocaleString("es-CO", { weekday: "long", year: "numeric", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: true, timeZone: "America/Bogota" });
+
+      const vidObj = pageVideos.find((v: any) => v.id === selectedVideoId);
+      const waObj = whatsappNumbers.find((w: any) => w.id === selectedWhatsappId);
+
+      // Determinar copy base: del video seleccionado o del agente
+      const copyVideoBase = (vidObj?.description || vidObj?.title || "").trim();
+      const copyAgenteBase = nuevaCampCopy.trim();
+
+      // Construir lista de copies por anuncio (1-5)
+      const anunciosConCopy = Array.from({ length: nuevaCampNumAnuncios }, (_, i) => {
+        let copyFinal = "";
+        let origen = "";
+        if (usarCopyVideo) {
+          // Si usa copy del video, tomar descripción del video
+          if (copyVideoBase) {
+            copyFinal = nuevaCampCopies[i]?.trim() ? `${copyVideoBase}\n\n--- Variación ${i+1} ---\n${nuevaCampCopies[i]}` : copyVideoBase;
+            origen = nuevaCampCopies[i]?.trim() ? "video + agente" : "video";
+          } else {
+            copyFinal = nuevaCampCopies[i]?.trim() || copyAgenteBase || `🔮 ${nuevaCampNombre || "Templo Místico"} - Consulta espiritual personalizada. Escríbenos al WhatsApp y descubre tu destino. ✨`;
+            origen = nuevaCampCopies[i]?.trim() ? "agente variación" : (copyAgenteBase ? "agente" : "auto");
+          }
+        } else {
+          // Solo copy del agente
+          copyFinal = nuevaCampCopies[i]?.trim() || copyAgenteBase || `🔮 ${nuevaCampNombre || "Templo Místico"} - Amarres, retornos, tarot. Resultados garantizados. WhatsApp ahora.`;
+          origen = nuevaCampCopies[i]?.trim() ? "agente variación" : (copyAgenteBase ? "agente" : "auto");
+        }
+        return {
+          id: i + 1,
+          nombre: `${nuevaCampNombre || "Campaña"} - Anuncio ${i + 1}`,
+          cta: "Enviar WhatsApp",
+          copy: copyFinal,
+          copy_origen: origen,
+          copy_preview: copyFinal.substring(0, 120) + (copyFinal.length>120?"...":""),
+        };
+      });
+
+      setPreviewCampana({
+        nombre: nuevaCampNombre || "Campaña sin nombre",
+        presupuesto: presupuestoNum,
+        iva,
+        totalConIva,
+        diario,
+        tipo: nuevaCampTipoPresupuesto,
+        dias,
+        fechaInicio: nuevaCampFechaInicio,
+        fechaFin: fechaFin.toISOString().split("T")[0],
+        legibleInicio,
+        legibleFin,
+        horaInicio: "00:01",
+        horaFin: "23:59",
+        resumenFechas: `${legibleInicio} → ${legibleFin} (${dias} días)`,
+        numAnuncios: nuevaCampNumAnuncios,
+        anuncios: anunciosConCopy,
+        copy_base_video: copyVideoBase,
+        copy_base_agente: copyAgenteBase,
+        usar_copy_video: usarCopyVideo,
+        video: vidObj,
+        whatsapp: waObj || { display_number: selectedWhatsappDisplay || "+57 305 402 1111", verified_name: "Templo Místico" },
+        segmentacion: segmentacionGuardada,
+        destino: "WHATSAPP_ONLY",
+        estado: nuevaCampEstado,
+        objetivo: nuevaCampObjetivo,
+      });
+    } catch (e) {
+      console.warn("Error calculando preview:", e);
+    }
+  }
+
+  // Recalcular preview cuando cambian campos clave
+  useEffect(() => {
+    if (showCrearCampModal) {
+      calcularPreviewCampana();
+    }
+  }, [nuevaCampNombre, nuevaCampPresupuesto, nuevaCampTipoPresupuesto, nuevaCampDias, nuevaCampFechaInicio, nuevaCampNumAnuncios, selectedVideoId, selectedWhatsappId, segmentacionGuardada, nuevaCampEstado, nuevaCampObjetivo, showCrearCampModal, pageVideos, whatsappNumbers, nuevaCampCopy, nuevaCampCopies, usarCopyVideo]);
+
+  // Cargar WhatsApp y cuenta cuando se abre modal
+  useEffect(() => {
+    if (showCrearCampModal) {
+      fetchWhatsappNumbers();
+      fetchAccountInfo();
+      if (!nuevaCampFechaInicio) {
+        setNuevaCampFechaInicio(new Date().toISOString().split("T")[0]);
+      }
+    }
+  }, [showCrearCampModal]);
+
+  async function handleRecargarSaldo(e: any) {
+    e.preventDefault();
+    const monto = Number(recargaMonto);
+    if (!(monto > 0)) {
+      alert("Ingresa un monto válido mayor a 0");
+      return;
+    }
+    setRecargandoSaldo(true);
+    try {
+      const res = await fetch("/api/ads/account", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ amount: monto, note: `Recarga manual desde CRM - ${new Date().toLocaleString("es-CO")}` }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        alert(data.message || `¡Saldo cargado! $${monto.toLocaleString("es-CO")} COP`);
+        fetchAccountInfo();
+        fetchCampanasAds();
+        setRecargaMonto("");
+      } else {
+        alert(data.error || "No se pudo recargar saldo");
+      }
+    } catch (err: any) {
+      alert(err.message || "Error recargando saldo");
+    } finally {
+      setRecargandoSaldo(false);
+    }
+  }
+
   // Guardar campaña en el Top 3 de mejores o en lo que no funciona
   function marcarMemoriaAds(campana: any, tipo: "top" | "fail") {
     if (typeof window === "undefined" || !campana) return;
@@ -1960,33 +2165,92 @@ export default function CRMApp() {
       alert("Por favor ingresa un presupuesto válido mayor a 0.");
       return;
     }
+    if (!nuevaCampFechaInicio) {
+      alert("Por favor selecciona la fecha de inicio de la campaña - ¡Super importante!");
+      return;
+    }
+    // Validar fecha no pasado (permitir hoy)
+    const hoyStr = new Date().toISOString().split("T")[0];
+    if (nuevaCampFechaInicio < hoyStr) {
+      if (!confirm(`La fecha de inicio ${nuevaCampFechaInicio} es anterior a hoy (${hoyStr}). ¿Quieres crear la campaña con esa fecha de todas formas? Se ajustará a hoy.`)) {
+        return;
+      }
+    }
 
     setGuardandoCampana(true);
     try {
-      const vidObj = pageVideos.find(v => v.id === selectedVideoId);
+      const vidObj = pageVideos.find((v: any) => v.id === selectedVideoId);
+      const waObj = whatsappNumbers.find((w: any) => w.id === selectedWhatsappId);
+      
+      // Construir copies finales para enviar al backend - video o agente
+      const vidDesc = (vidObj?.description || "").trim();
+      const copyBase = usarCopyVideo && vidDesc ? vidDesc : nuevaCampCopy.trim();
+      const adCopiesFinal = Array.from({ length: nuevaCampNumAnuncios }, (_, i) => {
+        const variacion = nuevaCampCopies[i]?.trim() || "";
+        if (variacion) {
+          return copyBase ? `${copyBase}\n\n${variacion}` : variacion;
+        }
+        return copyBase || `${nuevaCampNombre.trim()} - Consulta espiritual por WhatsApp`;
+      });
+
+      const payload = {
+        name: nuevaCampNombre.trim(),
+        budgetType: nuevaCampTipoPresupuesto,
+        budgetAmount: presupuestoNum,
+        days: nuevaCampDias,
+        startDate: nuevaCampFechaInicio,
+        startTime: "00:01",
+        endTime: "23:59",
+        numAds: nuevaCampNumAnuncios,
+        objective: nuevaCampObjetivo || "OUTCOME_ENGAGEMENT",
+        status: nuevaCampEstado,
+        selectedVideoId: selectedVideoId || undefined,
+        videoTitle: vidObj?.title || undefined,
+        videoDescription: vidDesc || undefined,
+        whatsappNumberId: selectedWhatsappId || waObj?.id,
+        whatsappDisplayNumber: waObj?.display_number || selectedWhatsappDisplay || "+57 305 402 1111",
+        whatsappVerifiedName: waObj?.verified_name || "Templo Místico",
+        segmentation: segmentacionGuardada,
+        pageId: undefined,
+        adCopies: adCopiesFinal,
+        adCopyBase: copyBase,
+        usarCopyVideo: usarCopyVideo,
+        addBalanceAmount: recargaMonto ? Number(recargaMonto) : undefined,
+      };
+
+      console.log("Creando campaña con payload completo:", payload);
+
       const res = await fetch("/api/ads/campaigns", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: nuevaCampNombre.trim(),
-          budgetType: nuevaCampTipoPresupuesto,
-          budgetAmount: presupuestoNum,
-          days: nuevaCampDias,
-          objective: nuevaCampObjetivo,
-          status: nuevaCampEstado,
-          selectedVideoId: selectedVideoId || undefined,
-          videoTitle: vidObj?.title || undefined
-        }),
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
       if (!res.ok || data.error) {
-        alert(data.error || "No se pudo crear la campaña en Meta Ads.");
+        // Mostrar preview aunque falle Meta para que agente vea campaña completa
+        if (data.preview) {
+          setPreviewCampana(data.preview);
+          alert(`⚠️ Vista previa generada aunque Meta falló: ${data.error}\n\nPreview:\n${JSON.stringify(data.preview, null, 2).substring(0, 800)}`);
+        } else {
+          alert(data.error || "No se pudo crear la campaña en Meta Ads.");
+        }
       } else {
-        alert(`¡Campaña "${nuevaCampNombre}" creada con éxito en Meta Ads!\nHorario programado: 00:01 a 23:59 (${nuevaCampDias} días).`);
+        const resumen = `¡Campaña "${nuevaCampNombre}" creada con éxito en Meta Ads!\n\n` +
+          `📅 ${data.legibleInicio || data.preview?.duracion?.legible_inicio} → ${data.legibleFin || data.preview?.duracion?.legible_fin}\n` +
+          `⏰ Horario: 00:01 a 23:59 (${nuevaCampDias} días)\n` +
+          `📊 ${nuevaCampNumAnuncios} anuncios • Solo WhatsApp: ${waObj?.display_number || selectedWhatsappDisplay}\n` +
+          `💰 $${presupuestoNum.toLocaleString("es-CO")} COP + IVA = $${Math.round(presupuestoNum * 1.19).toLocaleString("es-CO")} COP\n` +
+          `🎯 Segmentación: ${segmentacionGuardada?.location?.countries?.join(", ") || "CO"} - ${segmentacionGuardada?.interests?.slice(0,2).join(", ")}\n` +
+          `ID: ${data.id}`;
+        alert(resumen);
         setShowCrearCampModal(false);
         setNuevaCampNombre("");
         setNuevaCampPresupuesto("");
         setNuevaCampEstado("ACTIVE");
+        setRecargaMonto("");
+        setNuevaCampCopy("");
+        setNuevaCampCopies(["", "", "", "", ""]);
+        setUsarCopyVideo(true);
         fetchCampanasAds();
       }
     } catch (err: any) {
@@ -5606,272 +5870,267 @@ export default function CRMApp() {
       {/* MODAL AJUSTES: TEMA Y NOTIFICACIONES */}
       {showAjustes && <AjustesPanel onClose={() => setShowAjustes(false)} />}
 
-      {/* MODAL CREAR NUEVA CAMPAÑA EN META ADS */}
+      {/* MODAL CREAR NUEVA CAMPAÑA EN META ADS - POTENCIADO: FECHA INICIO + NUM ANUNCIOS + WHATSAPP + PREVIEW + SALDO */}
       {showCrearCampModal && (
         <div className="fixed inset-0 z-50 bg-scrim flex justify-center overflow-y-auto p-3 sm:p-4 pt-[calc(0.75rem_+_var(--safe-area-inset-top))] pb-[calc(0.75rem_+_var(--safe-area-inset-bottom))] backdrop-blur-md">
-          <div className="w-full max-w-md my-auto bg-surface border border-border rounded-2xl p-6 space-y-4 shadow-2xl flex flex-col">
-            <div className="flex items-center justify-between border-b border-border pb-3">
+          <div className="w-full max-w-2xl my-auto bg-surface border border-border rounded-2xl p-5 space-y-4 shadow-2xl flex flex-col max-h-[95dvh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-border pb-3 sticky top-0 bg-surface z-10">
               <div className="flex items-center gap-2 text-purple-400">
                 <Plus className="w-5 h-5" />
-                <h3 className="text-base font-bold text-gray-100">Crear Campaña en Meta Ads</h3>
+                <h3 className="text-base font-bold text-gray-100">Crear Campaña Potenciada - Solo WhatsApp</h3>
+                <span className="text-[9px] px-2 py-0.5 rounded-full bg-emerald-950 border border-emerald-800 text-emerald-300 font-bold">WHATSAPP ONLY</span>
               </div>
-              <button
-                type="button"
-                onClick={() => setShowCrearCampModal(false)}
-                className="text-gray-400 hover:text-white p-1 rounded-lg"
-              >
-                <X className="w-5 h-5" />
-              </button>
+              <button type="button" onClick={() => setShowCrearCampModal(false)} className="text-gray-400 hover:text-white p-1 rounded-lg"><X className="w-5 h-5" /></button>
             </div>
 
             <form onSubmit={crearNuevaCampanaAds} className="space-y-4">
-              <div>
-                <label className="text-xs text-gray-400 block mb-1 font-semibold">
-                  Nombre de la Campaña *
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="Ej: Retornos Pareja - Marzo 2026"
-                  value={nuevaCampNombre}
-                  onChange={(e) => setNuevaCampNombre(e.target.value)}
-                  className="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500"
-                />
-              </div>
-
-              {/* SELECCIÓN DE VIDEO DE LA PÁGINA DE FACEBOOK */}
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="text-xs text-gray-300 font-semibold flex items-center gap-1.5">
-                    <Video className="w-3.5 h-3.5 text-purple-400" />
-                    Video de la Fan Page a Reutilizar
-                  </label>
-                  <button
-                    type="button"
-                    onClick={fetchVideosFanPage}
-                    className="text-[10px] text-purple-400 hover:text-purple-300 flex items-center gap-1"
-                  >
-                    <RefreshCw className={`w-3 h-3 ${loadingVideos ? 'animate-spin' : ''}`} /> Refrescar videos
-                  </button>
-                </div>
-                {pageVideos.length > 0 ? (
-                  <div className="space-y-2">
-                    <select
-                      value={selectedVideoId}
-                      onChange={(e) => setSelectedVideoId(e.target.value)}
-                      className="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500 truncate"
-                    >
-                      {pageVideos.map((v) => (
-                        <option key={v.id} value={v.id}>
-                          {v.title} {v.length ? `(${v.length}s)` : ''}
-                        </option>
-                      ))}
-                    </select>
-                    <div className="p-2 rounded-lg bg-surface/50 border border-border flex items-center gap-3">
-                      {pageVideos.find(v => v.id === selectedVideoId)?.picture && (
-                        <img
-                          src={pageVideos.find(v => v.id === selectedVideoId)?.picture}
-                          alt="Video thumbnail"
-                          className="w-12 h-12 object-cover rounded-md border border-border shrink-0"
-                        />
-                      )}
-                      <div className="min-w-0 text-[11px]">
-                        <p className="font-semibold text-gray-200 truncate">
-                          {pageVideos.find(v => v.id === selectedVideoId)?.title}
-                        </p>
-                        <p className="text-gray-400 text-[10px] line-clamp-1">
-                          {pageVideos.find(v => v.id === selectedVideoId)?.description || "Video subido a la página oficial de Facebook"}
-                        </p>
-                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-purple-950 text-purple-300 border border-purple-800">
-                          Fan Page Facebook
-                        </span>
-                      </div>
-                    </div>
+              {/* GRID PRINCIPAL */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                {/* COLUMNA IZQ: CONFIG */}
+                <div className="space-y-4">
+                  <div>
+                    <label className="text-xs text-gray-300 block mb-1 font-bold flex items-center gap-1">🏷️ Nombre de la Campaña *</label>
+                    <input type="text" required placeholder="Ej: Retornos Pareja - Marzo 2026" value={nuevaCampNombre} onChange={(e) => setNuevaCampNombre(e.target.value)} className="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500" />
                   </div>
-                ) : (
-                  <div className="p-2.5 rounded-lg border border-dashed border-border text-center text-[11px] text-gray-400">
-                    Cargando videos de la Fan Page...
-                  </div>
-                )}
-              </div>
 
-              <div>
-                <label className="text-xs text-gray-400 block mb-1 font-semibold">
-                  Modalidad de Presupuesto
-                </label>
-                <div className="grid grid-cols-2 gap-2 mb-3">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setNuevaCampTipoPresupuesto("lifetime");
-                      if (!nuevaCampPresupuesto) setNuevaCampPresupuesto("40000");
-                    }}
-                    className={`p-2.5 rounded-xl border text-left transition-all ${
-                      nuevaCampTipoPresupuesto === "lifetime"
-                        ? "bg-purple-950/60 border-purple-600 text-purple-200 shadow-sm"
-                        : "bg-surface border-border text-gray-400 hover:text-white"
-                    }`}
-                  >
-                    <p className="text-xs font-bold">Presupuesto Total</p>
-                    <p className="text-[10px] text-gray-400 mt-0.5">Monto global para X días</p>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setNuevaCampTipoPresupuesto("daily");
-                      if (!nuevaCampPresupuesto) setNuevaCampPresupuesto("10000");
-                    }}
-                    className={`p-2.5 rounded-xl border text-left transition-all ${
-                      nuevaCampTipoPresupuesto === "daily"
-                        ? "bg-purple-950/60 border-purple-600 text-purple-200 shadow-sm"
-                        : "bg-surface border-border text-gray-400 hover:text-white"
-                    }`}
-                  >
-                    <p className="text-xs font-bold">Presupuesto Diario</p>
-                    <p className="text-[10px] text-gray-400 mt-0.5">Gasto constante por día</p>
-                  </button>
-                </div>
-              </div>
-
-              {nuevaCampTipoPresupuesto === "lifetime" && (
-                <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <label className="text-xs text-gray-400 font-semibold">
-                      Duración de la Campaña (Días)
-                    </label>
-                    <span className="text-[10px] text-purple-400 font-mono">00:01 a 23:59</span>
-                  </div>
-                  <div className="flex gap-2">
-                    {[3, 4, 7, 8, 14, 21, 30].map((d) => (
-                      <button
-                        key={d}
-                        type="button"
-                        onClick={() => setNuevaCampDias(d)}
-                        className={`flex-1 py-1.5 rounded-lg text-xs font-bold border transition-all ${
-                          nuevaCampDias === d
-                            ? "bg-purple-600 border-purple-500 text-white"
-                            : "bg-surface border-border text-gray-400 hover:text-white"
-                        }`}
-                      >
-                        {d}d
-                      </button>
-                    ))}
-                  </div>
-                  <p className="text-[10px] text-gray-500 mt-1">
-                    Inicia a las <strong>00:01</strong> del día de lanzamiento y finaliza a las <strong>23:59</strong> del último día.
-                  </p>
-                </div>
-              )}
-
-              <div>
-                <label className="text-xs text-gray-400 block mb-1 font-semibold">
-                  {nuevaCampTipoPresupuesto === "lifetime" ? "Presupuesto Total (COP)" : "Presupuesto Diario (COP)"} *
-                </label>
-                <div className="relative">
-                  <span className="absolute left-3 top-2 text-xs text-gray-500 font-mono">$</span>
-                  <input
-                    type="number"
-                    min="1000"
-                    step="1000"
-                    placeholder={nuevaCampTipoPresupuesto === "lifetime" ? "Ej: 40000" : "Ej: 10000"}
-                    value={nuevaCampPresupuesto}
-                    onChange={(e) => setNuevaCampPresupuesto(e.target.value)}
-                    className="w-full bg-background border border-border rounded-lg pl-7 pr-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500"
-                    required
-                  />
-                </div>
-                {Number(nuevaCampPresupuesto) > 0 && (
-                  <div className="mt-2 p-2 rounded-lg bg-surface/50 border border-border text-[11px] text-gray-400 space-y-0.5">
-                    <div className="flex justify-between">
-                      <span>Inversión neta:</span>
-                      <span className="text-gray-200 font-semibold">${Number(nuevaCampPresupuesto).toLocaleString("es-CO")} COP</span>
+                  {/* FECHA INICIO SUPER IMPORTANTE */}
+                  <div className="p-3 rounded-xl bg-purple-950/20 border border-purple-800/40 space-y-2">
+                    <label className="text-xs text-purple-300 block font-bold flex items-center gap-1.5">📅 Fecha de Inicio * <span className="text-[9px] bg-red-900/50 text-red-300 px-1.5 py-0.5 rounded">SUPER IMPORTANTE</span></label>
+                    <input type="date" required value={nuevaCampFechaInicio} min={new Date().toISOString().split("T")[0]} onChange={(e) => setNuevaCampFechaInicio(e.target.value)} className="w-full bg-background border border-purple-700/50 rounded-lg px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500" />
+                    <div className="grid grid-cols-2 gap-2 text-[10px]">
+                      <div className="bg-background/80 p-2 rounded-lg border border-border"><span className="text-gray-500 block">Hora inicio</span><span className="text-gray-200 font-mono font-bold">00:01 Bogotá</span></div>
+                      <div className="bg-background/80 p-2 rounded-lg border border-border"><span className="text-gray-500 block">Hora fin</span><span className="text-gray-200 font-mono font-bold">23:59 Bogotá</span></div>
                     </div>
-                    <div className="flex justify-between">
-                      <span>IVA Meta (19% Colombia):</span>
-                      <span className="text-amber-400 font-semibold">+${Math.round(Number(nuevaCampPresupuesto) * 0.19).toLocaleString("es-CO")} COP</span>
-                    </div>
-                    <div className="flex justify-between border-t border-border/50 pt-1 font-bold text-gray-200">
-                      <span>Total tarjeta/factura:</span>
-                      <span className="text-emerald-400">${Math.round(Number(nuevaCampPresupuesto) * 1.19).toLocaleString("es-CO")} COP</span>
-                    </div>
-                    {nuevaCampTipoPresupuesto === "lifetime" && (
-                      <div className="text-[10px] text-purple-300 pt-0.5">
-                        ≈ ${Math.round(Number(nuevaCampPresupuesto) / (nuevaCampDias || 4)).toLocaleString("es-CO")} COP netos por día.
+                    {previewCampana && (
+                      <div className="text-[10px] text-purple-200 bg-background/60 p-2 rounded-lg border border-purple-900/30">
+                        <p className="font-semibold">🗓️ {previewCampana.dias} días programados</p>
+                        <p>Inicio: {previewCampana.legibleInicio}</p>
+                        <p>Fin: {previewCampana.legibleFin}</p>
                       </div>
                     )}
                   </div>
-                )}
-              </div>
 
-              <div>
-                <label className="text-xs text-gray-400 block mb-1 font-semibold">
-                  Objetivo de la Campaña
-                </label>
-                <select
-                  value={nuevaCampObjetivo}
-                  onChange={(e) => setNuevaCampObjetivo(e.target.value)}
-                  className="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500"
-                >
-                  <option value="OUTCOME_LEADS">Clientes potenciales (Leads / Mensajes)</option>
-                  <option value="OUTCOME_ENGAGEMENT">Interacción (Mensajes a WhatsApp)</option>
-                  <option value="OUTCOME_TRAFFIC">Tráfico</option>
-                  <option value="OUTCOME_AWARENESS">Reconocimiento</option>
-                </select>
-              </div>
+                  {/* DÍAS */}
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-xs text-gray-300 font-bold">⏳ Duración (Días)</label>
+                      <span className="text-[10px] text-purple-400 font-mono">00:01 → 23:59</span>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {[1,2,3,4,5,7,8,14,21,30].map((d) => (
+                        <button key={d} type="button" onClick={() => setNuevaCampDias(d)} className={`px-2.5 py-1.5 rounded-lg text-xs font-bold border transition-all ${nuevaCampDias === d ? "bg-purple-600 border-purple-500 text-white shadow" : "bg-surface border-border text-gray-400 hover:text-white"}`}>{d}d</button>
+                      ))}
+                    </div>
+                    <div className="flex items-center gap-2 mt-2">
+                      <input type="number" min="1" max="90" value={nuevaCampDias} onChange={(e) => setNuevaCampDias(Math.max(1, Number(e.target.value) || 1))} className="w-20 bg-background border border-border rounded px-2 py-1 text-xs text-gray-200 text-center" />
+                      <span className="text-[11px] text-gray-500">días personalizados • Finaliza siempre 23:59</span>
+                    </div>
+                  </div>
 
-              <div>
-                <label className="text-xs text-gray-400 block mb-1 font-semibold">
-                  Estado Inicial
-                </label>
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setNuevaCampEstado("ACTIVE")}
-                    className={`flex-1 py-2 rounded-lg text-xs font-bold border transition-all ${
-                      nuevaCampEstado === "ACTIVE"
-                        ? "bg-emerald-950/60 border-emerald-800 text-emerald-300"
-                        : "bg-surface border-border text-gray-400 hover:text-white"
-                    }`}
-                  >
-                    Activa inmediatamente
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setNuevaCampEstado("PAUSED")}
-                    className={`flex-1 py-2 rounded-lg text-xs font-bold border transition-all ${
-                      nuevaCampEstado === "PAUSED"
-                        ? "bg-amber-950/60 border-amber-800 text-amber-300"
-                        : "bg-surface border-border text-gray-400 hover:text-white"
-                    }`}
-                  >
-                    Pausada (Borrador)
-                  </button>
+                  {/* NUMERO DE ANUNCIOS 1-5 */}
+                  <div className="p-3 rounded-xl bg-amber-950/20 border border-amber-800/30 space-y-2">
+                    <label className="text-xs text-amber-300 block font-bold">🎬 ¿Cuántos anuncios probar? (1-5)</label>
+                    <div className="flex gap-1.5">
+                      {[1,2,3,4,5].map((n) => (
+                        <button key={n} type="button" onClick={() => setNuevaCampNumAnuncios(n)} className={`flex-1 py-2 rounded-lg text-xs font-bold border transition-all ${nuevaCampNumAnuncios === n ? "bg-amber-600 border-amber-500 text-white shadow" : "bg-surface border-border text-gray-400 hover:text-white"}`}>{n}</button>
+                      ))}
+                    </div>
+                    <p className="text-[10px] text-gray-400">Ideal para ir probando cosas. Cada anuncio tendrá variación de copy + mismo video base. Estrategia: {nuevaCampNumAnuncios===1?"1 video directo":`${nuevaCampNumAnuncios} variaciones A/B para optimizar CPL`}</p>
+                  </div>
+
+                  {/* WHATSAPP SELECTOR VINCULADO */}
+                  <div className="p-3 rounded-xl bg-emerald-950/20 border border-emerald-800/40 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs text-emerald-300 block font-bold flex items-center gap-1.5">💬 Número WhatsApp Destino * <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-900 text-emerald-300">SOLO WHATSAPP</span></label>
+                      <button type="button" onClick={fetchWhatsappNumbers} className="text-[10px] text-emerald-400 hover:text-emerald-300 flex items-center gap-1"><RefreshCw className={`w-3 h-3 ${loadingWhatsappNumbers?'animate-spin':''}`} /> Recargar</button>
+                    </div>
+                    {whatsappNumbers.length>0 ? (
+                      <select value={selectedWhatsappId} onChange={(e)=>{ const v=e.target.value; setSelectedWhatsappId(v); const obj=whatsappNumbers.find((w:any)=>w.id===v); if(obj) setSelectedWhatsappDisplay(obj.display_number); }} className="w-full bg-background border border-emerald-700/50 rounded-lg px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-emerald-500">
+                        {whatsappNumbers.map((w:any)=> (<option key={w.id} value={w.id}>{w.display_number} - {w.verified_name} {w.is_mock?'[Mock]':''} {w.quality_rating?`(${w.quality_rating})`:''}</option>))}
+                      </select>
+                    ) : (<div className="p-2 rounded-lg border border-dashed border-emerald-800/50 text-center text-[11px] text-emerald-300/70">{loadingWhatsappNumbers?"Cargando números vinculados...":"No hay números vinculados - usando +57 305 402 1111 por defecto"}</div>)}
+                    <div className="flex items-center gap-2 text-[10px] text-emerald-200 bg-background/60 p-2 rounded-lg border border-emerald-900/30">
+                      <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" /> Campañas únicamente dirigidas a WhatsApp. Nada de Messenger ni otras plataformas. Solo WhatsApp.
+                    </div>
+                  </div>
+                </div>
+
+                {/* COLUMNA DER: PRESUPUESTO + SEGMENTACION + VIDEO + SALDO */}
+                <div className="space-y-4">
+                  <div>
+                    <label className="text-xs text-gray-300 block mb-1 font-bold">💰 Modalidad de Presupuesto</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button type="button" onClick={()=>{ setNuevaCampTipoPresupuesto("lifetime"); if(!nuevaCampPresupuesto) setNuevaCampPresupuesto("40000"); }} className={`p-2.5 rounded-xl border text-left transition-all ${nuevaCampTipoPresupuesto==="lifetime" ? "bg-purple-950/60 border-purple-600 text-purple-200 shadow-sm" : "bg-surface border-border text-gray-400 hover:text-white"}`}><p className="text-xs font-bold">Total</p><p className="text-[10px] text-gray-400 mt-0.5">Global X días</p></button>
+                      <button type="button" onClick={()=>{ setNuevaCampTipoPresupuesto("daily"); if(!nuevaCampPresupuesto) setNuevaCampPresupuesto("10000"); }} className={`p-2.5 rounded-xl border text-left transition-all ${nuevaCampTipoPresupuesto==="daily" ? "bg-purple-950/60 border-purple-600 text-purple-200 shadow-sm" : "bg-surface border-border text-gray-400 hover:text-white"}`}><p className="text-xs font-bold">Diario</p><p className="text-[10px] text-gray-400 mt-0.5">Por día</p></button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-xs text-gray-300 block mb-1 font-bold">{nuevaCampTipoPresupuesto==="lifetime" ? "Presupuesto Total (COP)" : "Presupuesto Diario (COP)"} *</label>
+                    <div className="relative"><span className="absolute left-3 top-2 text-xs text-gray-500 font-mono">$</span><input type="number" min="1000" step="1000" placeholder={nuevaCampTipoPresupuesto==="lifetime"?"Ej: 40000":"Ej: 10000"} value={nuevaCampPresupuesto} onChange={(e)=>setNuevaCampPresupuesto(e.target.value)} className="w-full bg-background border border-border rounded-lg pl-7 pr-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500" required /></div>
+                    {Number(nuevaCampPresupuesto)>0 && (
+                      <div className="mt-2 p-2.5 rounded-lg bg-surface/80 border border-border text-[11px] text-gray-400 space-y-1">
+                        <div className="flex justify-between"><span>Neta:</span><span className="text-gray-200 font-semibold">${Number(nuevaCampPresupuesto).toLocaleString("es-CO")} COP</span></div>
+                        <div className="flex justify-between"><span>IVA 19%:</span><span className="text-amber-400 font-semibold">+${Math.round(Number(nuevaCampPresupuesto)*0.19).toLocaleString("es-CO")} COP</span></div>
+                        <div className="flex justify-between border-t border-border/50 pt-1 font-bold text-gray-200"><span>Total factura:</span><span className="text-emerald-400">${Math.round(Number(nuevaCampPresupuesto)*1.19).toLocaleString("es-CO")} COP</span></div>
+                        <div className="text-[10px] text-purple-300">{nuevaCampTipoPresupuesto==="lifetime"?`≈ $${Math.round(Number(nuevaCampPresupuesto)/(nuevaCampDias||4)).toLocaleString("es-CO")} COP/día neto`:`$${Number(nuevaCampPresupuesto).toLocaleString("es-CO")} COP/día • Total ${nuevaCampDias}d = $${(Number(nuevaCampPresupuesto)*nuevaCampDias).toLocaleString("es-CO")} neto`}</div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* VIDEO FAN PAGE + COPY DEL VIDEO */}
+                  <div className="p-3 rounded-xl bg-purple-950/10 border border-purple-800/20 space-y-2">
+                    <div className="flex items-center justify-between mb-1"><label className="text-xs text-gray-300 font-bold flex items-center gap-1.5"><Video className="w-3.5 h-3.5 text-purple-400" /> Video Fan Page + Copy</label><button type="button" onClick={fetchVideosFanPage} className="text-[10px] text-purple-400 hover:text-purple-300 flex items-center gap-1"><RefreshCw className={`w-3 h-3 ${loadingVideos?'animate-spin':''}`} /> Refrescar</button></div>
+                    {pageVideos.length>0 ? (
+                      <div className="space-y-2">
+                        <select value={selectedVideoId} onChange={(e)=>{ setSelectedVideoId(e.target.value); const v=pageVideos.find((x:any)=>x.id===e.target.value); if(v?.description && usarCopyVideo && !nuevaCampCopy){ setNuevaCampCopy(v.description); } }} className="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500 truncate">{pageVideos.map((v:any)=>(<option key={v.id} value={v.id}>{v.title} {v.length?`(${v.length}s)`:''}</option>))}</select>
+                        <div className="p-2 rounded-lg bg-surface/50 border border-border flex items-center gap-3">{pageVideos.find((v:any)=>v.id===selectedVideoId)?.picture && (<img src={pageVideos.find((v:any)=>v.id===selectedVideoId)?.picture} alt="thumb" className="w-12 h-12 object-cover rounded-md border border-border shrink-0" />)}<div className="min-w-0 text-[11px]"><p className="font-semibold text-gray-200 truncate">{pageVideos.find((v:any)=>v.id===selectedVideoId)?.title}</p><p className="text-gray-400 text-[10px] line-clamp-2">{pageVideos.find((v:any)=>v.id===selectedVideoId)?.description || "Video oficial Fan Page - sin descripción"}</p><span className="text-[8px] px-1 py-0.5 rounded bg-purple-950 text-purple-300 border border-purple-800 mt-1 inline-block">Copy original del video</span></div></div>
+                        {pageVideos.find((v:any)=>v.id===selectedVideoId)?.description && (
+                          <div className="p-2 rounded-lg bg-background/60 border border-border/50">
+                            <p className="text-[10px] text-gray-500 font-bold mb-1">📝 Copy que viene con el video seleccionado:</p>
+                            <p className="text-[11px] text-gray-300 whitespace-pre-wrap leading-snug max-h-20 overflow-y-auto">{pageVideos.find((v:any)=>v.id===selectedVideoId)?.description}</p>
+                          </div>
+                        )}
+                      </div>
+                    ) : (<div className="p-2.5 rounded-lg border border-dashed border-border text-center text-[11px] text-gray-400">Cargando videos...</div>)}
+                    <div className="flex gap-2 pt-1">
+                      <button type="button" onClick={()=>setUsarCopyVideo(true)} className={`flex-1 py-1.5 rounded-lg text-[10px] font-bold border ${usarCopyVideo?"bg-purple-600 border-purple-500 text-white":"bg-surface border-border text-gray-400"}`}>Usar copy del video</button>
+                      <button type="button" onClick={()=>setUsarCopyVideo(false)} className={`flex-1 py-1.5 rounded-lg text-[10px] font-bold border ${!usarCopyVideo?"bg-amber-600 border-amber-500 text-white":"bg-surface border-border text-gray-400"}`}>Usar copy del agente</button>
+                    </div>
+                  </div>
+
+                  {/* COPY DEL AGENTE - BASE + VARIACIONES 1-5 */}
+                  <div className="p-3 rounded-xl bg-amber-950/15 border border-amber-800/30 space-y-2">
+                    <label className="text-xs text-amber-300 font-bold flex items-center gap-1.5">✍️ Copy del Anuncio {usarCopyVideo?"(Base + variaciones)" : "(Del agente)"} <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-900 text-amber-200">{usarCopyVideo?"VIDEO + AGENTE":"SOLO AGENTE"}</span></label>
+                    <textarea placeholder={usarCopyVideo?"Copy base opcional del agente que se sumará al copy del video... Ej: ¡Oferta limitada! Consulta gratis hoy.":"Escribe el copy principal que llevará el anuncio... Ej: 🔮 ¿Sientes que tu pareja se aleja? Amarres efectivos, retornos en 24h. Escríbeme al WhatsApp ahora y te revelo tu destino..."} value={nuevaCampCopy} onChange={(e)=>setNuevaCampCopy(e.target.value)} rows={3} className="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-amber-500 resize-y" />
+                    <p className="text-[9px] text-gray-500">{usarCopyVideo?"Si dejas vacío, se usa solo el copy que ya trae el video. Si escribes algo, se combinará.":"Este será el texto principal del anuncio. Puedes añadir variaciones por cada anuncio abajo."}</p>
+                    
+                    {/* VARIACIONES POR ANUNCIO */}
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] text-gray-400 font-bold">Variaciones por anuncio (opcional) - para probar {nuevaCampNumAnuncios} copies diferentes:</label>
+                      {Array.from({ length: nuevaCampNumAnuncios }, (_, i) => (
+                        <div key={i} className="flex gap-1.5 items-start">
+                          <span className="text-[9px] font-bold text-gray-500 mt-2 w-6">#{i+1}</span>
+                          <textarea placeholder={`Variación ${i+1} - Ej: ${i===0?"Versión directa" : i===1?"Versión emocional" : i===2?"Versión con testimonio" : "Otra prueba A/B"}...`} value={nuevaCampCopies[i] || ""} onChange={(e)=>{ const cp=[...nuevaCampCopies]; cp[i]=e.target.value; setNuevaCampCopies(cp); }} rows={2} className="flex-1 bg-background border border-border rounded-lg px-2.5 py-1.5 text-[11px] text-gray-200 focus:outline-none focus:border-amber-500 resize-y" />
+                        </div>
+                      ))}
+                    </div>
+                    <div className="text-[9px] text-amber-200/70 bg-background/50 p-1.5 rounded border border-amber-900/30">
+                      💡 Tip: Usa el copy del video para mantener autenticidad + añade variaciones del agente para probar ganchos diferentes. El preview abajo mostrará exactamente cómo quedará cada anuncio.
+                    </div>
+                  </div>
+
+                  {/* SEGMENTACION GUARDADA */}
+                  <div className="p-3 rounded-xl bg-surface/60 border border-border space-y-1.5">
+                    <label className="text-xs text-gray-300 font-bold flex items-center gap-1">🎯 Segmentación Guardada</label>
+                    <div className="text-[10px] text-gray-400 space-y-1 bg-background/60 p-2 rounded-lg border border-border/50">
+                      <div className="flex justify-between"><span>País:</span><span className="text-gray-200 font-medium">{segmentacionGuardada?.location?.countries?.join(", ") || "CO"}</span></div>
+                      <div className="flex justify-between"><span>Edad:</span><span className="text-gray-200">{segmentacionGuardada?.age?.min || 18}-{segmentacionGuardada?.age?.max || 65}</span></div>
+                      <div><span className="text-gray-500">Intereses:</span><div className="flex flex-wrap gap-1 mt-1">{(segmentacionGuardada?.interests || ["Esoterismo","Tarot"]).slice(0,4).map((i:string,idx:number)=>(<span key={idx} className="text-[9px] px-1.5 py-0.5 rounded bg-purple-950 border border-purple-800 text-purple-300">{i}</span>))}</div></div>
+                      <div className="flex justify-between"><span>Destino:</span><span className="text-emerald-300 font-bold">{segmentacionGuardada?.destination || "WHATSAPP_ONLY"}</span></div>
+                      <div className="flex justify-between"><span>Placements:</span><span className="text-gray-300">{segmentacionGuardada?.placements?.length || 4} feeds/stories/reels</span></div>
+                    </div>
+                    <p className="text-[9px] text-gray-500">Editable en localStorage tm_ads_segmentacion o desde IA Advisor</p>
+                  </div>
+
+                  {/* SALDO CUENTA PUBLICITARIA + RECARGA */}
+                  <div className="p-3 rounded-xl bg-gray-900/60 border border-border space-y-2">
+                    <div className="flex items-center justify-between"><label className="text-xs text-gray-300 font-bold">💳 Saldo Cuenta Publicitaria</label><button type="button" onClick={fetchAccountInfo} className="text-[10px] text-gray-400 hover:text-white flex items-center gap-1"><RefreshCw className={`w-3 h-3 ${loadingAccount?'animate-spin':''}`} /> Actualizar</button></div>
+                    {accountInfo ? (
+                      <div className="text-[11px] space-y-1 bg-background/80 p-2.5 rounded-lg border border-border">
+                        <div className="flex justify-between"><span className="text-gray-500">Cuenta:</span><span className="text-gray-200 font-mono">{accountInfo.name || accountInfo.id}</span></div>
+                        <div className="flex justify-between"><span className="text-gray-500">Balance:</span><span className="text-emerald-400 font-bold">{accountInfo.balance_formatted || `$${Number(accountInfo.balance||0).toLocaleString("es-CO")} COP`}</span></div>
+                        <div className="flex justify-between"><span className="text-gray-500">Gastado:</span><span className="text-gray-300">${Number(accountInfo.amount_spent||0).toLocaleString("es-CO")}</span></div>
+                        <div className="flex justify-between"><span className="text-gray-500">Límite:</span><span className="text-gray-300">${Number(accountInfo.spend_cap||0).toLocaleString("es-CO")} {accountInfo.currency}</span></div>
+                        <div className="flex justify-between"><span className="text-gray-500">Restante:</span><span className="text-amber-300">${Number(accountInfo.remaining||0).toLocaleString("es-CO")}</span></div>
+                      </div>
+                    ) : (<div className="text-[11px] text-gray-500 text-center py-2 border border-dashed border-border rounded-lg">{loadingAccount?"Cargando cuenta...":"Sin datos de cuenta - verifica META_AD_ACCOUNT_ID"}</div>)}
+                    <div className="flex gap-2 items-end">
+                      <div className="flex-1"><label className="text-[10px] text-gray-400 block mb-1">Monto recarga COP</label><input type="number" min="5000" step="1000" placeholder="Ej: 50000" value={recargaMonto} onChange={(e)=>setRecargaMonto(e.target.value)} className="w-full bg-background border border-border rounded-lg px-2.5 py-1.5 text-xs text-gray-200 focus:outline-none focus:border-emerald-600" /></div>
+                      <button type="button" onClick={handleRecargarSaldo} disabled={recargandoSaldo || !recargaMonto} className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold flex items-center gap-1">{recargandoSaldo?<RefreshCw className="w-3 h-3 animate-spin" />:"💳"} Recargar</button>
+                    </div>
+                    <p className="text-[9px] text-gray-500">Recarga ajusta spend_cap en Meta. Si no tienes permiso, ve a business.facebook.com → Facturación → Métodos de pago.</p>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div><label className="text-xs text-gray-400 block mb-1 font-semibold">Objetivo</label><select value={nuevaCampObjetivo} onChange={(e)=>setNuevaCampObjetivo(e.target.value)} className="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500"><option value="OUTCOME_ENGAGEMENT">Mensajes WhatsApp (Recomendado)</option><option value="OUTCOME_LEADS">Leads</option><option value="OUTCOME_TRAFFIC">Tráfico</option></select></div>
+                    <div><label className="text-xs text-gray-400 block mb-1 font-semibold">Estado Inicial</label><div className="flex gap-1"><button type="button" onClick={()=>setNuevaCampEstado("ACTIVE")} className={`flex-1 py-2 rounded-lg text-[10px] font-bold border ${nuevaCampEstado==="ACTIVE"?"bg-emerald-950/60 border-emerald-800 text-emerald-300":"bg-surface border-border text-gray-400"}`}>Activa</button><button type="button" onClick={()=>setNuevaCampEstado("PAUSED")} className={`flex-1 py-2 rounded-lg text-[10px] font-bold border ${nuevaCampEstado==="PAUSED"?"bg-amber-950/60 border-amber-800 text-amber-300":"bg-surface border-border text-gray-400"}`}>Pausada</button></div></div>
+                  </div>
                 </div>
               </div>
 
-              <div className="pt-2 flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => setShowCrearCampModal(false)}
-                  disabled={guardandoCampana}
-                  className="flex-1 py-2.5 rounded-xl bg-surface border border-border text-gray-300 hover:bg-surfaceHover text-xs font-medium transition-colors disabled:opacity-50"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  disabled={guardandoCampana}
-                  className="flex-1 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
-                >
-                  {guardandoCampana ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
-                  {guardandoCampana ? "Creando en Meta..." : "Crear Campaña"}
-                </button>
+              {/* PREVIEW COMPLETO - SIEMPRE VISIBLE CON COPY DEL VIDEO O AGENTE */}
+              {previewCampana ? (
+                <div className="p-4 rounded-xl bg-gradient-to-br from-purple-950/30 via-background to-emerald-950/20 border border-purple-800/40 space-y-3">
+                  <h4 className="text-xs font-bold text-purple-300 flex items-center gap-2">👁️ Vista Previa Completa de Campaña <span className="text-[9px] px-1.5 py-0.5 rounded bg-purple-900 text-purple-200">EN VIVO</span> <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-900 text-amber-200">COPY: {previewCampana.usar_copy_video?"VIDEO + AGENTE":"AGENTE"}</span></h4>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[11px]">
+                    <div className="space-y-1.5 bg-background/70 p-2.5 rounded-lg border border-border">
+                      <p className="font-bold text-gray-100 text-xs">{previewCampana.nombre}</p>
+                      <div className="space-y-0.5 text-gray-400"><p>📅 <span className="text-gray-200">{previewCampana.legibleInicio}</span></p><p>🏁 <span className="text-gray-200">{previewCampana.legibleFin}</span></p><p>⏰ 00:01 → 23:59 Bogotá • {previewCampana.dias} días</p><p>📊 {previewCampana.numAnuncios} anuncios • CTA: Enviar WhatsApp</p><p>🎯 Destino: <span className="text-emerald-300 font-bold">SOLO WHATSAPP {previewCampana.whatsapp?.display_number || "+57 305 402 1111"}</span></p></div>
+                    </div>
+                    <div className="space-y-1.5 bg-background/70 p-2.5 rounded-lg border border-border">
+                      <p className="font-bold text-gray-300">💰 Presupuesto</p>
+                      <p className="text-gray-400">Tipo: <span className="text-gray-200">{previewCampana.tipo==="lifetime"?"Total":"Diario"}</span> • Neto: <span className="text-gray-200">${previewCampana.presupuesto.toLocaleString("es-CO")} COP</span></p>
+                      <p className="text-amber-300">IVA 19%: +${previewCampana.iva.toLocaleString("es-CO")} COP</p>
+                      <p className="text-emerald-400 font-bold">Total factura: ${previewCampana.totalConIva.toLocaleString("es-CO")} COP</p>
+                      <p className="text-purple-300">Diario aprox: ${previewCampana.diario.toLocaleString("es-CO")} COP</p>
+                    </div>
+                  </div>
+
+                  {/* COPY PREVIEW POR ANUNCIO - NUEVO REQUERIMIENTO */}
+                  <div className="space-y-2">
+                    <p className="text-[11px] font-bold text-amber-300">✍️ Copy con el que va cada anuncio ({previewCampana.usar_copy_video?"del video seleccionado o del agente" : "del agente"}):</p>
+                    <div className="grid grid-cols-1 gap-2 max-h-72 overflow-y-auto pr-1">
+                      {previewCampana.anuncios.map((ad:any, idx:number)=>(
+                        <div key={ad.id} className="p-2.5 rounded-lg bg-background/80 border border-border space-y-1">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-bold text-gray-200">{ad.nombre}</span>
+                            <span className="text-[8px] px-1.5 py-0.5 rounded bg-surface border border-border text-gray-400">{ad.copy_origen}</span>
+                          </div>
+                          <div className="flex gap-2 items-start">
+                            {previewCampana.video?.picture && <img src={previewCampana.video.picture} alt="thumb" className="w-8 h-8 rounded object-cover border border-border shrink-0 mt-0.5" />}
+                            <div className="flex-1 min-w-0">
+                              <p className="text-[11px] text-gray-200 whitespace-pre-wrap leading-snug">{ad.copy}</p>
+                              <p className="text-[9px] text-gray-500 mt-1">CTA: {ad.cta} • Video: {previewCampana.video?.title || "Video Fan Page"} → WhatsApp {previewCampana.whatsapp?.display_number}</p>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    {previewCampana.copy_base_video && (
+                      <div className="p-2 rounded-lg bg-purple-950/20 border border-purple-800/30 text-[10px]">
+                        <p className="text-purple-300 font-bold">📹 Copy original del video seleccionado:</p>
+                        <p className="text-gray-400 whitespace-pre-wrap mt-1">{previewCampana.copy_base_video.substring(0,300)}{previewCampana.copy_base_video.length>300?"...":""}</p>
+                      </div>
+                    )}
+                    {previewCampana.copy_base_agente && (
+                      <div className="p-2 rounded-lg bg-amber-950/20 border border-amber-800/30 text-[10px]">
+                        <p className="text-amber-300 font-bold">🤖 Copy colocado por el agente:</p>
+                        <p className="text-gray-300 whitespace-pre-wrap mt-1">{previewCampana.copy_base_agente}</p>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[10px]">
+                    <div className="bg-background/60 p-2 rounded-lg border border-border/50"><p className="font-bold text-gray-300 mb-1">🎯 Segmentación Guardada</p><p className="text-gray-400">País: {previewCampana.segmentacion?.location?.countries?.join(", ") || "CO"} • Edad: {previewCampana.segmentacion?.age?.min}-{previewCampana.segmentacion?.age?.max}</p><p className="text-gray-400">Intereses: {previewCampana.segmentacion?.interests?.slice(0,3).join(", ")}</p><p className="text-emerald-300">Solo WhatsApp placements: {previewCampana.segmentacion?.placements?.length || 4} (FB/IG feed/story/reels)</p></div>
+                    <div className="bg-background/60 p-2 rounded-lg border border-border/50"><p className="font-bold text-gray-300 mb-1">💬 WhatsApp + Video</p><p className="text-gray-400">Número: <span className="text-gray-200">{previewCampana.whatsapp?.display_number}</span> ({previewCampana.whatsapp?.verified_name})</p><p className="text-gray-400">Video: {previewCampana.video?.title || "Video Fan Page seleccionado"}</p><p className="text-[9px] text-gray-500 mt-1">Campañas únicamente dirigidas a WhatsApp, nada de Messenger ni demás plataformas, solo WhatsApp.</p></div>
+                  </div>
+                  {recargaMonto && Number(recargaMonto)>0 && (<div className="p-2 rounded-lg bg-emerald-950/30 border border-emerald-800/40 text-[11px] text-emerald-200">💳 Con esta creación se intentará recargar <span className="font-bold">${Number(recargaMonto).toLocaleString("es-CO")} COP</span> a la cuenta publicitaria {accountInfo?.id || ""}</div>)}
+                </div>
+              ) : (
+                <div className="p-3 rounded-xl border border-dashed border-border text-center text-[11px] text-gray-500">Completa presupuesto y fecha de inicio para ver la vista previa completa con valores, segmentación, fechas con hora y copy del anuncio (video o agente)</div>
+              )}
+
+              <div className="pt-2 flex gap-2 sticky bottom-0 bg-surface">
+                <button type="button" onClick={()=>setShowCrearCampModal(false)} disabled={guardandoCampana} className="flex-1 py-2.5 rounded-xl bg-surface border border-border text-gray-300 hover:bg-surfaceHover text-xs font-medium transition-colors disabled:opacity-50">Cancelar</button>
+                <button type="submit" disabled={guardandoCampana} className="flex-1 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold transition-colors disabled:opacity-50 flex items-center justify-center gap-2">{guardandoCampana?<RefreshCw className="w-4 h-4 animate-spin" />:<Plus className="w-4 h-4" />}{guardandoCampana?"Creando en Meta...":`Crear ${nuevaCampNumAnuncios} anuncio${nuevaCampNumAnuncios>1?'s':''} WhatsApp`}</button>
               </div>
             </form>
           </div>
         </div>
       )}
 
+      {/* MODAL EDITAR CAMPAÑA EXISTENTE / MODIFICAR PRESUPUESTO */}
       {/* MODAL EDITAR CAMPAÑA EXISTENTE / MODIFICAR PRESUPUESTO */}
       {campanaEditando && (
         <div className="fixed inset-0 z-50 bg-scrim flex justify-center overflow-y-auto p-3 sm:p-4 pt-[calc(0.75rem_+_var(--safe-area-inset-top))] pb-[calc(0.75rem_+_var(--safe-area-inset-bottom))] backdrop-blur-md">

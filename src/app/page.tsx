@@ -38,6 +38,7 @@ import {
 } from "../lib/tiempo-chat";
 import { abrirLlamadaWhatsAppPersonal, llamadasWhatsAppPersonalDisponibles } from "../lib/whatsapp-personal";
 import { initTheme } from "../lib/theme";
+import { DETALLE_FUENTE_COPY, etiquetaCortaFuenteCopy, limpiarCopy } from "../lib/copy-post";
 import {
   initializeNotificationChannels,
   NOTIFICATION_CHANNELS,
@@ -2048,15 +2049,24 @@ export default function CRMApp() {
       const res = await fetch("/api/ads/account", { cache: "no-store" });
       const data = await res.json();
       if (data.account) {
-        setAccountInfo({ ...data.account, billing_url: data.billing_url });
+        setAccountInfo({ ...data.account, billing_url: data.billing_url, payment_url: data.payment_url, note: data.note });
       } else if (data.error) {
-        setAccountInfo({ error: data.error, hint: data.hint, debug: data.debug, billing_url: data.billing_url });
+        setAccountInfo({ error: data.error, hint: data.hint, debug: data.debug, billing_url: data.billing_url, payment_url: data.payment_url });
       }
     } catch (err) {
       console.warn("Error cargando cuenta:", err);
     } finally {
       setLoadingAccount(false);
     }
+  }
+
+  /**
+   * Copy real de un video: SIEMPRE el texto que va dentro del post
+   * (la publicación). El nombre del archivo del video
+   * (ej: "Auto_Cropped_AR_4_X_5_DCO_1.mp4") NUNCA se usa como copy.
+   */
+  function copyDeVideo(v: any): string {
+    return limpiarCopy(v?.copy_original) || limpiarCopy(v?.description) || "";
   }
 
   // Videos realmente elegidos (en el orden en que se marcaron), limitados al número de anuncios
@@ -2103,19 +2113,21 @@ export default function CRMApp() {
       // Un anuncio = un VIDEO DIFERENTE de la Fan Page
       const videosElegidos = videosSeleccionadosObj;
       const copyAgenteBase = nuevaCampCopy.trim();
-      const copyVideoBase = String((videosElegidos[0] as any)?.copy_original || (videosElegidos[0] as any)?.description || "").trim();
+      const copyVideoBase = copyDeVideo(videosElegidos[0]);
 
       const anunciosConCopy = Array.from({ length: nuevaCampNumAnuncios }, (_, i) => {
         const vid: any = videosElegidos[i] || null;
-        // Solo el COPY ORIGINAL real; el título NO es copy y no debe usarse como tal.
-        const descVideo = String(vid?.copy_original || vid?.description || "").trim();
+        // Solo el COPY REAL del post; el título y el nombre del archivo NO son copy.
+        const descVideo = copyDeVideo(vid);
         let copyFinal = "";
         let origen = "";
         if (usarCopyVideo) {
           if (descVideo) {
-            // COPY ORIGINAL tal cual está publicado en la fan page
-            copyFinal = nuevaCampCopies[i]?.trim() ? `${descVideo}\n\n--- Variación ${i + 1} ---\n${nuevaCampCopies[i]}` : descVideo;
-            origen = nuevaCampCopies[i]?.trim() ? "copy original del video + variación" : "copy original del video";
+            // COPY REAL: el texto que va dentro del post (igual que el payload real)
+            const variacion = nuevaCampCopies[i]?.trim();
+            copyFinal = variacion ? `${descVideo}\n\n${variacion}` : descVideo;
+            const fuenteVideo = etiquetaCortaFuenteCopy(vid?.copy_origen || "post");
+            origen = variacion ? `${fuenteVideo} + variación` : fuenteVideo;
           } else {
             // Sin copy original: se usa lo que escriba el agente. NUNCA se inventa texto.
             copyFinal = nuevaCampCopies[i]?.trim() || copyAgenteBase || "";
@@ -2307,8 +2319,8 @@ export default function CRMApp() {
       // Copy por anuncio: cada uno usa la descripción de SU propio video
       const adCopiesFinal = Array.from({ length: nuevaCampNumAnuncios }, (_, i) => {
         const vid: any = videosElegidos[i];
-        // COPY ORIGINAL del video publicado en la fan page
-        const descVideo = String(vid?.copy_original || vid?.description || "").trim();
+        // COPY REAL: el texto del post (publicación) donde está el video
+        const descVideo = copyDeVideo(vid);
         const base = usarCopyVideo && descVideo ? descVideo : nuevaCampCopy.trim();
         const variacion = nuevaCampCopies[i]?.trim() || "";
         if (variacion) return base ? `${base}\n\n${variacion}` : variacion;
@@ -2317,18 +2329,18 @@ export default function CRMApp() {
 
       // Si algún anuncio quedaría sin texto, se avisa en vez de inventar copy
       const sinCopy = adCopiesFinal
-        .map((c, i) => (c.trim() ? null : i + 1))
+        .map((c, i) => (limpiarCopy(c) ? null : i + 1))
         .filter(Boolean);
       if (sinCopy.length > 0) {
         alert(
-          `Los anuncios ${sinCopy.join(", ")} no tienen copy.\n\nEsos videos no traen texto publicado en la fan page, así que escribe un copy en "Copy del Anuncio" o en la variación correspondiente.`
+          `Los anuncios ${sinCopy.join(", ")} no tienen copy.\n\nEl copy es el TEXTO QUE VA DENTRO DEL POST (la publicación), no el nombre del archivo del video.\n\nEsos videos no traen texto publicado en la fan page, así que escribe el copy en "Copy del Anuncio" o en la variación correspondiente.`
         );
         setGuardandoCampana(false);
         return;
       }
 
       const copyBase = usarCopyVideo
-        ? String((videosElegidos[0] as any)?.copy_original || (videosElegidos[0] as any)?.description || "").trim() || nuevaCampCopy.trim()
+        ? copyDeVideo(videosElegidos[0]) || nuevaCampCopy.trim()
         : nuevaCampCopy.trim();
 
       const payload = {
@@ -5811,7 +5823,7 @@ export default function CRMApp() {
             <div className="p-4 md:p-5 rounded-2xl border border-emerald-900/50 bg-gradient-to-br from-emerald-950/30 via-surface to-surface space-y-3">
               <div className="flex items-center justify-between gap-3 flex-wrap">
                 <div className="flex items-center gap-2">
-                  <h3 className="text-sm font-bold text-gray-200 uppercase tracking-wider">💳 Saldo de la Cuenta Publicitaria</h3>
+                  <h3 className="text-sm font-bold text-gray-200 uppercase tracking-wider">💰 Fondos Disponibles de la Cuenta Publicitaria</h3>
                   {accountInfo?.name && <span className="text-[10px] text-gray-500 font-mono">{accountInfo.name}</span>}
                 </div>
                 <div className="flex items-center gap-3">
@@ -5826,32 +5838,79 @@ export default function CRMApp() {
 
               {accountInfo && !accountInfo.error ? (
                 <>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                    <div className="p-3 rounded-xl bg-background border border-emerald-900/40">
-                      <span className="text-[10px] text-gray-500 font-bold uppercase tracking-wider block">Saldo total en la cuenta</span>
-                      <p className="text-xl md:text-2xl font-extrabold text-emerald-400 mt-1">{accountInfo.saldo_disponible_formatted || accountInfo.balance_formatted || "—"}</p>
-                      <span className="text-[9px] text-gray-500">{accountInfo.is_prepay ? "Cuenta prepago · fondos disponibles" : accountInfo.balance_label || "Facturación por umbral"}</span>
+                  {/* FONDOS DISPONIBLES: lo principal que hay que vigilar para que las campañas no se detengan */}
+                  <div className={`p-4 rounded-xl border ${accountInfo.fondos_alerta === "agotado" ? "bg-red-950/30 border-red-800/60" : accountInfo.fondos_alerta === "critico" ? "bg-red-950/20 border-red-800/50" : accountInfo.fondos_alerta === "bajo" ? "bg-amber-950/20 border-amber-800/50" : "bg-background border-emerald-900/40"}`}>
+                    <div className="flex flex-wrap items-end justify-between gap-3">
+                      <div>
+                        <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider block">Fondos disponibles para pautar</span>
+                        <p className={`text-2xl md:text-3xl font-extrabold mt-0.5 ${accountInfo.fondos_alerta === "agotado" || accountInfo.fondos_alerta === "critico" ? "text-red-400" : accountInfo.fondos_alerta === "bajo" ? "text-amber-400" : "text-emerald-400"}`}>
+                          {accountInfo.fondos_disponibles_formatted || accountInfo.saldo_disponible_formatted || accountInfo.balance_formatted || "—"}
+                        </p>
+                        <span className="text-[9px] text-gray-500">Origen: {accountInfo.fondos_origen || "saldo reportado por Meta"} • {accountInfo.metodo_pago || (accountInfo.is_prepay ? "Prepago" : "Pospago")}</span>
+                        {(accountInfo.fondos_por_credito > 0 || (accountInfo.fondos_por_limite !== null && accountInfo.fondos_por_limite !== undefined)) && (
+                          <span className="text-[9px] text-gray-600 block">
+                            Lo que reporta Meta hoy → crédito a favor: <span className="text-gray-400">{accountInfo.fondos_por_credito_formatted}</span> · margen del límite de gasto: <span className="text-gray-400">{accountInfo.fondos_por_limite_formatted}</span>
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-right">
+                        {accountInfo.dias_de_fondos !== null && accountInfo.dias_de_fondos !== undefined ? (
+                          <>
+                            <span className="text-[10px] text-gray-500 font-bold uppercase tracking-wider block">Alcanza para</span>
+                            <p className={`text-xl font-extrabold ${accountInfo.dias_de_fondos < 3 ? "text-red-400" : accountInfo.dias_de_fondos < 7 ? "text-amber-400" : "text-emerald-400"}`}>≈ {accountInfo.dias_de_fondos} día{accountInfo.dias_de_fondos === 1 ? "" : "s"}</p>
+                            <span className="text-[9px] text-gray-500">ritmo actual: {accountInfo.promedio_diario_7d_formatted}/día (7 días)</span>
+                          </>
+                        ) : (
+                          <span className="text-[9px] text-gray-500 max-w-[190px] block text-right">{accountInfo.fondos_detalle}</span>
+                        )}
+                      </div>
                     </div>
+                    {(accountInfo.fondos_alerta === "agotado" || accountInfo.fondos_alerta === "critico" || accountInfo.fondos_alerta === "bajo") && (
+                      <div className={`mt-3 p-2.5 rounded-lg border text-[11px] font-semibold flex flex-wrap items-center justify-between gap-2 ${accountInfo.fondos_alerta === "bajo" ? "bg-amber-950/40 border-amber-800/50 text-amber-200" : "bg-red-950/40 border-red-800/50 text-red-200"}`}>
+                        <span>
+                          {accountInfo.fondos_alerta === "agotado"
+                            ? "🚨 Sin fondos: las campañas NO van a entregar hasta que recargues."
+                            : accountInfo.fondos_alerta === "critico"
+                              ? `🚨 Los fondos se agotan en ~${accountInfo.dias_de_fondos} día(s). Recarga ya para no frenar el aprendizaje de Meta.`
+                              : `⚠️ Fondos bajos: alcanzan ~${accountInfo.dias_de_fondos} día(s). Programa la recarga.`}
+                        </span>
+                        <a href={accountInfo.payment_url || accountInfo.billing_url || "https://business.facebook.com/billing_hub/payment_settings"} target="_blank" rel="noreferrer" className="underline font-bold shrink-0">
+                          Agregar fondos en Meta ↗
+                        </a>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                     <div className="p-3 rounded-xl bg-background border border-border">
                       <span className="text-[10px] text-gray-500 font-bold uppercase tracking-wider block">Gastado hoy</span>
                       <p className="text-xl md:text-2xl font-extrabold text-amber-400 mt-1">{accountInfo.spend_today_formatted || "$0 COP"}</p>
                       <span className="text-[9px] text-gray-500">{accountInfo.leads_today || 0} leads hoy{accountInfo.cpl_today ? ` · CPL $${Number(accountInfo.cpl_today).toLocaleString("es-CO")}` : ""}</span>
                     </div>
                     <div className="p-3 rounded-xl bg-background border border-border">
-                      <span className="text-[10px] text-gray-500 font-bold uppercase tracking-wider block">Gastado histórico</span>
-                      <p className="text-lg md:text-xl font-extrabold text-gray-200 mt-1">{accountInfo.amount_spent_formatted || "—"}</p>
-                      <span className="text-[9px] text-gray-500">Últimos 30 días: {accountInfo.spend_last_30d_formatted || "—"}</span>
+                      <span className="text-[10px] text-gray-500 font-bold uppercase tracking-wider block">Gastado 7 días</span>
+                      <p className="text-lg md:text-xl font-extrabold text-gray-200 mt-1">{accountInfo.spend_last_7d_formatted || "—"}</p>
+                      <span className="text-[9px] text-gray-500">Promedio {accountInfo.promedio_diario_7d_formatted || "—"}/día</span>
                     </div>
                     <div className="p-3 rounded-xl bg-background border border-border">
-                      <span className="text-[10px] text-gray-500 font-bold uppercase tracking-wider block">Límite de gasto</span>
+                      <span className="text-[10px] text-gray-500 font-bold uppercase tracking-wider block">Saldo según Meta</span>
+                      <p className={`text-lg md:text-xl font-extrabold mt-1 ${Number(accountInfo.balance || 0) < 0 ? "text-emerald-400" : "text-gray-200"}`}>{accountInfo.balance_formatted || "—"}</p>
+                      <span className="text-[9px] text-gray-500">{accountInfo.balance_label || "—"}{accountInfo.pendiente_por_pagar > 0 ? `: ${accountInfo.pendiente_por_pagar_formatted}` : ""}</span>
+                    </div>
+                    <div className="p-3 rounded-xl bg-background border border-border">
+                      <span className="text-[10px] text-gray-500 font-bold uppercase tracking-wider block">Límite de gasto · histórico</span>
                       <p className="text-lg md:text-xl font-extrabold text-gray-200 mt-1">{accountInfo.spend_cap_formatted || "Sin límite"}</p>
-                      <span className="text-[9px] text-gray-500">{accountInfo.payment_method ? `Pago: ${accountInfo.payment_method}` : accountInfo.currency || "COP"}</span>
+                      <span className="text-[9px] text-gray-500">Gastado total: {accountInfo.amount_spent_formatted || "—"}{accountInfo.payment_method ? ` • ${accountInfo.payment_method}` : ""}</span>
                     </div>
                   </div>
+
                   <p className="text-[10px] text-gray-500">
-                    La recarga de saldo solo se puede hacer desde Meta (la API no lo permite).{" "}
+                    {accountInfo.fondos_detalle || ""} La API de Meta no permite recargar: la recarga se hace en Meta → Facturación → Fondos disponibles.{" "}
+                    <a href={accountInfo.payment_url || "https://business.facebook.com/billing_hub/payment_settings"} target="_blank" rel="noreferrer" className="text-emerald-400 hover:text-emerald-300 underline font-semibold">
+                      Agregar fondos ↗
+                    </a>{" "}
                     <a href={accountInfo.billing_url || "https://business.facebook.com/billing_hub/accounts"} target="_blank" rel="noreferrer" className="text-emerald-400 hover:text-emerald-300 underline font-semibold">
-                      Abrir Facturación en Meta Business ↗
+                      Ver facturación ↗
                     </a>
                   </p>
                 </>
@@ -6301,10 +6360,16 @@ export default function CRMApp() {
                               </div>
                               <div className="min-w-0 flex-1">
                                 <p className={`text-[11px] font-semibold truncate ${elegido ? "text-purple-200" : "text-gray-200"}`}>{v.title}</p>
+                                {v.nombre_archivo ? <p className="text-[8px] text-gray-600 truncate">📁 {v.nombre_archivo} <span className="text-gray-700">(nombre del archivo, no es el copy)</span></p> : null}
                                 <p className="text-[9px] text-gray-500">{v.views ? `${Number(v.views).toLocaleString("es-CO")} vistas • ` : ""}{v.length ? `${v.length}s • ` : ""}{v.createdTime ? new Date(v.createdTime).toLocaleDateString("es-CO", { day:"2-digit", month:"short", year:"numeric" }) : ""}</p>
-                                {v.tiene_copy
-                                  ? <p className="text-[9px] text-gray-400 line-clamp-2 mt-0.5 whitespace-pre-wrap">📝 {v.copy_original || v.description}</p>
-                                  : <p className="text-[9px] text-amber-500/80 mt-0.5">⚠️ Sin copy publicado — tendrás que escribirlo</p>}
+                                {v.tiene_copy ? (
+                                  <>
+                                    <p className="text-[9px] text-gray-400 line-clamp-2 mt-0.5 whitespace-pre-wrap">📝 {copyDeVideo(v)}</p>
+                                    <p className="text-[8px] text-purple-400/80 mt-0.5">copy tomado del {etiquetaCortaFuenteCopy(v.copy_origen)}</p>
+                                  </>
+                                ) : (
+                                  <p className="text-[9px] text-amber-500/80 mt-0.5">⚠️ Este video no tiene texto en el post — tendrás que escribir el copy</p>
+                                )}
                               </div>
                               <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold shrink-0 ${elegido ? "bg-purple-600 text-white" : "bg-surface border border-border text-gray-500"}`}>{elegido ? `Anuncio ${pos+1}` : "Elegir"}</span>
                             </button>
@@ -6318,27 +6383,31 @@ export default function CRMApp() {
                       <button type="button" onClick={()=>setUsarCopyVideo(false)} className={`flex-1 py-1.5 rounded-lg text-[10px] font-bold border ${!usarCopyVideo?"bg-amber-600 border-amber-500 text-white":"bg-surface border-border text-gray-400"}`}>Usar copy del agente</button>
                     </div>
 
-                    {/* COPY ORIGINAL COMPLETO DE CADA VIDEO ELEGIDO */}
+                    {/* COPY REAL DE CADA VIDEO ELEGIDO: EL TEXTO QUE VA DENTRO DEL POST */}
                     {usarCopyVideo && videosSeleccionadosObj.length > 0 && (
                       <div className="space-y-1.5 pt-1">
-                        <p className="text-[10px] font-bold text-purple-300">📝 Copy original publicado en la fan page:</p>
+                        <p className="text-[10px] font-bold text-purple-300">📝 Copy real = texto que va dentro del post (la publicación):</p>
+                        <p className="text-[9px] text-gray-500 leading-snug">El nombre del archivo del video (ej: <span className="text-gray-400">Auto_Cropped_AR_4_X_5_DCO_1.mp4</span>) NO es el copy: se ignora y se toma el texto del post.</p>
                         {videosSeleccionadosObj.map((v: any, idx: number) => (
                           <div key={v.id} className="p-2 rounded-lg bg-background/70 border border-border/60">
                             <div className="flex items-center justify-between gap-2 mb-1">
                               <span className="text-[9px] font-bold text-gray-300 truncate">Anuncio {idx + 1} · {v.title}</span>
                               <span className={`text-[8px] px-1.5 py-0.5 rounded shrink-0 ${v.tiene_copy ? "bg-emerald-950 text-emerald-300 border border-emerald-800" : "bg-amber-950 text-amber-300 border border-amber-800"}`}>
-                                {v.copy_origen === "post" ? "texto del post" : v.copy_origen === "video_description" ? "descripción del video" : v.copy_origen === "video_node" ? "texto del video" : "sin copy"}
+                                {etiquetaCortaFuenteCopy(v.copy_origen)}
                               </span>
                             </div>
+                            {v.nombre_archivo ? <p className="text-[8px] text-gray-600 truncate mb-1">📁 {v.nombre_archivo}</p> : null}
                             {v.tiene_copy ? (
                               <>
-                                <p className="text-[10px] text-gray-300 whitespace-pre-wrap leading-snug max-h-24 overflow-y-auto">{v.copy_original || v.description}</p>
+                                <p className="text-[10px] text-gray-300 whitespace-pre-wrap leading-snug max-h-24 overflow-y-auto">{copyDeVideo(v)}</p>
+                                <p className="text-[8px] text-gray-500 mt-0.5">¿De dónde salió? {DETALLE_FUENTE_COPY[v.copy_origen as keyof typeof DETALLE_FUENTE_COPY] || DETALLE_FUENTE_COPY.sin_copy}</p>
+                                {v.copy_descartado ? <p className="text-[8px] text-amber-400/80 mt-0.5">⛔ Ignorado por ser nombre de archivo: {v.copy_descartado}</p> : null}
                                 {v.permalink && (
-                                  <a href={v.permalink} target="_blank" rel="noreferrer" onClick={(e)=>e.stopPropagation()} className="text-[9px] text-purple-400 hover:text-purple-300 underline">Ver publicación original ↗ (verifica que el copy sea este)</a>
+                                  <a href={v.permalink} target="_blank" rel="noreferrer" onClick={(e)=>e.stopPropagation()} className="text-[9px] text-purple-400 hover:text-purple-300 underline">Ver el post original ↗ (confirma que el copy sea ese)</a>
                                 )}
                               </>
                             ) : (
-                              <p className="text-[10px] text-amber-400/90">Este video no tiene texto publicado. Escribe el copy abajo para este anuncio.</p>
+                              <p className="text-[10px] text-amber-400/90">Este video no tiene texto en ningún post. Escribe el copy abajo para este anuncio (el nombre del archivo no sirve como copy).</p>
                             )}
                           </div>
                         ))}
@@ -6350,7 +6419,8 @@ export default function CRMApp() {
                   <div className="p-3 rounded-xl bg-amber-950/15 border border-amber-800/30 space-y-2">
                     <label className="text-xs text-amber-300 font-bold flex items-center gap-1.5">✍️ Copy del Anuncio {usarCopyVideo?"(Base + variaciones)" : "(Del agente)"} <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-900 text-amber-200">{usarCopyVideo?"VIDEO + AGENTE":"SOLO AGENTE"}</span></label>
                     <textarea placeholder={usarCopyVideo?"Copy base opcional del agente que se sumará al copy del video... Ej: ¡Oferta limitada! Consulta gratis hoy.":"Escribe el copy principal que llevará el anuncio... Ej: 🔮 ¿Sientes que tu pareja se aleja? Amarres efectivos, retornos en 24h. Escríbeme al WhatsApp ahora y te revelo tu destino..."} value={nuevaCampCopy} onChange={(e)=>setNuevaCampCopy(e.target.value)} rows={3} className="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-amber-500 resize-y" />
-                    <p className="text-[9px] text-gray-500">{usarCopyVideo?"Si dejas vacío, se usa solo el copy que ya trae el video. Si escribes algo, se combinará.":"Este será el texto principal del anuncio. Puedes añadir variaciones por cada anuncio abajo."}</p>
+                    <p className="text-[9px] text-gray-500">{usarCopyVideo?"Si dejas vacío, se usa solo el copy que ya trae el post del video. Si escribes algo, se combinará.":"Este será el texto principal del anuncio. Puedes añadir variaciones por cada anuncio abajo."}</p>
+                    <p className="text-[9px] text-amber-200/70 bg-background/50 p-1.5 rounded border border-amber-900/30 leading-snug">⚠️ El copy es el <span className="font-bold">texto que va dentro del post (la publicación)</span>. El nombre del archivo del video (ej: Auto_Cropped_AR_4_X_5_DCO_1.mp4) <span className="font-bold">nunca</span> se usa como copy.</p>
                     
                     {/* VARIACIONES POR ANUNCIO */}
                     <div className="space-y-1.5">
@@ -6421,22 +6491,36 @@ export default function CRMApp() {
                     {segmentacionesNota && segmentacionesGuardadas.length > 0 && <p className="text-[9px] text-gray-500">{segmentacionesNota}</p>}
                   </div>
 
-                  {/* SALDO CUENTA PUBLICITARIA (solo lectura - Meta no permite recargar por API) */}
-                  <div className="p-3 rounded-xl bg-gray-900/60 border border-border space-y-2">
-                    <div className="flex items-center justify-between"><label className="text-xs text-gray-300 font-bold">💳 Saldo Cuenta Publicitaria</label><button type="button" onClick={fetchAccountInfo} className="text-[10px] text-gray-400 hover:text-white flex items-center gap-1"><RefreshCw className={`w-3 h-3 ${loadingAccount?'animate-spin':''}`} /> Actualizar</button></div>
-                    {accountInfo && !accountInfo.error ? (
-                      <div className="text-[11px] space-y-1 bg-background/80 p-2.5 rounded-lg border border-border">
-                        <div className="flex justify-between"><span className="text-gray-500">Cuenta:</span><span className="text-gray-200 font-mono truncate max-w-[60%] text-right">{accountInfo.name || accountInfo.id}</span></div>
-                        <div className="flex justify-between"><span className="text-gray-500">Saldo total:</span><span className="text-emerald-400 font-bold">{accountInfo.saldo_disponible_formatted || accountInfo.balance_formatted}</span></div>
-                        <div className="flex justify-between"><span className="text-gray-500">Gastado hoy:</span><span className="text-amber-300 font-semibold">{accountInfo.spend_today_formatted}</span></div>
-                        <div className="flex justify-between"><span className="text-gray-500">Gastado total:</span><span className="text-gray-300">{accountInfo.amount_spent_formatted}</span></div>
-                        <div className="flex justify-between"><span className="text-gray-500">Límite:</span><span className="text-gray-300">{accountInfo.spend_cap_formatted}</span></div>
+                  {/* FONDOS DISPONIBLES DE LA CUENTA (solo lectura - Meta no permite recargar por API) */}
+                  {(() => {
+                    const fondos = accountInfo?.fondos_disponibles ?? accountInfo?.saldo_disponible ?? null;
+                    const totalCampana = (Number(nuevaCampPresupuesto) || 0) * 1.19;
+                    const alcanza = fondos !== null && fondos !== undefined && totalCampana > 0 ? fondos >= totalCampana : null;
+                    return (
+                      <div className="p-3 rounded-xl bg-gray-900/60 border border-border space-y-2">
+                        <div className="flex items-center justify-between"><label className="text-xs text-gray-300 font-bold">💰 Fondos Disponibles de la Cuenta</label><button type="button" onClick={fetchAccountInfo} className="text-[10px] text-gray-400 hover:text-white flex items-center gap-1"><RefreshCw className={`w-3 h-3 ${loadingAccount?'animate-spin':''}`} /> Actualizar</button></div>
+                        {accountInfo && !accountInfo.error ? (
+                          <div className="text-[11px] space-y-1 bg-background/80 p-2.5 rounded-lg border border-border">
+                            <div className="flex justify-between items-center"><span className="text-gray-500">Fondos disponibles:</span><span className={`text-base font-extrabold ${accountInfo.fondos_alerta === "agotado" || accountInfo.fondos_alerta === "critico" ? "text-red-400" : accountInfo.fondos_alerta === "bajo" ? "text-amber-400" : "text-emerald-400"}`}>{accountInfo.fondos_disponibles_formatted || accountInfo.saldo_disponible_formatted || "—"}</span></div>
+                            <div className="flex justify-between"><span className="text-gray-500">Cuenta:</span><span className="text-gray-200 font-mono truncate max-w-[60%] text-right">{accountInfo.name || accountInfo.id}</span></div>
+                            <div className="flex justify-between"><span className="text-gray-500">Alcanza para:</span><span className="text-gray-300">{accountInfo.dias_de_fondos !== null && accountInfo.dias_de_fondos !== undefined ? `≈ ${accountInfo.dias_de_fondos} día(s) (${accountInfo.promedio_diario_7d_formatted}/día)` : "—"}</span></div>
+                            <div className="flex justify-between"><span className="text-gray-500">Gastado hoy:</span><span className="text-amber-300 font-semibold">{accountInfo.spend_today_formatted}</span></div>
+                            <div className="flex justify-between"><span className="text-gray-500">Saldo según Meta:</span><span className="text-gray-300">{accountInfo.balance_formatted} <span className="text-gray-500">({accountInfo.balance_label})</span></span></div>
+                            {alcanza !== null && (
+                              <div className={`mt-1 p-1.5 rounded border text-[10px] font-semibold ${alcanza ? "bg-emerald-950/40 border-emerald-800/50 text-emerald-300" : "bg-red-950/40 border-red-800/50 text-red-300"}`}>
+                                {alcanza
+                                  ? `✅ Los fondos alcanzan para esta campaña ($${Math.round(totalCampana).toLocaleString("es-CO")} con IVA).`
+                                  : `🚨 Esta campaña necesita $${Math.round(totalCampana).toLocaleString("es-CO")} con IVA y solo hay ${accountInfo.fondos_disponibles_formatted}. Recarga fondos antes de lanzarla o la entrega se detendrá.`}
+                              </div>
+                            )}
+                          </div>
+                        ) : accountInfo?.error ? (
+                          <div className="text-[11px] text-center py-2 px-2 border border-amber-800/50 bg-amber-950/20 rounded-lg text-amber-300">⚠️ {accountInfo.error}</div>
+                        ) : (<div className="text-[11px] text-gray-500 text-center py-2 border border-dashed border-border rounded-lg">{loadingAccount?"Consultando fondos en Meta...":"Sin datos de cuenta - verifica META_AD_ACCOUNT_ID"}</div>)}
+                        <p className="text-[9px] text-gray-500">La API de Meta no permite recargar fondos. Hazlo en <a href={accountInfo?.payment_url || accountInfo?.billing_url || "https://business.facebook.com/billing_hub/payment_settings"} target="_blank" rel="noreferrer" className="text-emerald-400 underline">Meta Business → Fondos disponibles ↗</a></p>
                       </div>
-                    ) : accountInfo?.error ? (
-                      <div className="text-[11px] text-center py-2 px-2 border border-amber-800/50 bg-amber-950/20 rounded-lg text-amber-300">⚠️ {accountInfo.error}</div>
-                    ) : (<div className="text-[11px] text-gray-500 text-center py-2 border border-dashed border-border rounded-lg">{loadingAccount?"Cargando cuenta...":"Sin datos de cuenta - verifica META_AD_ACCOUNT_ID"}</div>)}
-                    <p className="text-[9px] text-gray-500">La API de Meta no permite recargar saldo. Hazlo en <a href={accountInfo?.billing_url || "https://business.facebook.com/billing_hub/accounts"} target="_blank" rel="noreferrer" className="text-emerald-400 underline">Meta Business → Facturación ↗</a></p>
-                  </div>
+                    );
+                  })()}
 
                   <div className="grid grid-cols-2 gap-2">
                     <div><label className="text-xs text-gray-400 block mb-1 font-semibold">Objetivo</label><select value={nuevaCampObjetivo} onChange={(e)=>setNuevaCampObjetivo(e.target.value)} className="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500"><option value="OUTCOME_ENGAGEMENT">Mensajes WhatsApp (Recomendado)</option><option value="OUTCOME_LEADS">Leads</option><option value="OUTCOME_TRAFFIC">Tráfico</option></select></div>
@@ -6465,7 +6549,7 @@ export default function CRMApp() {
 
                   {/* COPY PREVIEW POR ANUNCIO - NUEVO REQUERIMIENTO */}
                   <div className="space-y-2">
-                    <p className="text-[11px] font-bold text-amber-300">✍️ Copy con el que va cada anuncio ({previewCampana.usar_copy_video?"del video seleccionado o del agente" : "del agente"}):</p>
+                    <p className="text-[11px] font-bold text-amber-300">✍️ Copy con el que va cada anuncio ({previewCampana.usar_copy_video?"texto del post del video o del agente" : "del agente"}):</p>
                     <div className="grid grid-cols-1 gap-2 max-h-72 overflow-y-auto pr-1">
                       {previewCampana.anuncios.map((ad:any, idx:number)=>(
                         <div key={ad.id} className="p-2.5 rounded-lg bg-background/80 border border-border space-y-1">
@@ -6501,7 +6585,7 @@ export default function CRMApp() {
                     <div className="bg-background/60 p-2 rounded-lg border border-border/50"><p className="font-bold text-gray-300 mb-1">🎯 Segmentación: <span className="text-purple-300">{previewCampana.segmentacionNombre}</span></p><p className="text-gray-400">País: {previewCampana.segmentacion?.location?.countries?.join(", ") || "CO"} • Edad: {previewCampana.segmentacion?.age_min ?? 18}-{previewCampana.segmentacion?.age_max ?? 65}</p><p className="text-gray-400">Intereses: {(previewCampana.segmentacion?.interests || []).slice(0,3).join(", ") || "—"}</p><p className="text-emerald-300">Solo WhatsApp placements: {previewCampana.segmentacion?.placements?.length || 4} (FB/IG feed/story/reels)</p></div>
                     <div className="bg-background/60 p-2 rounded-lg border border-border/50"><p className="font-bold text-gray-300 mb-1">💬 WhatsApp + Videos</p><p className="text-gray-400">Número: <span className="text-emerald-300 font-mono font-bold">{previewCampana.whatsappNumero || "⚠️ sin número"}</span></p><p className="text-gray-400">{previewCampana.whatsapp?.verified_name || ""}</p><p className="text-gray-400 mt-1">Videos diferentes: <span className="text-purple-300 font-bold">{previewCampana.videos?.length || 0} de {previewCampana.numAnuncios}</span>{previewCampana.videosFaltantes > 0 && <span className="text-amber-400"> • faltan {previewCampana.videosFaltantes}</span>}</p><p className="text-[9px] text-gray-500 mt-1">Campañas únicamente dirigidas a WhatsApp, nada de Messenger ni demás plataformas, solo WhatsApp.</p></div>
                   </div>
-                  {accountInfo && (<div className="p-2 rounded-lg bg-emerald-950/20 border border-emerald-800/30 text-[11px] text-emerald-200">💳 Saldo actual de la cuenta: <span className="font-bold">{accountInfo.saldo_disponible_formatted || accountInfo.balance_formatted}</span> • Gastado hoy: <span className="font-bold">{accountInfo.spend_today_formatted}</span></div>)}
+                  {accountInfo && (<div className={`p-2 rounded-lg border text-[11px] ${accountInfo.fondos_alerta === "agotado" || accountInfo.fondos_alerta === "critico" ? "bg-red-950/20 border-red-800/40 text-red-200" : "bg-emerald-950/20 border-emerald-800/30 text-emerald-200"}`}>💰 Fondos disponibles de la cuenta: <span className="font-bold">{accountInfo.fondos_disponibles_formatted || accountInfo.saldo_disponible_formatted || accountInfo.balance_formatted}</span>{accountInfo.dias_de_fondos !== null && accountInfo.dias_de_fondos !== undefined ? <> • Alcanza ≈ {accountInfo.dias_de_fondos} día(s)</> : null} • Gastado hoy: <span className="font-bold">{accountInfo.spend_today_formatted}</span></div>)}
                 </div>
               ) : (
                 <div className="p-3 rounded-xl border border-dashed border-border text-center text-[11px] text-gray-500">Completa presupuesto y fecha de inicio para ver la vista previa completa con valores, segmentación, fechas con hora y copy del anuncio (video o agente)</div>

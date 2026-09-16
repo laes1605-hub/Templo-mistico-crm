@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getMetaConfig, metaGraph } from "@/lib/meta-config";
+import { primerLineaCopy, revisarCopy } from "@/lib/copy-post";
 
 export const dynamic = "force-dynamic";
 
@@ -369,11 +370,24 @@ export async function POST(req: Request) {
     const budgetCentavos = budgetAmount * 100;
 
     // Copys finales: uno por anuncio (el panel ya combina video + agente).
-    const copiesFinales = Array.from({ length: numAds }, (_, i) => String(adCopies[i] || "").trim());
+    // El copy es el TEXTO QUE VA DENTRO DEL POST: si lo que llega es el nombre
+    // del archivo del video (Auto_Cropped_AR_4_X_5_DCO_1.mp4) se rechaza, no se
+    // publica un nombre de archivo como copy.
+    const copiesRevisados = Array.from({ length: numAds }, (_, i) => revisarCopy(adCopies[i]));
+    const copiesFinales = copiesRevisados.map((c) => c.texto);
+    const descartados = copiesRevisados.map((c) => c.descartado || "");
     const sinCopy = copiesFinales.map((c, i) => (c ? null : i + 1)).filter(Boolean) as number[];
     if (sinCopy.length > 0) {
+      const porNombreArchivo = descartados
+        .map((d, i) => (d && !copiesFinales[i] ? `#${i + 1} («${d}»)` : null))
+        .filter(Boolean) as string[];
       return NextResponse.json({
-        error: `Los anuncios ${sinCopy.join(", ")} quedaron sin copy. Esos videos no traen texto publicado: escribe el copy en el panel antes de crear.`,
+        error:
+          `Los anuncios ${sinCopy.join(", ")} quedaron sin copy. ` +
+          (porNombreArchivo.length > 0
+            ? `El texto que llegó (${porNombreArchivo.join(", ")}) es el nombre del archivo del video, no el copy. `
+            : "Esos videos no traen texto publicado en el post. ") +
+          "El copy debe ser el TEXTO QUE VA DENTRO DEL POST: escríbelo en el panel antes de crear.",
       }, { status: 400 });
     }
 
@@ -434,7 +448,7 @@ export async function POST(req: Request) {
         continue;
       }
       try {
-        const primeraLinea = copy.split("\n").map((l: string) => l.trim()).find((l: string) => l) || name;
+        const primeraLinea = primerLineaCopy(copy) || name;
         const titulo = primeraLinea.length > 60 ? primeraLinea.substring(0, 57).trim() + "..." : primeraLinea;
 
         const { res: creRes, json: creJson } = await postForm(metaGraph(`/act_${adAccountId}/adcreatives`), {

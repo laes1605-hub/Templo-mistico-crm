@@ -40,16 +40,50 @@ function calcularHorarioBogota(fechaInicioStr: string, diasDuracion: number) {
 }
 
 function finBogotaDesdeIso(inicioIso: string, dias: number): string {
-  const t = new Date(inicioIso).getTime();
-  const base = isNaN(t) ? Date.now() : t;
-  // Días en hora Bogotá (UTC-5)
-  const finMs = base + (Math.max(1, dias) - 1) * 24 * 60 * 60 * 1000;
-  const bog = new Date(finMs - 0); // el desfase se fija con el sufijo -05:00
-  const ref = new Date(bog.toLocaleString("en-US", { timeZone: "America/Bogota" }));
-  const y = ref.getFullYear();
-  const m = String(ref.getMonth() + 1).padStart(2, "0");
-  const d = String(ref.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}T23:59:59-05:00`;
+  let y: number, m: number, d: number;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(inicioIso || "").trim())) {
+    [y, m, d] = String(inicioIso).trim().split("-").map(Number);
+  } else {
+    const dt = new Date(inicioIso);
+    const bogotaStr = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/Bogota",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(isNaN(dt.getTime()) ? new Date() : dt);
+    [y, m, d] = bogotaStr.split("-").map(Number);
+  }
+  const fechaFinDate = new Date(Date.UTC(y, m - 1, d + Math.max(1, dias) - 1));
+  const yF = fechaFinDate.getUTCFullYear();
+  const mF = String(fechaFinDate.getUTCMonth() + 1).padStart(2, "0");
+  const dF = String(fechaFinDate.getUTCDate()).padStart(2, "0");
+  return `${yF}-${mF}-${dF}T23:59:59-05:00`;
+}
+
+/** Formatea una fecha ISO para mostrar legible en Bogotá con fecha y hora completa */
+function formatearFechaHoraCompleta(fechaIso: string | null | undefined): string | null {
+  if (!fechaIso) return null;
+  try {
+    const d = new Date(fechaIso);
+    if (isNaN(d.getTime())) return null;
+    const diaSemanaRaw = d.toLocaleDateString("es-CO", { timeZone: "America/Bogota", weekday: "long" });
+    const diaSemana = diaSemanaRaw.charAt(0).toUpperCase() + diaSemanaRaw.slice(1);
+    const fecha = d.toLocaleDateString("es-CO", {
+      timeZone: "America/Bogota",
+      day: "numeric",
+      month: "long",
+      year: "numeric",
+    });
+    const hora = d.toLocaleTimeString("es-CO", {
+      timeZone: "America/Bogota",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+    return `${diaSemana}, ${fecha} a las ${hora} (Bogotá UTC-5)`;
+  } catch {
+    return null;
+  }
 }
 
 /** Formatea una fecha ISO para mostrar legible en Bogotá */
@@ -174,7 +208,7 @@ export async function GET() {
         thumbnail: a.creative?.thumbnail_url || a.creative?.image_url || null,
       }));
 
-      const startTime = c.start_time || adset.start_time || null;
+      const startTime = c.start_time || adset.start_time || c.created_time || null;
       const stopTime = c.stop_time || adset.end_time || null;
       const startTimeAdset = adset.start_time || null;
       const stopTimeAdset = adset.end_time || null;
@@ -213,6 +247,8 @@ export async function GET() {
         legibleFin: formatearFechaLegible(stopTime),
         legibleInicioAnuncio: formatearFechaLegible(startTimeAdset),
         legibleFinAnuncio: formatearFechaLegible(stopTimeAdset),
+        fechaInicioCompleta: formatearFechaHoraCompleta(startTime),
+        fechaFinCompleta: formatearFechaHoraCompleta(stopTime),
         diasTotales,
         diasRestantes,
         createdTime: c.created_time,
@@ -509,7 +545,7 @@ export async function POST(req: Request) {
   }
 }
 
-// PATCH: Actualizar campaña (nombre, estado y presupuesto de sus conjuntos)
+// PATCH: Actualizar campaña (nombre, estado, presupuesto y duración/fechas de sus conjuntos)
 export async function PATCH(req: Request) {
   try {
     const b = await req.json();
@@ -522,6 +558,7 @@ export async function PATCH(req: Request) {
       ? Math.round(Number(b.budgetAmount ?? b.dailyBudget ?? 0) || 0)
       : null;
     const days = Math.max(1, Number(b.days ?? 8) || 8);
+    const customEndTime = b.endTime || b.end_time || null;
 
     if (!campaignId) {
       return NextResponse.json({ error: "Falta el ID de la campaña." }, { status: 400 });
@@ -541,27 +578,40 @@ export async function PATCH(req: Request) {
       return NextResponse.json({ error: `Meta dice: ${resJson?.error?.message || "No se pudo actualizar la campaña."}` }, { status: 400 });
     }
 
-    // 2) Presupuesto de los conjuntos (el presupuesto vive en el adset, no en la campaña)
+    // 2) Presupuesto y fechas de los conjuntos (el presupuesto y end_time viven en el adset)
     let adsetsActualizados = 0;
     const adset_errors: { id: string; error: string }[] = [];
-    if (budgetType && budgetAmount !== null && budgetAmount > 0) {
+    const shouldUpdateAdsets = (budgetType && budgetAmount !== null && budgetAmount > 0) || b.days !== undefined || customEndTime;
+
+    if (shouldUpdateAdsets) {
       try {
-        const listUrl = metaGraph(`/${campaignId}/adsets?fields=id,name,start_time&limit=50&access_token=${encodeURIComponent(metaToken)}`);
+        const listUrl = metaGraph(`/${campaignId}/adsets?fields=id,name,start_time,end_time&limit=50&access_token=${encodeURIComponent(metaToken)}`);
         const listRes = await fetch(listUrl, { cache: "no-store" });
         const listJson = await listRes.json().catch(() => ({}));
         const adsets = Array.isArray(listJson?.data) ? listJson.data : [];
         for (const ad of adsets) {
           try {
             const p: Record<string, string> = { access_token: metaToken };
-            if (budgetType === "daily") {
+            if (budgetType === "daily" && budgetAmount && budgetAmount > 0) {
               p.daily_budget = String(budgetAmount * 100);
-            } else {
+            } else if (budgetType === "lifetime" && budgetAmount && budgetAmount > 0) {
               p.lifetime_budget = String(budgetAmount * 100);
-              p.end_time = finBogotaDesdeIso(ad.start_time || new Date().toISOString(), days);
             }
+
+            // Calcular o aplicar fecha de finalización con hora Bogotá (23:59:59)
+            const targetEndTime = customEndTime || finBogotaDesdeIso(ad.start_time || new Date().toISOString(), days);
+            const endMs = new Date(targetEndTime).getTime();
+            // Solo enviar a Meta si la fecha de fin está en el futuro (mínimo 10 min adelante)
+            if (!isNaN(endMs) && endMs > Date.now() + 10 * 60 * 1000) {
+              p.end_time = targetEndTime;
+            }
+
             const { res: uRes, json: uJson } = await postForm(metaGraph(`/${ad.id}`), p);
-            if (!uRes.ok || uJson?.error) adset_errors.push({ id: String(ad.id), error: uJson?.error?.message || "Error" });
-            else adsetsActualizados++;
+            if (!uRes.ok || uJson?.error) {
+              adset_errors.push({ id: String(ad.id), error: uJson?.error?.message || "Error al actualizar adset" });
+            } else {
+              adsetsActualizados++;
+            }
           } catch (e: any) {
             adset_errors.push({ id: String(ad.id), error: e.message });
           }

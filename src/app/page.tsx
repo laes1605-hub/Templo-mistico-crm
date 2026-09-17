@@ -305,6 +305,8 @@ export default function CRMApp() {
   const [editCampTipoPresupuesto, setEditCampTipoPresupuesto] = useState<"lifetime" | "daily">("lifetime");
   const [editCampDias, setEditCampDias] = useState<number>(8);
   const [editCampEstado, setEditCampEstado] = useState<"ACTIVE" | "PAUSED">("ACTIVE");
+  const [editCampFechaInicio, setEditCampFechaInicio] = useState<string>("");
+  const [mostrarModificarInicio, setMostrarModificarInicio] = useState(false);
 
   // Memoria del Agente de Ads (Aprendizaje de campañas ganadoras y descarte de fallidas)
   const [adsMemoriaModal, setAdsMemoriaModal] = useState(false);
@@ -2482,6 +2484,113 @@ export default function CRMApp() {
     }
   }
 
+  // Formatea una fecha ISO para Bogotá con día de la semana, fecha y hora exacta
+  function formatearFechaHoraBogota(iso: string | null | undefined): {
+    completo: string;
+    diaSemana: string;
+    fechaLarga: string;
+    fechaCorta: string;
+    hora: string;
+    hora12: string;
+  } {
+    if (!iso) {
+      return {
+        completo: "Sin fecha registrada",
+        diaSemana: "",
+        fechaLarga: "—",
+        fechaCorta: "—",
+        hora: "—",
+        hora12: "—",
+      };
+    }
+    try {
+      const dt = new Date(iso);
+      if (isNaN(dt.getTime())) throw new Error();
+      const diaSemanaRaw = dt.toLocaleDateString("es-CO", { timeZone: "America/Bogota", weekday: "long" });
+      const diaSemana = diaSemanaRaw.charAt(0).toUpperCase() + diaSemanaRaw.slice(1);
+      const fechaLarga = dt.toLocaleDateString("es-CO", {
+        timeZone: "America/Bogota",
+        day: "numeric",
+        month: "long",
+        year: "numeric",
+      });
+      const fechaCorta = dt.toLocaleDateString("es-CO", {
+        timeZone: "America/Bogota",
+        day: "2-digit",
+        month: "short",
+        year: "numeric",
+      });
+      const hora = dt.toLocaleTimeString("es-CO", {
+        timeZone: "America/Bogota",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      });
+      const hora12 = dt.toLocaleTimeString("es-CO", {
+        timeZone: "America/Bogota",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: true,
+      });
+      return {
+        completo: `${diaSemana}, ${fechaLarga} a las ${hora} (Bogotá UTC-5)`,
+        diaSemana,
+        fechaLarga,
+        fechaCorta,
+        hora,
+        hora12,
+      };
+    } catch {
+      return {
+        completo: "Fecha no válida",
+        diaSemana: "",
+        fechaLarga: "—",
+        fechaCorta: "—",
+        hora: "—",
+        hora12: "—",
+      };
+    }
+  }
+
+  // Calcula la fecha y hora exacta de finalización proyectada según la fecha de inicio y los días expandidos
+  function calcularFinConHoraBogota(inicioIso: string | null | undefined, diasDuracion: number) {
+    const iso = inicioIso || new Date().toISOString();
+    let y: number, m: number, d: number;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(String(iso).trim())) {
+      [y, m, d] = String(iso).trim().split("-").map(Number);
+    } else {
+      const dt = new Date(iso);
+      const bogotaStr = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "America/Bogota",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      }).format(isNaN(dt.getTime()) ? new Date() : dt);
+      [y, m, d] = bogotaStr.split("-").map(Number);
+    }
+
+    const dias = Math.max(1, Number(diasDuracion) || 1);
+    const fechaFinDate = new Date(Date.UTC(y, m - 1, d + dias - 1));
+    const yF = fechaFinDate.getUTCFullYear();
+    const mF = String(fechaFinDate.getUTCMonth() + 1).padStart(2, "0");
+    const dF = String(fechaFinDate.getUTCDate()).padStart(2, "0");
+    const finIso = `${yF}-${mF}-${dF}T23:59:59-05:00`;
+
+    const infoFin = formatearFechaHoraBogota(finIso);
+    const finMs = new Date(finIso).getTime();
+    const ahoraMs = Date.now();
+    const yaPaso = !isNaN(finMs) && finMs < ahoraMs;
+
+    return {
+      finIso,
+      infoFin,
+      fechaFinYMD: `${yF}-${mF}-${dF}`,
+      horaFin: "23:59",
+      dias,
+      yaPaso,
+    };
+  }
+
   function abrirEditarCampana(c: any, e?: React.MouseEvent) {
     e?.stopPropagation();
     setCampanaEditando(c);
@@ -2489,7 +2598,24 @@ export default function CRMApp() {
     const valorPresupuesto = c.lifetimeBudget > 0 ? c.lifetimeBudget : c.dailyBudget;
     setEditCampPresupuesto(String(valorPresupuesto || ""));
     setEditCampTipoPresupuesto(c.lifetimeBudget > 0 ? "lifetime" : "daily");
-    setEditCampDias(8);
+
+    // Fecha exacta en que comenzó la campaña
+    const fIni = c.startTime || c.startTimeAdset || c.createdTime || new Date().toISOString();
+    setEditCampFechaInicio(fIni);
+    setMostrarModificarInicio(false);
+
+    // Días de duración: si ya tenía días totales, usar ese valor; si no, calcular o usar 8
+    let diasIni = 8;
+    if (c.diasTotales && Number(c.diasTotales) > 0) {
+      diasIni = Number(c.diasTotales);
+    } else if (c.startTime && c.stopTime) {
+      const msIni = new Date(c.startTime).getTime();
+      const msFin = new Date(c.stopTime).getTime();
+      if (msFin > msIni) {
+        diasIni = Math.max(1, Math.round((msFin - msIni) / (1000 * 60 * 60 * 24)));
+      }
+    }
+    setEditCampDias(diasIni);
     setEditCampEstado(c.status === "ACTIVE" ? "ACTIVE" : "PAUSED");
   }
 
@@ -2516,6 +2642,9 @@ export default function CRMApp() {
     } : c));
 
     try {
+      const fIni = editCampFechaInicio || campanaEditando.startTime || campanaEditando.createdTime || new Date().toISOString();
+      const finInfo = calcularFinConHoraBogota(fIni, editCampDias);
+
       const res = await fetch("/api/ads/campaigns", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -2525,6 +2654,7 @@ export default function CRMApp() {
           budgetType: editCampTipoPresupuesto,
           budgetAmount: presupuestoNum,
           days: editCampDias,
+          endTime: finInfo.finIso,
           status: editCampEstado
         }),
       });
@@ -2533,7 +2663,13 @@ export default function CRMApp() {
         alert(data.error || "No se pudo actualizar la campaña.");
         fetchCampanasAds();
       } else {
-        alert("¡Campaña y presupuesto actualizados en Meta Ads!");
+        alert(
+          `¡Campaña actualizada en Meta Ads!\n\n` +
+          `• Campaña: ${editCampNombre.trim()}\n` +
+          `• Inicio: ${formatearFechaHoraBogota(fIni).completo}\n` +
+          `• Duración expandida: ${editCampDias} día(s)\n` +
+          `• Finaliza: ${finInfo.infoFin.completo}`
+        );
         setCampanaEditando(null);
         fetchCampanasAds();
       }
@@ -6061,10 +6197,10 @@ export default function CRMApp() {
                             {/* FECHAS DE LA CAMPAÑA Y DEL ANUNCIO */}
                             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1.5 text-[10px]">
                               <span className="text-gray-400">
-                                📅 Inicio: <span className="text-gray-200 font-semibold">{c.startDate ? new Date(c.startTime).toLocaleDateString("es-CO", { day: "2-digit", month: "short", year: "numeric", timeZone: "America/Bogota" }) : "—"}</span>
+                                📅 Inicio: <span className="text-gray-200 font-semibold">{c.fechaInicioCompleta || c.legibleInicio || (c.startTime ? formatearFechaHoraBogota(c.startTime).completo : "—")}</span>
                               </span>
                               <span className="text-gray-400">
-                                🏁 Fin del anuncio: <span className="text-gray-200 font-semibold">{c.adEndTime || c.stopTime ? new Date(c.adEndTime || c.stopTime).toLocaleDateString("es-CO", { day: "2-digit", month: "short", year: "numeric", timeZone: "America/Bogota" }) : "Sin fecha de fin"}</span>
+                                🏁 Fin: <span className="text-gray-200 font-semibold">{c.fechaFinCompleta || c.legibleFin || (c.stopTime ? formatearFechaHoraBogota(c.stopTime).completo : "Sin fecha de fin")}</span>
                               </span>
                               {c.diasRestantes !== null && c.diasRestantes !== undefined && (
                                 <span className={`px-1.5 py-0.5 rounded font-bold ${c.diasRestantes > 0 ? "bg-emerald-950/70 text-emerald-400 border border-emerald-900" : "bg-red-950/70 text-red-400 border border-red-900"}`}>
@@ -6685,201 +6821,345 @@ export default function CRMApp() {
       )}
 
       {/* MODAL EDITAR CAMPAÑA EXISTENTE / MODIFICAR PRESUPUESTO */}
-      {/* MODAL EDITAR CAMPAÑA EXISTENTE / MODIFICAR PRESUPUESTO */}
-      {campanaEditando && (
-        <div className="fixed inset-0 z-50 bg-scrim flex justify-center overflow-y-auto p-3 sm:p-4 pt-[calc(0.75rem_+_var(--safe-area-inset-top))] pb-[calc(0.75rem_+_var(--safe-area-inset-bottom))] backdrop-blur-md">
-          <div className="w-full max-w-md my-auto bg-surface border border-border rounded-2xl p-6 space-y-4 shadow-2xl flex flex-col">
-            <div className="flex items-center justify-between border-b border-border pb-3">
-              <div className="flex items-center gap-2 text-purple-400">
-                <Edit2 className="w-5 h-5" />
-                <h3 className="text-base font-bold text-gray-100">Modificar Campaña Meta Ads</h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setCampanaEditando(null)}
-                className="text-gray-400 hover:text-white p-1 rounded-lg"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
+      {/* MODAL EDITAR CAMPAÑA EXISTENTE / MODIFICAR PRESUPUESTO Y DURACIÓN */}
+      {campanaEditando && (() => {
+        const fechaInicioValida = editCampFechaInicio || campanaEditando.startTime || campanaEditando.startTimeAdset || campanaEditando.createdTime || new Date().toISOString();
+        const infoInicio = formatearFechaHoraBogota(fechaInicioValida);
+        const proyeccionFin = calcularFinConHoraBogota(fechaInicioValida, editCampDias);
+        const msIni = new Date(fechaInicioValida).getTime();
+        const msAhora = Date.now();
+        const diasTranscurridos = !isNaN(msIni) && msAhora > msIni ? Math.floor((msAhora - msIni) / (1000 * 60 * 60 * 24)) : 0;
+        const presupuestoNum = Number(editCampPresupuesto) || 0;
 
-            <form onSubmit={guardarEdicionCampana} className="space-y-4">
-              <div>
-                <label className="text-xs text-gray-400 block mb-1 font-semibold">
-                  Nombre de la Campaña
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={editCampNombre}
-                  onChange={(e) => setEditCampNombre(e.target.value)}
-                  className="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500"
-                />
-              </div>
-
-              <div>
-                <label className="text-xs text-gray-400 block mb-1 font-semibold">
-                  Modalidad de Presupuesto
-                </label>
-                <div className="grid grid-cols-2 gap-2 mb-3">
-                  <button
-                    type="button"
-                    onClick={() => setEditCampTipoPresupuesto("lifetime")}
-                    className={`p-2.5 rounded-xl border text-left transition-all ${
-                      editCampTipoPresupuesto === "lifetime"
-                        ? "bg-purple-950/60 border-purple-600 text-purple-200 shadow-sm"
-                        : "bg-surface border-border text-gray-400 hover:text-white"
-                    }`}
-                  >
-                    <p className="text-xs font-bold">Presupuesto Total</p>
-                    <p className="text-[10px] text-gray-400 mt-0.5">Ej: 4 días $40k → 8 días $80k</p>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setEditCampTipoPresupuesto("daily")}
-                    className={`p-2.5 rounded-xl border text-left transition-all ${
-                      editCampTipoPresupuesto === "daily"
-                        ? "bg-purple-950/60 border-purple-600 text-purple-200 shadow-sm"
-                        : "bg-surface border-border text-gray-400 hover:text-white"
-                    }`}
-                  >
-                    <p className="text-xs font-bold">Presupuesto Diario</p>
-                    <p className="text-[10px] text-gray-400 mt-0.5">Gasto constante por día</p>
-                  </button>
-                </div>
-              </div>
-
-              {editCampTipoPresupuesto === "lifetime" && (
-                <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <label className="text-xs text-gray-400 font-semibold">
-                      Extender Duración a (Días Totales)
-                    </label>
-                    <span className="text-[10px] text-purple-400 font-mono">Fin: 23:59</span>
-                  </div>
-                  <div className="flex flex-wrap gap-2 mb-2">
-                    {[4, 6, 8, 10, 14, 21, 30, 45, 60].map((d) => (
-                      <button
-                        key={d}
-                        type="button"
-                        onClick={() => setEditCampDias(d)}
-                        className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-all ${
-                          editCampDias === d
-                            ? "bg-purple-600 border-purple-500 text-white"
-                            : "bg-surface border-border text-gray-400 hover:text-white"
-                        }`}
-                      >
-                        {d}d
-                      </button>
-                    ))}
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-[11px] text-gray-400">O ingresa días personalizados:</span>
-                    <input
-                      type="number"
-                      min="1"
-                      max="365"
-                      value={editCampDias}
-                      onChange={(e) => setEditCampDias(Math.max(1, Number(e.target.value) || 1))}
-                      className="w-20 bg-background border border-border rounded px-2 py-1 text-xs text-gray-200 text-center"
-                    />
-                    <span className="text-[11px] text-gray-400">días (termina 23:59)</span>
+        return (
+          <div className="fixed inset-0 z-50 bg-scrim flex justify-center overflow-y-auto p-3 sm:p-4 pt-[calc(0.75rem_+_var(--safe-area-inset-top))] pb-[calc(0.75rem_+_var(--safe-area-inset-bottom))] backdrop-blur-md">
+            <div className="w-full max-w-lg my-auto bg-surface border border-border rounded-2xl p-5 sm:p-6 space-y-4 shadow-2xl flex flex-col">
+              <div className="flex items-center justify-between border-b border-border pb-3">
+                <div className="flex items-center gap-2 text-purple-400">
+                  <Edit2 className="w-5 h-5" />
+                  <div>
+                    <h3 className="text-base font-bold text-gray-100">Modificar Campaña Meta Ads</h3>
+                    <p className="text-[11px] text-gray-400 font-mono">ID: {campanaEditando.id}</p>
                   </div>
                 </div>
-              )}
-
-              <div>
-                <label className="text-xs text-gray-400 block mb-1 font-semibold">
-                  {editCampTipoPresupuesto === "lifetime" ? "Nuevo Presupuesto Total (COP)" : "Nuevo Presupuesto Diario (COP)"}
-                </label>
-                <div className="relative">
-                  <span className="absolute left-3 top-2 text-xs text-gray-500 font-mono">$</span>
-                  <input
-                    type="number"
-                    min="1000"
-                    step="1000"
-                    placeholder="Ej: 80000"
-                    value={editCampPresupuesto}
-                    onChange={(e) => setEditCampPresupuesto(e.target.value)}
-                    className="w-full bg-background border border-border rounded-lg pl-7 pr-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500"
-                    required
-                  />
-                </div>
-                {Number(editCampPresupuesto) > 0 && (
-                  <div className="mt-2 p-2 rounded-lg bg-surface/50 border border-border text-[11px] text-gray-400 space-y-0.5">
-                    <div className="flex justify-between">
-                      <span>Inversión neta:</span>
-                      <span className="text-gray-200 font-semibold">${Number(editCampPresupuesto).toLocaleString("es-CO")} COP</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span>IVA Meta (19% Colombia):</span>
-                      <span className="text-amber-400 font-semibold">+${Math.round(Number(editCampPresupuesto) * 0.19).toLocaleString("es-CO")} COP</span>
-                    </div>
-                    <div className="flex justify-between border-t border-border/50 pt-1 font-bold text-gray-200">
-                      <span>Total tarjeta/factura:</span>
-                      <span className="text-emerald-400">${Math.round(Number(editCampPresupuesto) * 1.19).toLocaleString("es-CO")} COP</span>
-                    </div>
-                    {editCampTipoPresupuesto === "lifetime" && (
-                      <div className="text-[10px] text-purple-300 pt-0.5">
-                        Ritmo diario: ≈ ${Math.round(Number(editCampPresupuesto) / (editCampDias || 8)).toLocaleString("es-CO")} COP netos/día durante {editCampDias} días.
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              <div>
-                <label className="text-xs text-gray-400 block mb-1 font-semibold">
-                  Estado
-                </label>
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setEditCampEstado("ACTIVE")}
-                    className={`flex-1 py-2 rounded-lg text-xs font-bold border transition-all flex items-center justify-center gap-1.5 ${
-                      editCampEstado === "ACTIVE"
-                        ? "bg-emerald-950/60 border-emerald-800 text-emerald-300"
-                        : "bg-surface border-border text-gray-400 hover:text-white"
-                    }`}
-                  >
-                    <Play className="w-3.5 h-3.5 fill-current" /> Activa
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setEditCampEstado("PAUSED")}
-                    className={`flex-1 py-2 rounded-lg text-xs font-bold border transition-all flex items-center justify-center gap-1.5 ${
-                      editCampEstado === "PAUSED"
-                        ? "bg-amber-950/60 border-amber-800 text-amber-300"
-                        : "bg-surface border-border text-gray-400 hover:text-white"
-                    }`}
-                  >
-                    <Pause className="w-3.5 h-3.5 fill-current" /> Pausada
-                  </button>
-                </div>
-              </div>
-
-              <div className="pt-2 flex gap-2">
                 <button
                   type="button"
                   onClick={() => setCampanaEditando(null)}
-                  disabled={guardandoCampana}
-                  className="flex-1 py-2.5 rounded-xl bg-surface border border-border text-gray-300 hover:bg-surfaceHover text-xs font-medium transition-colors disabled:opacity-50"
+                  className="text-gray-400 hover:text-white p-1 rounded-lg transition-colors"
                 >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  disabled={guardandoCampana}
-                  className="flex-1 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
-                >
-                  {guardandoCampana ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-                  {guardandoCampana ? "Guardando en Meta..." : "Guardar Cambios"}
+                  <X className="w-5 h-5" />
                 </button>
               </div>
-            </form>
+
+              <form onSubmit={guardarEdicionCampana} className="space-y-4">
+                {/* 1. Nombre de la Campaña */}
+                <div>
+                  <label className="text-xs text-gray-300 block mb-1 font-bold">
+                    Nombre de la Campaña
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={editCampNombre}
+                    onChange={(e) => setEditCampNombre(e.target.value)}
+                    className="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500 font-medium"
+                  />
+                </div>
+
+                {/* 2. CRONOGRAMA: DÍA DONDE COMENZÓ + EXPANSIÓN DE DÍAS + DÍA EN QUE FINALIZARÍA CON LA HORA */}
+                <div className="p-3.5 rounded-xl bg-purple-950/20 border border-purple-800/40 space-y-3">
+                  <div className="flex items-center justify-between border-b border-purple-800/30 pb-2">
+                    <span className="text-xs font-bold text-purple-300 flex items-center gap-1.5">
+                      <Calendar className="w-3.5 h-3.5 text-purple-400" /> Cronograma de Entrega (Hora Bogotá UTC-5)
+                    </span>
+                    <span className="text-[10px] px-2 py-0.5 rounded font-mono font-bold bg-purple-900/60 text-purple-200 border border-purple-700/50">
+                      00:01 → 23:59
+                    </span>
+                  </div>
+
+                  {/* A) DÍA DONDE COMENZÓ */}
+                  <div className="p-3 rounded-lg bg-background/80 border border-border/80 space-y-1">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] uppercase font-bold text-gray-400 flex items-center gap-1">
+                        <Play className="w-3 h-3 text-emerald-400 fill-emerald-400/40" /> Día en que comenzó
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setMostrarModificarInicio(!mostrarModificarInicio)}
+                        className="text-[10px] text-purple-400 hover:text-purple-300 underline font-medium"
+                      >
+                        {mostrarModificarInicio ? "Ocultar cambio de inicio" : "Modificar inicio"}
+                      </button>
+                    </div>
+
+                    <p className="text-sm font-bold text-gray-100">
+                      {infoInicio.diaSemana}, {infoInicio.fechaLarga}
+                    </p>
+
+                    <div className="flex flex-wrap items-center justify-between gap-1 text-[11px] text-gray-400">
+                      <span className="text-purple-300 font-medium">
+                        ⏰ Hora inicio: <span className="font-semibold text-gray-200">{infoInicio.hora} ({infoInicio.hora12})</span>
+                      </span>
+                      {diasTranscurridos > 0 && (
+                        <span className="text-[10px] text-amber-300 bg-amber-950/40 border border-amber-900/60 px-1.5 py-0.5 rounded font-semibold">
+                          ⏱️ Lleva {diasTranscurridos} día{diasTranscurridos === 1 ? "" : "s"} transcurridos
+                        </span>
+                      )}
+                    </div>
+
+                    {mostrarModificarInicio && (
+                      <div className="pt-2 mt-2 border-t border-border/60 space-y-1">
+                        <label className="text-[10px] text-gray-400 block font-medium">Cambiar fecha de inicio:</label>
+                        <input
+                          type="date"
+                          value={fechaInicioValida.split("T")[0]}
+                          onChange={(e) => {
+                            if (e.target.value) {
+                              setEditCampFechaInicio(`${e.target.value}T00:01:00-05:00`);
+                            }
+                          }}
+                          className="w-full bg-background border border-purple-700/60 rounded px-2.5 py-1.5 text-xs text-gray-200 focus:outline-none focus:border-purple-400"
+                        />
+                      </div>
+                    )}
+                  </div>
+
+                  {/* B) EXPANSIÓN DE DÍAS */}
+                  <div className="space-y-2 pt-1">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs text-gray-200 font-bold flex items-center gap-1.5">
+                        <Clock className="w-3.5 h-3.5 text-purple-400" /> Expansión de Duración (Días)
+                      </label>
+                      <span className="text-xs font-mono font-bold text-purple-300 bg-purple-900/40 px-2 py-0.5 rounded border border-purple-800/40">
+                        {editCampDias} día{editCampDias === 1 ? "" : "s"} totales
+                      </span>
+                    </div>
+
+                    {/* Presets de días */}
+                    <div className="flex flex-wrap gap-1.5">
+                      {[4, 6, 8, 10, 14, 21, 30, 45, 60].map((d) => (
+                        <button
+                          key={d}
+                          type="button"
+                          onClick={() => setEditCampDias(d)}
+                          className={`px-2.5 py-1 rounded-lg text-xs font-bold border transition-all ${
+                            editCampDias === d
+                              ? "bg-purple-600 border-purple-500 text-white shadow-sm"
+                              : "bg-surface/90 border-border text-gray-400 hover:text-white hover:bg-surface"
+                          }`}
+                        >
+                          {d}d
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* Botones de extensión incremental (+3d, +5d, +7d, +14d, +30d) */}
+                    <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                      <span className="text-[10px] text-gray-400 font-medium">Extender:</span>
+                      {[
+                        { label: "+3 días", val: 3 },
+                        { label: "+5 días", val: 5 },
+                        { label: "+7 días", val: 7 },
+                        { label: "+14 días", val: 14 },
+                        { label: "+30 días", val: 30 },
+                      ].map((item) => (
+                        <button
+                          key={item.label}
+                          type="button"
+                          onClick={() => setEditCampDias((prev) => Math.max(1, (Number(prev) || 0) + item.val))}
+                          className="px-2 py-0.5 rounded-md bg-purple-950/60 hover:bg-purple-900/80 border border-purple-700/60 text-purple-200 text-[10px] font-bold transition-all"
+                          title={`Sumar ${item.val} días a la duración`}
+                        >
+                          {item.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* Input manual */}
+                    <div className="flex items-center gap-2 pt-1 text-[11px] text-gray-400">
+                      <span>O ingresa días totales:</span>
+                      <input
+                        type="number"
+                        min="1"
+                        max="365"
+                        value={editCampDias}
+                        onChange={(e) => setEditCampDias(Math.max(1, Number(e.target.value) || 1))}
+                        className="w-16 bg-background border border-purple-700/60 rounded px-2 py-1 text-xs text-center font-bold text-gray-100 focus:outline-none focus:border-purple-400"
+                      />
+                      <span>días (termina a las 23:59)</span>
+                    </div>
+                  </div>
+
+                  {/* C) DÍA EN QUE FINALIZARÍA CON LA HORA */}
+                  <div className={`p-3 rounded-lg border space-y-1.5 transition-all ${
+                    proyeccionFin.yaPaso
+                      ? "bg-amber-950/25 border-amber-800/60 text-amber-200"
+                      : "bg-emerald-950/25 border-emerald-800/60 text-emerald-200"
+                  }`}>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] uppercase font-bold flex items-center gap-1.5">
+                        <span className="text-sm">🏁</span> Qué día finalizaría con la hora
+                      </span>
+                      <span className="text-[10px] px-2 py-0.5 rounded font-mono font-bold bg-emerald-900/60 text-emerald-200 border border-emerald-700/60">
+                        Hora fin: 23:59 Bogotá
+                      </span>
+                    </div>
+
+                    <p className="text-sm font-extrabold text-gray-100">
+                      {proyeccionFin.infoFin.diaSemana}, {proyeccionFin.infoFin.fechaLarga}
+                    </p>
+
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-[11px] border-t border-emerald-800/30 pt-1.5">
+                      <span className="font-semibold text-emerald-300">
+                        ⏰ Hora exacta de finalización: 23:59 (11:59 p. m. Bogotá UTC-5)
+                      </span>
+                      <span className="text-gray-300 font-mono text-[10px]">
+                        {editCampDias} días de entrega
+                      </span>
+                    </div>
+
+                    {proyeccionFin.yaPaso && (
+                      <div className="p-1.5 rounded bg-amber-900/40 border border-amber-700/60 text-[10px] text-amber-200 flex items-center gap-1.5 mt-1">
+                        <AlertTriangle className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
+                        <span>Esta fecha ya transcurrió. Aumenta los días para extender la campaña hacia el futuro.</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* 3. Modalidad de Presupuesto */}
+                <div>
+                  <label className="text-xs text-gray-300 block mb-1 font-bold">
+                    Modalidad de Presupuesto
+                  </label>
+                  <div className="grid grid-cols-2 gap-2 mb-3">
+                    <button
+                      type="button"
+                      onClick={() => setEditCampTipoPresupuesto("lifetime")}
+                      className={`p-2.5 rounded-xl border text-left transition-all ${
+                        editCampTipoPresupuesto === "lifetime"
+                          ? "bg-purple-950/60 border-purple-600 text-purple-200 shadow-sm"
+                          : "bg-surface border-border text-gray-400 hover:text-white"
+                      }`}
+                    >
+                      <p className="text-xs font-bold">Presupuesto Total</p>
+                      <p className="text-[10px] text-gray-400 mt-0.5">Se reparte entre los {editCampDias} días</p>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEditCampTipoPresupuesto("daily")}
+                      className={`p-2.5 rounded-xl border text-left transition-all ${
+                        editCampTipoPresupuesto === "daily"
+                          ? "bg-purple-950/60 border-purple-600 text-purple-200 shadow-sm"
+                          : "bg-surface border-border text-gray-400 hover:text-white"
+                      }`}
+                    >
+                      <p className="text-xs font-bold">Presupuesto Diario</p>
+                      <p className="text-[10px] text-gray-400 mt-0.5">Monto diario x {editCampDias} días</p>
+                    </button>
+                  </div>
+                </div>
+
+                {/* 4. Monto de Presupuesto */}
+                <div>
+                  <label className="text-xs text-gray-300 block mb-1 font-bold">
+                    {editCampTipoPresupuesto === "lifetime" ? "Nuevo Presupuesto Total (COP)" : "Nuevo Presupuesto Diario (COP)"}
+                  </label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-2 text-xs text-gray-500 font-mono">$</span>
+                    <input
+                      type="number"
+                      min="1000"
+                      step="1000"
+                      placeholder="Ej: 80000"
+                      value={editCampPresupuesto}
+                      onChange={(e) => setEditCampPresupuesto(e.target.value)}
+                      className="w-full bg-background border border-border rounded-lg pl-7 pr-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500 font-bold"
+                      required
+                    />
+                  </div>
+                  {presupuestoNum > 0 && (
+                    <div className="mt-2 p-2.5 rounded-lg bg-surface/70 border border-border text-[11px] text-gray-400 space-y-1">
+                      <div className="flex justify-between">
+                        <span>Inversión neta:</span>
+                        <span className="text-gray-200 font-semibold">${presupuestoNum.toLocaleString("es-CO")} COP {editCampTipoPresupuesto === "daily" ? "/ día" : ""}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>IVA Meta (19% Colombia):</span>
+                        <span className="text-amber-400 font-semibold">+${Math.round(presupuestoNum * 0.19).toLocaleString("es-CO")} COP</span>
+                      </div>
+                      <div className="flex justify-between border-t border-border/50 pt-1 font-bold text-gray-200">
+                        <span>Total factura Meta:</span>
+                        <span className="text-emerald-400">${Math.round(presupuestoNum * 1.19).toLocaleString("es-CO")} COP {editCampTipoPresupuesto === "daily" ? "/ día" : ""}</span>
+                      </div>
+                      {editCampTipoPresupuesto === "lifetime" ? (
+                        <div className="text-[10px] text-purple-300 pt-0.5 border-t border-border/40">
+                          Ritmo diario: ≈ ${Math.round(presupuestoNum / (editCampDias || 8)).toLocaleString("es-CO")} COP netos/día durante {editCampDias} días (hasta el {proyeccionFin.infoFin.fechaCorta} a las 23:59).
+                        </div>
+                      ) : (
+                        <div className="text-[10px] text-purple-300 pt-0.5 border-t border-border/40">
+                          Proyección total ({editCampDias} días): ≈ ${Math.round(presupuestoNum * editCampDias).toLocaleString("es-CO")} COP netos (hasta el {proyeccionFin.infoFin.fechaCorta} a las 23:59).
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* 5. Estado */}
+                <div>
+                  <label className="text-xs text-gray-300 block mb-1 font-bold">
+                    Estado de la Campaña
+                  </label>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setEditCampEstado("ACTIVE")}
+                      className={`flex-1 py-2 rounded-lg text-xs font-bold border transition-all flex items-center justify-center gap-1.5 ${
+                        editCampEstado === "ACTIVE"
+                          ? "bg-emerald-950/60 border-emerald-800 text-emerald-300"
+                          : "bg-surface border-border text-gray-400 hover:text-white"
+                      }`}
+                    >
+                      <Play className="w-3.5 h-3.5 fill-current" /> Activa
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEditCampEstado("PAUSED")}
+                      className={`flex-1 py-2 rounded-lg text-xs font-bold border transition-all flex items-center justify-center gap-1.5 ${
+                        editCampEstado === "PAUSED"
+                          ? "bg-amber-950/60 border-amber-800 text-amber-300"
+                          : "bg-surface border-border text-gray-400 hover:text-white"
+                      }`}
+                    >
+                      <Pause className="w-3.5 h-3.5 fill-current" /> Pausada
+                    </button>
+                  </div>
+                </div>
+
+                {/* 6. Botones de acción */}
+                <div className="pt-2 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setCampanaEditando(null)}
+                    disabled={guardandoCampana}
+                    className="flex-1 py-2.5 rounded-xl bg-surface border border-border text-gray-300 hover:bg-surfaceHover text-xs font-medium transition-colors disabled:opacity-50"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={guardandoCampana}
+                    className="flex-1 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+                  >
+                    {guardandoCampana ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                    {guardandoCampana ? "Guardando en Meta..." : "Guardar Cambios"}
+                  </button>
+                </div>
+              </form>
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* MODAL MEMORIA Y APRENDIZAJE DEL AGENTE DE ADS */}
       {adsMemoriaModal && (

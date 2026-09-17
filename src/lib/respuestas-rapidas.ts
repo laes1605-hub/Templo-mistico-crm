@@ -72,6 +72,11 @@ const STORAGE_KEY = "templo-crm:respuestas-rapidas:v1";
 const MAX_AUDIO_BYTES = 6 * 1024 * 1024;
 const MAX_IMG_DIRECTA = 2 * 1024 * 1024;
 
+/** Lista de trabajo de la sesión (ver cachearLocal). */
+let listaEnMemoria: RespuestaRapida[] | null = null;
+/** true mientras localStorage no pueda guardar (cupo agotado). */
+let persistenciaRota = false;
+
 function uid(): string {
   try {
     if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
@@ -153,11 +158,18 @@ function deduplicarRespuestas(todas: RespuestaRapida[]): RespuestaRapida[] {
 
 function cachearLocal(todas: RespuestaRapida[]): RespuestaRapida[] {
   const unicas = deduplicarRespuestas(todas);
+  // La lista en memoria es la de trabajo de la sesión: si localStorage se llena
+  // (un audio base64 grande supera el cupo del navegador y setItem lanza), la
+  // respuesta NO se pierde para la sincronización que haga este dispositivo
+  // mientras la pestaña viva.
+  listaEnMemoria = unicas;
   if (typeof window === "undefined") return unicas;
   try {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(unicas));
+    persistenciaRota = false;
   } catch {
-    // Caché opcional: si el teléfono no tiene espacio, igual viven en la nube.
+    // Cupo de localStorage agotado: la sesión sigue con la lista en memoria.
+    persistenciaRota = true;
   }
   return unicas;
 }
@@ -185,16 +197,30 @@ function filaARemota(row: any): RespuestaRapida | null {
 }
 
 export function listarRespuestasRapidas(): RespuestaRapida[] {
-  if (typeof window === "undefined") return [];
+  if (typeof window === "undefined") return listaEnMemoria ? deduplicarRespuestas(listaEnMemoria) : [];
+
+  // Si la persistencia está rota (cupo agotado), la memoria es la fuente de
+  // verdad: mezclar con un localStorage obsoleto podría resucitar respuestas
+  // que el operador ya borró en esta sesión.
+  if (persistenciaRota && listaEnMemoria) return deduplicarRespuestas(listaEnMemoria);
+
+  let persistidas: RespuestaRapida[] = [];
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    const arr = JSON.parse(raw);
-    if (!Array.isArray(arr)) return [];
-    return deduplicarRespuestas(arr.map(filaACache).filter(Boolean) as RespuestaRapida[]);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) persistidas = arr.map(filaACache).filter(Boolean) as RespuestaRapida[];
+    }
   } catch {
-    return [];
+    persistidas = [];
   }
+
+  // Con memoria y persistencia sanas deberían ser idénticas; se mezclan por si
+  // dos pestañas del mismo dispositivo se adelantaron la una a la otra.
+  if (listaEnMemoria && listaEnMemoria.length > 0) {
+    return deduplicarRespuestas([...persistidas, ...listaEnMemoria]);
+  }
+  return deduplicarRespuestas(persistidas);
 }
 
 /** Columnas de la biblioteca: `hash_bytes` sólo existe tras 20260917. */
@@ -355,7 +381,7 @@ export async function sincronizarRespuestasRapidas(): Promise<ResultadoSincroniz
 
   const clavesRemotas = new Set(remotas.flatMap(clavesDe));
   let subidas = 0;
-  let errores = 0;
+  const fallos: string[] = [];
 
   for (const pendiente of locales.filter((respuesta) => respuesta.sincronizada !== true)) {
     if (clavesDe(pendiente).some((clave) => clavesRemotas.has(clave))) continue;
@@ -369,8 +395,10 @@ export async function sincronizarRespuestasRapidas(): Promise<ResultadoSincroniz
         subidas += 1;
       }
       // Si otro teléfono la insertó al mismo tiempo, la recarga final la toma.
-    } catch {
-      errores += 1;
+    } catch (error: any) {
+      // Con el error concreto (no genérico) se puede diagnosticar en campo:
+      // «duplicate key», «column does not exist», red, cupo del bucket, etc.
+      fallos.push(`"${pendiente.titulo || pendiente.tipo}": ${error?.message || "error desconocido"}`);
     }
   }
 
@@ -389,16 +417,35 @@ export async function sincronizarRespuestasRapidas(): Promise<ResultadoSincroniz
     respuestas,
     subidas,
     pendientes,
-    error: errores > 0 ? "Algunas respuestas no se pudieron subir. Intenta sincronizar de nuevo." : undefined,
+    error:
+      fallos.length > 0
+        ? `No se pudo subir ${fallos.length === 1 ? "una respuesta" : `${fallos.length} respuestas`}: ${fallos[0]}${
+            fallos.length > 1 ? ` (y ${fallos.length - 1} más)` : ""
+          }. Intenta sincronizar de nuevo.`
+        : undefined,
   };
 }
 
-/** Guarda una respuesta nueva sólo en este dispositivo hasta que se pulse
- * Sincronizar con todos. Esto hace explícito qué se comparte y evita subidas
- * repetidas al abrir la app. */
+/**
+ * Guarda una respuesta nueva como pendiente de este dispositivo y sube su
+ * archivo a Storage EN ESE MOMENTO (mismo bucket, misma ruta por huella y
+ * misma política anon que usaba la sincronización).
+ *
+ * ¿Por qué no esperar al «Sincronizar con todos»? El base64 del audio vive
+ * dentro de localStorage del teléfono, cuyo cupo es ~5 MB: un .ogg de unos
+ * 4 MB (8 MB en base64) lo agota, `setItem` lanza y la respuesta se perdía
+ * SILENCIOSAMENTE — el operador veía que «no sincronizaba». Con la subida
+ * inmediata la caché local solo conserva la URL (unos pocos cientos de
+ * bytes) y el botón de sincronizar publica la fila pequeña, sin riesgo de
+ * cupo ni de perder el archivo.
+ *
+ * Plan B: si la subida falla (sin red, bucket lleno) la respuesta se guarda
+ * igual con el base64, como antes; la próxima sincronización reintenta la
+ * subida. `archivoEnNube` le dice a la interfaz qué pasó.
+ */
 export async function guardarRespuestaRapida(
   nueva: { tipo: TipoRespuestaRapida; titulo: string; contenido: string; hash?: string }
-): Promise<RespuestaRapida> {
+): Promise<RespuestaRapida & { archivoEnNube?: boolean }> {
   const item = conHuella({
     id: uid(),
     tipo: nueva.tipo,
@@ -409,8 +456,26 @@ export async function guardarRespuestaRapida(
     hash: nueva.hash,
   });
 
-  const todas = cachearLocal([...listarRespuestasRapidas(), item]);
-  return todas.find((respuesta) => claveContenido(respuesta) === claveContenido(item)) || item;
+  let paraGuardar: RespuestaRapida = item;
+  let archivoEnNube = false;
+  if (esBinaria(item) && esDataUri(item.contenido)) {
+    const parseado = parsearDataUri(item.contenido);
+    if (parseado) {
+      const url = await subirBytesAStorage(supabase, parseado.bytes, parseado.mime, {
+        carpeta: CARPETA_RESPUESTAS_RAPIDAS,
+        hash: item.hash || md5Hex(parseado.bytes),
+        nombreBase: item.titulo || "respuesta-rapida",
+      });
+      if (url) {
+        paraGuardar = { ...item, contenido: url };
+        archivoEnNube = true;
+      }
+    }
+  }
+
+  const todas = cachearLocal([...listarRespuestasRapidas(), paraGuardar]);
+  const guardada = todas.find((respuesta) => claveContenido(respuesta) === claveContenido(paraGuardar)) || paraGuardar;
+  return { ...guardada, archivoEnNube };
 }
 
 /** Suelta el objeto de Storage cuando ninguna otra respuesta rápida ni ningún
@@ -445,8 +510,12 @@ export async function eliminarRespuestaRapida(id: string): Promise<RespuestaRapi
   if (objetivo.sincronizada === true) {
     const { error } = await supabase.from("respuestas_rapidas").delete().eq("id", id);
     if (error) throw new Error(error.message || "No se pudo borrar la respuesta compartida.");
-    if (esUrlDeStorage(objetivo.contenido)) await liberarAdjuntoSiHuerfano(objetivo.contenido, id);
   }
+
+  // El archivo puede estar en Storage aunque la respuesta nunca se haya
+  // publicado (la subida inmediata al guardar): si nadie más usa esa URL,
+  // se libera el objeto para no dejar basura en el bucket.
+  if (esUrlDeStorage(objetivo.contenido)) await liberarAdjuntoSiHuerfano(objetivo.contenido, id);
 
   return cachearLocal(locales.filter((respuesta) => respuesta.id !== id));
 }

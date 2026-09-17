@@ -3522,7 +3522,7 @@ export default function CRMApp() {
     setRrError("");
     setRrNotice("");
     try {
-      let nueva: RespuestaRapida;
+      let nueva: RespuestaRapida & { archivoEnNube?: boolean };
       if (rrBorrador.tipo === "texto") {
         const texto = rrBorrador.texto.trim();
         if (!texto) { setRrError("Escribe el texto de la respuesta."); return; }
@@ -3535,7 +3535,11 @@ export default function CRMApp() {
       setRrNotice(
         nueva.sincronizada === true
           ? "Esta respuesta ya estaba en la biblioteca; no se creó un duplicado."
-          : "Guardada en este dispositivo. Pulsa Sincronizar con todos para compartirla."
+          : nueva.archivoEnNube === true
+            ? "Archivo subido al servidor. Pulsa Sincronizar con todos para que todos los dispositivos la vean."
+            : nueva.tipo === "texto"
+              ? "Guardada. Pulsa Sincronizar con todos para compartirla."
+              : "Guardada en este dispositivo (el archivo aún no se subió). Pulsa Sincronizar con todos para compartirla."
       );
       setRrBorrador(null);
     } catch (e: any) {

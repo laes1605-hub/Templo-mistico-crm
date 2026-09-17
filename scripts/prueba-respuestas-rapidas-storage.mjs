@@ -77,12 +77,16 @@ const md5 = (bytes) => createHash("md5").update(bytes).digest("hex");
 const dataUriDe = (bytes, mime = "audio/ogg") =>
   `data:${mime};base64,${Buffer.from(bytes).toString("base64")}`;
 
-const mod = await import(join(TMP, "respuestas-rapidas.mjs"));
+// Cada escenario usa una instancia FRESCA del módulo: el módulo mantiene
+// estado de sesión (lista en memoria / persistencia rota) que en un teléfono
+// real es por dispositivo, y no debe filtrarse entre dispositivos simulados.
+let contadorModulos = 0;
+const modFresco = () => import(join(TMP, `respuestas-rapidas.mjs?t=${++contadorModulos}`));
 
 // ---------------------------------------------------------------------------
 // Postgres + Storage simulados
 // ---------------------------------------------------------------------------
-function crearBackend({ sinColumnaHash = false, fallarSubida = false } = {}) {
+function crearBackend({ sinColumnaHash = false, fallarSubida = false, fallarInserta = null } = {}) {
   const db = {
     respuestas_rapidas: [],
     mensajes: [],
@@ -161,6 +165,9 @@ function crearBackend({ sinColumnaHash = false, fallarSubida = false } = {}) {
       const operacion = q._op || modo;
       if (operacion === "insert") {
         const cols = colsPedidas(q._cols);
+        if (fallarInserta) {
+          return { data: null, error: { code: "42501", message: fallarInserta } };
+        }
         if (sinColumnaHash && "hash_bytes" in q._payload) {
           return { data: null, error: { code: "42703", message: `column "hash_bytes" of relation "respuestas_rapidas" does not exist` } };
         }
@@ -266,21 +273,25 @@ const usar = ({ almacen, backend }) => {
 // ---------------------------------------------------------------------------
 // 2) Publicar un audio → Storage + URL en la tabla (no base64)
 // ---------------------------------------------------------------------------
+const modA2 = await modFresco();
 const almacenA2 = crearAlmacen();
 const backendA2 = crearBackend();
 usar({ almacen: almacenA2, backend: backendA2 });
 
-const guardada = await mod.guardarRespuestaRapida({
+const guardada = await modA2.guardarRespuestaRapida({
   tipo: "audio",
   titulo: "Nota de bienvenida",
   contenido: dataUriDe(audio),
 });
 check("guardar respuesta rápida calcula la huella del audio", guardada.hash === hashEsperado, `${guardada.hash} vs ${hashEsperado}`);
-check("y la deja pendiente en el teléfono (base64 local)", backendA2.db.respuestas_rapidas.length === 0 && guardada.sincronizada === false);
+check("y la deja pendiente (la fila no existe en la base)", backendA2.db.respuestas_rapidas.length === 0 && guardada.sincronizada === false);
+check("el archivo se subió al bucket AL GUARDAR (no se espera a la sincronización)", backendA2.db.subidas.length === 1 && backendA2.db.subidas[0].bucket === "media-mensajes", JSON.stringify(backendA2.db.subidas.map((s) => s.ruta)));
+check("y la caché local ya NO arrastra el base64 (queda la URL, cupo seguro)", cacheSinBase64(almacenA2), String((almacenA2.mapa.get("templo-crm:respuestas-rapidas:v1") || "").length));
+check("y avisa a la interfaz que el archivo quedó en la nube", guardada.archivoEnNube === true, String(guardada.archivoEnNube));
 
-const sinc = await mod.sincronizarRespuestasRapidas();
+const sinc = await modA2.sincronizarRespuestasRapidas();
 const filaPublicada = backendA2.db.respuestas_rapidas[0];
-check("sincronizar sube el archivo al bucket de media", backendA2.db.subidas.length === 1 && backendA2.db.subidas[0].bucket === "media-mensajes", JSON.stringify(backendA2.db.subidas.map((s) => s.ruta)));
+check("sincronizar NO re-sube el archivo (ya está) y publica la fila", backendA2.db.subidas.length === 1 && backendA2.db.respuestas_rapidas.length === 1, JSON.stringify({ subidas: backendA2.db.subidas.length, filas: backendA2.db.respuestas_rapidas.length }));
 check(
   "el objeto vive en la carpeta de respuestas rápidas y se llama como su huella",
   /^respuestas-rapidas\/\d{4}-\d{2}\//.test(backendA2.db.subidas[0]?.ruta || "") && String(backendA2.db.subidas[0]?.ruta).includes(`${hashEsperado}.ogg`),
@@ -299,43 +310,49 @@ check("reporta 1 subida y 0 pendientes", sinc.subidas === 1 && sinc.pendientes =
 // ---------------------------------------------------------------------------
 // 3) y 4) otro teléfono con el mismo archivo, y el que lo tiene en base64
 // ---------------------------------------------------------------------------
+const modB = await modFresco();
 const almacenB = crearAlmacen();
 const backendB = crearBackend();
 backendB.db.respuestas_rapidas.push({ ...filaPublicada }); // misma nube, vista desde B
 usar({ almacen: almacenB, backend: backendB });
 
 // B tiene el mismo audio (bytes idénticos) con otro título y otro id local.
-const duplicada = await mod.guardarRespuestaRapida({
+const duplicada = await modB.guardarRespuestaRapida({
   tipo: "audio",
   titulo: "bienvenida (copia mia)",
   contenido: dataUriDe(audio, "audio/opus"), // mismo audio, otro MIME escrito
 });
 check("la huella no depende del MIME: es la misma", duplicada.hash === hashEsperado, String(duplicada.hash));
-const sincB = await mod.sincronizarRespuestasRapidas();
+check("B re-sube al MISMO objeto (upsert por huella): no hay copias nuevas", backendB.db.subidas.length === 1 && backendB.db.subidas[0].ruta === backendA2.db.subidas[0].ruta, JSON.stringify(backendB.db.subidas.map((s) => s.ruta)));
+const sincB = await modB.sincronizarRespuestasRapidas();
 check("otro teléfono con el mismo audio NO crea una segunda fila", backendB.db.respuestas_rapidas.length === 1, JSON.stringify(backendB.db.respuestas_rapidas.map((r) => r.titulo)));
 check("y la biblioteca que ve B ya es la copia de la nube (URL)", sincB.respuestas.length === 1 && sincB.respuestas[0].sincronizada === true && !sincB.respuestas[0].contenido.startsWith("data:"));
 
 // ---------------------------------------------------------------------------
 // 5) enviar la respuesta: sólo la URL viaja desde el teléfono
 // ---------------------------------------------------------------------------
+const modEnvio = await modFresco();
 const url = backendB.db.respuestas_rapidas[0].contenido;
-const adjunto = mod.adjuntoParaEnviar({ id: "x", tipo: "audio", titulo: "Nota de bienvenida", contenido: url, creado_en: new Date().toISOString(), hash: hashEsperado });
+const adjunto = modEnvio.adjuntoParaEnviar({ id: "x", tipo: "audio", titulo: "Nota de bienvenida", contenido: url, creado_en: new Date().toISOString(), hash: hashEsperado });
 check("respuesta en Storage → se envía la URL y nada de base64", adjunto.fileUrl === url && adjunto.fileBase64 === null, JSON.stringify(adjunto));
 check("el MIME y el nombre salen de la URL", adjunto.fileMime === "audio/ogg" && /\.ogg$/.test(adjunto.fileName), JSON.stringify({ m: adjunto.fileMime, n: adjunto.fileName }));
 
-const adjuntoLocal = mod.adjuntoParaEnviar({ id: "y", tipo: "audio", titulo: "pendiente", contenido: dataUriDe(audio), creado_en: new Date().toISOString() });
+const adjuntoLocal = modEnvio.adjuntoParaEnviar({ id: "y", tipo: "audio", titulo: "pendiente", contenido: dataUriDe(audio), creado_en: new Date().toISOString() });
 check("respuesta pendiente (base64) → sigue viajando incrustada", adjuntoLocal.fileBase64 === dataUriDe(audio) && adjuntoLocal.fileUrl === null);
-check("texto → sin adjunto", mod.adjuntoParaEnviar({ id: "z", tipo: "texto", titulo: "hola", contenido: "hola", creado_en: new Date().toISOString() }) === null);
+check("pendiente ya subida (URL) → también viaja por URL", modEnvio.adjuntoParaEnviar({ id: "y2", tipo: "audio", titulo: "pendiente", contenido: url, creado_en: new Date().toISOString(), hash: hashEsperado }).fileUrl === url);
+check("texto → sin adjunto", modEnvio.adjuntoParaEnviar({ id: "z", tipo: "texto", titulo: "hola", contenido: "hola", creado_en: new Date().toISOString() }) === null);
 
 // ---------------------------------------------------------------------------
 // 6) si la subida falla no se pierde la respuesta (plan B)
 // ---------------------------------------------------------------------------
+const modC = await modFresco();
 const almacenC = crearAlmacen();
 const backendC = crearBackend({ fallarSubida: true });
 usar({ almacen: almacenC, backend: backendC });
 const audioDistinto = new Uint8Array(500).fill(7);
-await mod.guardarRespuestaRapida({ tipo: "audio", titulo: "sin storage", contenido: dataUriDe(audioDistinto, "audio/webm") });
-const sincC = await mod.sincronizarRespuestasRapidas();
+const guardadaC = await modC.guardarRespuestaRapida({ tipo: "audio", titulo: "sin storage", contenido: dataUriDe(audioDistinto, "audio/webm") });
+check("subida fallida al guardar: la respuesta no se pierde (queda el base64 local)", Boolean(guardadaC) && guardadaC.archivoEnNube === false && String(guardadaC.contenido).startsWith("data:"), JSON.stringify({ nube: guardadaC.archivoEnNube, dataUri: String(guardadaC.contenido).startsWith("data:") }));
+const sincC = await modC.sincronizarRespuestasRapidas();
 const filaC = backendC.db.respuestas_rapidas[0];
 check("subida fallida: la respuesta igual se comparte (base64) y no se pierde", Boolean(filaC) && filaC.contenido.startsWith("data:") && sincC.subidas === 1, JSON.stringify({ subidas: sincC.subidas, error: sincC.error }));
 check("subida fallida: igual se guarda la huella, para que Ajustes la migre después", filaC?.hash_bytes === md5(Buffer.from(audioDistinto)), String(filaC?.hash_bytes));
@@ -343,36 +360,117 @@ check("subida fallida: igual se guarda la huella, para que Ajustes la migre desp
 // ---------------------------------------------------------------------------
 // 7) borrar libera el objeto sólo si está huérfano
 // ---------------------------------------------------------------------------
+const modD = await modFresco();
 const almacenD = crearAlmacen();
 const backendD = crearBackend();
 usar({ almacen: almacenD, backend: backendD });
 const filaD = { id: "fila-d", tipo: "audio", titulo: "t", contenido: url, creado_en: new Date().toISOString(), hash_bytes: hashEsperado, huella: "h" };
 backendD.db.respuestas_rapidas.push(filaD);
-await mod.actualizarRespuestasRapidas();
-await mod.eliminarRespuestaRapida("fila-d");
+await modD.actualizarRespuestasRapidas();
+await modD.eliminarRespuestaRapida("fila-d");
 check("borrar la respuesta borra su objeto de Storage", backendD.db.borrados.length === 1 && /respuestas-rapidas\//.test(backendD.db.borrados[0]), JSON.stringify(backendD.db.borrados));
 
+const modE = await modFresco();
 const almacenE = crearAlmacen();
 const backendE = crearBackend();
 usar({ almacen: almacenE, backend: backendE });
 backendE.db.respuestas_rapidas.push({ ...filaD, id: "fila-e" });
 backendE.db.mensajes.push({ id: "m-1", url_archivo: url });
-await mod.actualizarRespuestasRapidas();
-await mod.eliminarRespuestaRapida("fila-e");
+await modE.actualizarRespuestasRapidas();
+await modE.eliminarRespuestaRapida("fila-e");
 check("pero NO lo borra si un chat del CRM lo está usando", backendE.db.borrados.length === 0 && backendE.db.respuestas_rapidas.length === 0, JSON.stringify(backendE.db.borrados));
+
+const modD2 = await modFresco();
+const almacenD2 = crearAlmacen();
+const backendD2 = crearBackend();
+usar({ almacen: almacenD2, backend: backendD2 });
+// Pendiente que NUNCA se sincronizó: el archivo ya está en el bucket por la
+// subida inmediata. Borrarla debe liberar el objeto huérfano.
+const guardadaD2 = await modD2.guardarRespuestaRapida({ tipo: "audio", titulo: "nunca publicada", contenido: dataUriDe(audio) });
+check("pendiente sin publicar: el objeto ya existe en el bucket", backendD2.db.subidas.length === 1 && backendD2.db.respuestas_rapidas.length === 0, JSON.stringify({ subidas: backendD2.db.subidas.length, filas: backendD2.db.respuestas_rapidas.length }));
+await modD2.eliminarRespuestaRapida(guardadaD2.id);
+check("borrar una pendiente sin publicar libera el objeto huérfano", backendD2.db.borrados.length === 1 && /respuestas-rapidas\//.test(backendD2.db.borrados[0]), JSON.stringify(backendD2.db.borrados));
 
 // ---------------------------------------------------------------------------
 // 8) tabla sin la columna hash_bytes (migración SQL aún no aplicada)
 // ---------------------------------------------------------------------------
+const modF = await modFresco();
 const almacenF = crearAlmacen();
 const backendF = crearBackend({ sinColumnaHash: true });
 usar({ almacen: almacenF, backend: backendF });
-await mod.guardarRespuestaRapida({ tipo: "audio", titulo: "sin migrar", contenido: dataUriDe(new Uint8Array(120).fill(3)) });
-const sincF = await mod.sincronizarRespuestasRapidas();
+await modF.guardarRespuestaRapida({ tipo: "audio", titulo: "sin migrar", contenido: dataUriDe(new Uint8Array(120).fill(3)) });
+const sincF = await modF.sincronizarRespuestasRapidas();
 check(
   "sin la migración SQL aplicada la sincronización no se rompe",
   sincF.error === undefined && sincF.subidas === 1 && backendF.db.respuestas_rapidas.length === 1,
   JSON.stringify({ subidas: sincF.subidas, error: sincF.error, filas: backendF.db.respuestas_rapidas.length })
+);
+
+// ---------------------------------------------------------------------------
+// 11) Cupo de localStorage agotado: el .ogg grande ya no se pierde
+// ---------------------------------------------------------------------------
+const modG = await modFresco();
+const backendG = crearBackend();
+const mapaG = new Map();
+const almacenRoto = {
+  store: {
+    getItem: (k) => (mapaG.has(k) ? mapaG.get(k) : null),
+    setItem: () => {
+      const e = new Error("QuotaExceededError");
+      e.name = "QuotaExceededError";
+      throw e;
+    },
+    removeItem: (k) => mapaG.delete(k),
+  },
+  mapa: mapaG,
+};
+usar({ almacen: almacenRoto, backend: backendG });
+
+// El localStorage trae una entrada de una sesión anterior ("vieja").
+mapaG.set(
+  "templo-crm:respuestas-rapidas:v1",
+  JSON.stringify([{ id: "vieja-1", tipo: "texto", titulo: "vieja", contenido: "texto viejo", creado_en: "2026-01-01T00:00:00Z", sincronizada: true }])
+);
+await modG.actualizarRespuestasRapidas(); // abrir la app (setItem falla → persistencia rota)
+
+// Un .ogg grande (~4 MB) cuyo base64 agota el cupo del navegador real.
+const oggGrande = new Uint8Array(4 * 1024 * 1024);
+for (let i = 0; i < oggGrande.length; i += 1) oggGrande[i] = (i * 7 + 3) & 0xff;
+const guardadaG = await modG.guardarRespuestaRapida({ tipo: "audio", titulo: "ogg grande", contenido: dataUriDe(oggGrande) });
+check(
+  "cupo agotado: la respuesta sigue viva (no se pierde al fallar setItem)",
+  Boolean(guardadaG) && modG.listarRespuestasRapidas().some((r) => r.id === guardadaG.id),
+  JSON.stringify({ total: modG.listarRespuestasRapidas().length })
+);
+// Borrar la respuesta "vieja" en esta sesión: no debe resucitar desde el
+// localStorage obsoleto (la memoria es la fuente de verdad).
+await modG.eliminarRespuestaRapida("vieja-1");
+check(
+  "cupo agotado: borrar en la sesión no resucita desde el localStorage obsoleto",
+  modG.listarRespuestasRapidas().every((r) => r.id !== "vieja-1"),
+  JSON.stringify(modG.listarRespuestasRapidas().map((r) => r.id))
+);
+const sincG = await modG.sincronizarRespuestasRapidas();
+check(
+  "cupo agotado: la sincronización publica el .ogg igual (desde la lista en memoria)",
+  sincG.subidas === 1 && backendG.db.respuestas_rapidas.length === 1 && sincG.error === undefined && !String(backendG.db.respuestas_rapidas[0]?.contenido).startsWith("data:"),
+  JSON.stringify({ subidas: sincG.subidas, filas: backendG.db.respuestas_rapidas.length, error: sincG.error })
+);
+
+// ---------------------------------------------------------------------------
+// 12) Error de sincronización CONCRETO (título + mensaje real)
+// ---------------------------------------------------------------------------
+const modH = await modFresco();
+const backendH = crearBackend({ fallarInserta: "permission denied for table respuestas_rapidas" });
+usar({ almacen: crearAlmacen(), backend: backendH });
+await modH.guardarRespuestaRapida({ tipo: "texto", titulo: "Hola, soy la prueba", contenido: "texto de prueba" });
+const sincH = await modH.sincronizarRespuestasRapidas();
+check(
+  "el error de sincronización identifica la respuesta y la causa real",
+  typeof sincH.error === "string" &&
+    sincH.error.includes("Hola, soy la prueba") &&
+    sincH.error.includes("permission denied"),
+  String(sincH.error)
 );
 
 // ---------------------------------------------------------------------------

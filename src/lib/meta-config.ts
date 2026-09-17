@@ -27,6 +27,8 @@ export interface MetaConfig {
   pageId: string;
   wabaIds: string[];
   whatsappNumbers: MetaWhatsappNumber[];
+  fondosManual?: number | null;
+  fondosFecha?: string | null;
 }
 
 const DEFAULTS: {
@@ -85,6 +87,8 @@ export async function getMetaConfig(): Promise<MetaConfig> {
   let dbPageId = "";
   let dbWabaId = "";
   let dbNumbers = "";
+  let dbFondosManual: number | null = null;
+  let dbFondosFecha: string | null = null;
 
   try {
     const { data } = await supabaseAdmin
@@ -96,6 +100,8 @@ export async function getMetaConfig(): Promise<MetaConfig> {
         "meta_page_id",
         "meta_waba_id",
         "meta_whatsapp_numbers",
+        "meta_ads_fondos_manual",
+        "meta_ads_fondos_fecha",
       ]);
 
     (data || []).forEach((row: any) => {
@@ -104,6 +110,11 @@ export async function getMetaConfig(): Promise<MetaConfig> {
       if (row.clave === "meta_page_id") dbPageId = cleanStr(row.valor);
       if (row.clave === "meta_waba_id") dbWabaId = cleanStr(row.valor);
       if (row.clave === "meta_whatsapp_numbers") dbNumbers = String(row.valor || "").trim();
+      if (row.clave === "meta_ads_fondos_manual") {
+        const val = Number(row.valor);
+        if (!isNaN(val) && val >= 0) dbFondosManual = val;
+      }
+      if (row.clave === "meta_ads_fondos_fecha") dbFondosFecha = String(row.valor || "");
     });
   } catch (e: any) {
     // Si falla supabaseAdmin, continuamos con env o defaults
@@ -149,11 +160,16 @@ export async function getMetaConfig(): Promise<MetaConfig> {
     }
   }
 
+  const envFondos = process.env.META_ADS_FONDOS_MANUAL ? Number(process.env.META_ADS_FONDOS_MANUAL) : null;
+  const fondosManual = envFondos ?? (dbFondosManual !== null ? dbFondosManual : (adAccountId === "1393659139005209" ? 14000 : null));
+
   return {
     metaToken,
     adAccountId,
     pageId,
     wabaIds,
     whatsappNumbers,
+    fondosManual,
+    fondosFecha: dbFondosFecha,
   };
 }

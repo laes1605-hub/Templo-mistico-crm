@@ -10,9 +10,13 @@
 #   3. /tmp y /var/tmp: borra archivos sin usar hace +2 días.
 #   4. APT: limpia caché y paquetes huérfanos (incluye kernels viejos).
 #   5. Snap: borra versiones viejas desactivadas.
-#   6. Docker: purga contenedores/redes/imágenes SIN USO de +48 h y
-#      vacía los logs de contenedores (*-json.log).
-#   7. PM2: vacía sus logs (solo si PM2 está corriendo).
+#   6. Docker: purga contenedores/redes/imágenes SIN USO de +48 h,
+#      vacía los logs de contenedores (*-json.log) e informa
+#      volúmenes huérfanos (sin tocarlos).
+#   7. Backups locales (/root/backups): borra los de +2 días,
+#      conservando SIEMPRE los 2 más recientes.
+#   8. Logs del monitor (/root/monitor*.log): tope de 10 MB.
+#   9. PM2: vacía sus logs (solo si PM2 está corriendo).
 #
 # Qué NUNCA toca: volúmenes de Docker (bases de datos, chats, adjuntos,
 # n8n, Evolution), contenedores en ejecución ni imágenes en uso.
@@ -27,6 +31,8 @@
 set -u
 
 RETENCION_DIAS="${RETENCION_DIAS:-2}"
+BACKUP_DIRS="${BACKUP_DIRS:-/root/backups}"
+MANTENER_ULTIMOS="${MANTENER_ULTIMOS:-2}"
 DRY_RUN="${DRY_RUN:-0}"
 [ "${1:-}" = "--dry-run" ] && DRY_RUN=1
 LOG_PROPIO="/var/log/limpieza-servidor.log"
@@ -140,6 +146,9 @@ if command -v docker >/dev/null 2>&1; then
   run docker image prune -af --filter "until=$HASTA"
   run docker builder prune -af --filter "until=$HASTA"
   # NUNCA «docker volume prune»: ahí viven las BD, chats y adjuntos.
+  # Solo se informa cuántos huérfanos hay (solo lectura, no borra).
+  HUERFANOS=$(docker volume ls -qf dangling=true 2>/dev/null | wc -l)
+  msg "docker: $HUERFANOS volumen(es) sin usar (no se tocan)."
   DOCKER_DIR="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)"
   if [ -d "$DOCKER_DIR/containers" ]; then
     total=0; n=0
@@ -159,7 +168,48 @@ else
   msg "docker no existe, se omite."
 fi
 
-# --- 7. PM2: vaciar logs solo si está corriendo ---
+# --- 7. Backups locales: borra los de +2 días, conserva los 2 más recientes ---
+for dir in $BACKUP_DIRS; do
+  [ -d "$dir" ] || { msg "backups: $dir no existe, se omite."; continue; }
+  mapfile -t TODOS < <(find "$dir" -maxdepth 1 -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | cut -d' ' -f2-)
+  if [ "${#TODOS[@]}" -le "$MANTENER_ULTIMOS" ]; then
+    msg "backups: $dir tiene ${#TODOS[@]} archivo(s), se conservan todos."
+    continue
+  fi
+  borrados=0; liberado=0; i=0
+  for f in "${TODOS[@]}"; do
+    i=$((i + 1))
+    if [ "$i" -le "$MANTENER_ULTIMOS" ]; then
+      msg "backups: conservado (reciente): $f"
+      continue
+    fi
+    if [ -n "$(find "$f" -mtime +"$RETENCION_DIAS" -print 2>/dev/null)" ]; then
+      bytes=$(stat -c%s "$f" 2>/dev/null || echo 0)
+      if [ "$DRY_RUN" = "1" ]; then
+        msg "[SIMULACRO] borrar backup $f (~$((bytes / 1024 / 1024)) MB)"
+      else
+        rm -f "$f" && borrados=$((borrados + 1)) && liberado=$((liberado + bytes)) || msg "AVISO: no se pudo borrar $f"
+      fi
+    else
+      msg "backups: conservado (dentro de ${RETENCION_DIAS} días): $f"
+    fi
+  done
+  [ "$DRY_RUN" != "1" ] && msg "backups: $dir: $borrados borrados (~$((liberado / 1024 / 1024)) MB liberados)."
+done
+
+# --- 8. Logs del monitor: crecen cada 5 min, tope 10 MB (últimas 5000 líneas) ---
+for f in /root/monitor.log /root/monitor_fish.log; do
+  [ -f "$f" ] || continue
+  kb=$(du -k "$f" 2>/dev/null | cut -f1)
+  if [ "${kb:-0}" -gt 10240 ]; then
+    msg "monitor: $f pesa $(du -sh "$f" 2>/dev/null | cut -f1), recortando…"
+    recortar_final "$f" 5000
+  else
+    msg "monitor: $f OK ($(du -sh "$f" 2>/dev/null | cut -f1))."
+  fi
+done
+
+# --- 9. PM2: vaciar logs solo si está corriendo ---
 if command -v pm2 >/dev/null 2>&1 && command -v pgrep >/dev/null 2>&1 && pgrep -f PM2 >/dev/null 2>&1; then
   run pm2 flush
 else

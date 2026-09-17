@@ -11,15 +11,21 @@ limpieza con un cron diario a las 3:00 am, hora del servidor.
 3. `/tmp` y `/var/tmp`: borra archivos sin usar hace +2 días.
 4. APT: `clean` + `autoclean` + `autoremove` (caché y kernels viejos).
 5. Snap: borra versiones viejas desactivadas.
-6. Docker: purga contenedores/redes/imágenes **sin uso** de +48 h y vacía los
-   `*-json.log` de contenedores. El propio log (`/var/log/limpieza-servidor.log`)
-   se recorta solo si pasa de 20 MB.
-7. PM2: `pm2 flush`, solo si PM2 está corriendo.
+6. Docker: purga contenedores/redes/imágenes **sin uso** de +48 h, vacía los
+   `*-json.log` de contenedores e informa volúmenes huérfanos (sin tocarlos).
+   El propio log (`/var/log/limpieza-servidor.log`) se recorta solo si pasa
+   de 20 MB.
+7. Backups locales (`/root/backups`): borra los de +2 días, conservando
+   **siempre los 2 más recientes** aunque sean viejos.
+8. Logs del monitor (`/root/monitor.log`, `/root/monitor_fish.log`): tope de
+   10 MB (deja las últimas 5000 líneas). Crecen cada 5 minutos.
+9. PM2: `pm2 flush`, solo si PM2 está corriendo.
 
 ## Qué NUNCA toca
 
 - Volúmenes de Docker (bases de datos, chats, adjuntos, n8n, Evolution).
 - Contenedores en ejecución ni imágenes en uso.
+- Los 2 backups más recientes (aunque tengan más de 2 días).
 - Sin `set -e`: si una sección falla, las demás siguen corriendo.
 
 ## Instalación en el servidor
@@ -67,6 +73,15 @@ grep CRON /var/log/syslog | grep limpieza | tail -n 5
 - Hora: editar `/etc/cron.d/limpieza-servidor` (formato cron, hora del servidor).
 - Retención: `RETENCION_DIAS=7` como variable de entorno en la línea del cron,
   ej: `0 3 * * * root RETENCION_DIAS=7 /usr/local/bin/limpieza-servidor.sh …`.
+- Backups: `BACKUP_DIRS="/root/backups /otra/ruta"` (separadas por espacio) y
+  `MANTENER_ULTIMOS=2` (mínimo que siempre se conserva).
+
+## Notas
+
+- El cron de `monitor.sh` (`>> /root/monitor.log`) escribe cada línea DOS
+  veces, porque el script ya guarda con `tee -a` en ese mismo archivo. Si se
+  quiere, cambiar ese cron a `... /root/monitor.sh >/dev/null 2>&1` para que
+  el log crezca a la mitad. No es urgente: la limpieza lo recorta a diario.
 
 ## Opcional (recomendado): tope a los logs de Docker
 

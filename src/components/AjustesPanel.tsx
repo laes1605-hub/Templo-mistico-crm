@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { X, Moon, Sun, MonitorSmartphone, Bell, BellOff, Check, Palette, Mic, Save, HardDriveDownload, Clock } from "lucide-react";
+import { X, Moon, Sun, MonitorSmartphone, Bell, BellOff, Check, Palette, Mic, Save, HardDriveDownload, Clock, Coins, TrendingUp } from "lucide-react";
 import { supabase } from "../lib/supabase";
 import {
   ACCENTS, ThemeAccent, ThemeMode,
@@ -28,6 +28,11 @@ export default function AjustesPanel({ onClose }: { onClose: () => void }) {
   const [metaGuardando, setMetaGuardando] = useState(false);
   const [metaMsg, setMetaMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [metaVerToken, setMetaVerToken] = useState(false);
+  // Meta Ads: cuenta publicitaria y saldo de fondos prepago
+  const [metaAdAccountId, setMetaAdAccountId] = useState("1393659139005209");
+  const [metaAdsFondos, setMetaAdsFondos] = useState("14000");
+  const [adsGuardando, setAdsGuardando] = useState(false);
+  const [adsMsg, setAdsMsg] = useState<{ ok: boolean; text: string } | null>(null);
   // Migración de adjuntos base64 → Supabase Storage (ahorro de Egress).
   const [migrando, setMigrando] = useState(false);
   const [migraMsg, setMigraMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -51,11 +56,19 @@ export default function AjustesPanel({ onClose }: { onClose: () => void }) {
         const { data } = await supabase
           .from("config_general")
           .select("clave, valor")
-          .in("clave", ["meta_voice_token", "meta_voice_phone_number_id", "vencidos_auto"]);
+          .in("clave", [
+            "meta_voice_token",
+            "meta_voice_phone_number_id",
+            "vencidos_auto",
+            "meta_ad_account_id",
+            "meta_ads_fondos_manual",
+          ]);
         (data || []).forEach((row: any) => {
           if (row.clave === "meta_voice_token") setMetaToken(String(row.valor || ""));
           if (row.clave === "meta_voice_phone_number_id") setMetaPhoneId(String(row.valor || ""));
           if (row.clave === "vencidos_auto") setVencidosAuto(row.valor !== "false");
+          if (row.clave === "meta_ad_account_id") setMetaAdAccountId(String(row.valor || "").replace(/^act_/, ""));
+          if (row.clave === "meta_ads_fondos_manual") setMetaAdsFondos(String(row.valor || ""));
         });
       } catch {
         /* config_general no disponible: se puede escribir igual al guardar */
@@ -182,6 +195,32 @@ export default function AjustesPanel({ onClose }: { onClose: () => void }) {
       setMetaMsg({ ok: false, text: "No se pudo guardar: " + (e?.message || "error desconocido") });
     } finally {
       setMetaGuardando(false);
+    }
+  }
+
+  /**
+   * Guarda el ID de la cuenta publicitaria y el saldo prepago verificado.
+   */
+  async function guardarConfigAds() {
+    const actId = metaAdAccountId.replace(/^act_/, "").trim() || "1393659139005209";
+    const fondosNum = Number(metaAdsFondos.replace(/[^\d]/g, ""));
+    const monto = isNaN(fondosNum) ? 14000 : fondosNum;
+    setAdsGuardando(true);
+    setAdsMsg(null);
+    try {
+      const filas = [
+        { clave: "meta_ad_account_id", valor: actId },
+        { clave: "meta_ads_fondos_manual", valor: String(monto) },
+        { clave: "meta_ads_fondos_fecha", valor: new Date().toISOString() },
+        { clave: "meta_ads_cuenta_id", valor: actId },
+      ];
+      const { error } = await supabase.from("config_general").upsert(filas);
+      if (error) throw new Error(error.message);
+      setAdsMsg({ ok: true, text: `Guardado: Cuenta act_${actId} con $${monto.toLocaleString("es-CO")} COP de fondos.` });
+    } catch (e: any) {
+      setAdsMsg({ ok: false, text: "No se pudo guardar: " + (e?.message || "error desconocido") });
+    } finally {
+      setAdsGuardando(false);
     }
   }
 
@@ -428,6 +467,55 @@ export default function AjustesPanel({ onClose }: { onClose: () => void }) {
             <p className={`text-[11px] mt-1 ${metaMsg.ok ? "text-emerald-400" : "text-red-400"}`}>
               <Mic className="w-3 h-3 inline mr-1" />
               {metaMsg.text}
+            </p>
+          )}
+        </div>
+
+        {/* CUENTA PUBLICITARIA Y FONDOS (Meta Ads) */}
+        <p className="text-[11px] uppercase tracking-wider text-gray-500 font-bold mb-2 mt-5 flex items-center gap-1.5">
+          <TrendingUp className="w-3.5 h-3.5 text-purple-400" /> Meta Ads · Cuenta Publicitaria y Fondos
+        </p>
+        <div className="space-y-2">
+          <div>
+            <label className="block text-[10px] text-gray-500 mb-1">ID de Cuenta Publicitaria (sin "act_")</label>
+            <input
+              type="text"
+              value={metaAdAccountId}
+              onChange={(e) => setMetaAdAccountId(e.target.value)}
+              placeholder="1393659139005209"
+              autoComplete="off"
+              className="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs text-gray-200 placeholder-gray-600 focus:outline-none focus:border-purple-500 font-mono"
+            />
+          </div>
+          <div>
+            <label className="block text-[10px] text-gray-500 mb-1">Saldo Prepago / Fondos Disponibles (COP)</label>
+            <div className="relative">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 font-bold text-xs">$</span>
+              <input
+                type="text"
+                value={metaAdsFondos}
+                onChange={(e) => setMetaAdsFondos(e.target.value)}
+                placeholder="14000"
+                autoComplete="off"
+                className="w-full bg-background border border-border rounded-lg pl-7 pr-3 py-2 text-xs text-gray-200 placeholder-gray-600 focus:outline-none focus:border-purple-500 font-bold"
+              />
+            </div>
+            <p className="text-[10px] text-gray-500 mt-1">
+              Si Meta API no reporta fondos en vivo o tiene retraso, la pestaña Ads mostrará este saldo prepago verificado y lo descontará al ritmo de tus campañas.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={guardarConfigAds}
+            disabled={adsGuardando}
+            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white text-xs font-bold transition-colors"
+          >
+            <Coins className="w-4 h-4" />
+            {adsGuardando ? "Guardando..." : "Guardar cuenta y fondos de Ads"}
+          </button>
+          {adsMsg && (
+            <p className={`text-[11px] mt-1 ${adsMsg.ok ? "text-emerald-400" : "text-red-400"}`}>
+              {adsMsg.text}
             </p>
           )}
         </div>

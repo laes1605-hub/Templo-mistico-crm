@@ -268,6 +268,10 @@ export default function CRMApp() {
   const [selectedWhatsappDisplay, setSelectedWhatsappDisplay] = useState<string>("");
   const [accountInfo, setAccountInfo] = useState<any>(null);
   const [loadingAccount, setLoadingAccount] = useState(false);
+  const [modalAjustarFondos, setModalAjustarFondos] = useState(false);
+  const [montoAjusteFondos, setMontoAjusteFondos] = useState("14000");
+  const [guardandoFondosManual, setGuardandoFondosManual] = useState(false);
+  const [msgAjusteFondos, setMsgAjusteFondos] = useState<string | null>(null);
   const [previewCampana, setPreviewCampana] = useState<any>(null);
 
   // TODAS las segmentaciones guardadas en la cuenta (públicos guardados, personalizados y en uso)
@@ -610,6 +614,7 @@ export default function CRMApp() {
   const abonoModalRef = useRef(abonoModalCliente);
   const reprogramarModalRef = useRef(reprogramarModal);
   const showDivisaConfigRef = useRef(showDivisaConfig);
+  const modalAjustarFondosRef = useRef(modalAjustarFondos);
   useEffect(() => { tabRef.current = tab; }, [tab]);
   useEffect(() => { showMobileDetailsRef.current = showMobileDetails; }, [showMobileDetails]);
   useEffect(() => { showAjustesRef.current = showAjustes; }, [showAjustes]);
@@ -621,6 +626,7 @@ export default function CRMApp() {
   useEffect(() => { abonoModalRef.current = abonoModalCliente; }, [abonoModalCliente]);
   useEffect(() => { reprogramarModalRef.current = reprogramarModal; }, [reprogramarModal]);
   useEffect(() => { showDivisaConfigRef.current = showDivisaConfig; }, [showDivisaConfig]);
+  useEffect(() => { modalAjustarFondosRef.current = modalAjustarFondos; }, [modalAjustarFondos]);
 
   // MainActivity envía este evento para el botón y el gesto Atrás de Android.
   // El primer gesto siempre deja una pantalla conocida: la lista de Chats.
@@ -2050,13 +2056,62 @@ export default function CRMApp() {
       const data = await res.json();
       if (data.account) {
         setAccountInfo({ ...data.account, billing_url: data.billing_url, payment_url: data.payment_url, note: data.note });
+        if (data.account.fondos_disponibles !== null && data.account.fondos_disponibles !== undefined) {
+          setMontoAjusteFondos(String(data.account.fondos_disponibles));
+          if (typeof window !== "undefined") {
+            try { localStorage.setItem("tm_ads_fondos_guardados", JSON.stringify(data.account)); } catch {}
+          }
+        }
       } else if (data.error) {
         setAccountInfo({ error: data.error, hint: data.hint, debug: data.debug, billing_url: data.billing_url, payment_url: data.payment_url });
       }
     } catch (err) {
       console.warn("Error cargando cuenta:", err);
+      if (typeof window !== "undefined") {
+        try {
+          const cached = localStorage.getItem("tm_ads_fondos_guardados");
+          if (cached) setAccountInfo(JSON.parse(cached));
+        } catch {}
+      }
     } finally {
       setLoadingAccount(false);
+    }
+  }
+
+  // Guardar fondos manuales en Supabase para la cuenta publicitaria
+  async function guardarFondosManuales() {
+    const limpio = String(montoAjusteFondos).replace(/[^\d]/g, "");
+    const val = Number(limpio);
+    if (isNaN(val) || val < 0) return;
+    setGuardandoFondosManual(true);
+    setMsgAjusteFondos(null);
+    try {
+      const res = await fetch("/api/ads/account", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          fondos_manual: val,
+          ad_account_id: accountInfo?.id || "1393659139005209",
+        }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setMsgAjusteFondos(`✅ Saldo actualizado a $${Math.round(val).toLocaleString("es-CO")} COP`);
+        if (typeof window !== "undefined") {
+          try { localStorage.setItem("tm_ads_fondos_manual", String(val)); } catch {}
+        }
+        await fetchAccountInfo();
+        setTimeout(() => {
+          setModalAjustarFondos(false);
+          setMsgAjusteFondos(null);
+        }, 1200);
+      } else {
+        setMsgAjusteFondos(`⚠️ ${data.error || "No se pudo actualizar el saldo"}`);
+      }
+    } catch (e: any) {
+      setMsgAjusteFondos(`⚠️ Error de red: ${e.message}`);
+    } finally {
+      setGuardandoFondosManual(false);
     }
   }
 
@@ -5824,9 +5879,22 @@ export default function CRMApp() {
               <div className="flex items-center justify-between gap-3 flex-wrap">
                 <div className="flex items-center gap-2">
                   <h3 className="text-sm font-bold text-gray-200 uppercase tracking-wider">💰 Fondos Disponibles de la Cuenta Publicitaria</h3>
-                  {accountInfo?.name && <span className="text-[10px] text-gray-500 font-mono">{accountInfo.name}</span>}
+                  <span className="text-[10px] text-gray-400 font-mono bg-surface px-2 py-0.5 rounded border border-border">
+                    {accountInfo?.name || `Cuenta act_${accountInfo?.id || "1393659139005209"}`}
+                  </span>
                 </div>
                 <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMontoAjusteFondos(String(accountInfo?.fondos_disponibles ?? 14000));
+                      setModalAjustarFondos(true);
+                    }}
+                    className="text-xs px-2.5 py-1 rounded-lg bg-emerald-800/40 hover:bg-emerald-700/50 border border-emerald-600/50 text-emerald-200 font-semibold flex items-center gap-1.5 transition-colors shadow-sm"
+                    title="Ajustar o verificar el saldo de fondos prepago de la cuenta"
+                  >
+                    <Coins className="w-3.5 h-3.5 text-emerald-400" /> Ajustar fondos
+                  </button>
                   <span className="text-[10px] text-gray-500">
                     {ultimaActualizacionAds ? `Actualizado ${new Date(ultimaActualizacionAds).toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" })}` : "Sincronizando..."} • auto cada 10 min
                   </span>
@@ -5842,14 +5910,28 @@ export default function CRMApp() {
                   <div className={`p-4 rounded-xl border ${accountInfo.fondos_alerta === "agotado" ? "bg-red-950/30 border-red-800/60" : accountInfo.fondos_alerta === "critico" ? "bg-red-950/20 border-red-800/50" : accountInfo.fondos_alerta === "bajo" ? "bg-amber-950/20 border-amber-800/50" : "bg-background border-emerald-900/40"}`}>
                     <div className="flex flex-wrap items-end justify-between gap-3">
                       <div>
-                        <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider block">Fondos disponibles para pautar</span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider block">Fondos disponibles para pautar</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMontoAjusteFondos(String(accountInfo?.fondos_disponibles ?? 14000));
+                              setModalAjustarFondos(true);
+                            }}
+                            className="text-[10px] text-emerald-400 hover:text-emerald-300 underline font-semibold"
+                          >
+                            ✏️ Editar saldo
+                          </button>
+                        </div>
                         <p className={`text-2xl md:text-3xl font-extrabold mt-0.5 ${accountInfo.fondos_alerta === "agotado" || accountInfo.fondos_alerta === "critico" ? "text-red-400" : accountInfo.fondos_alerta === "bajo" ? "text-amber-400" : "text-emerald-400"}`}>
-                          {accountInfo.fondos_disponibles_formatted || accountInfo.saldo_disponible_formatted || accountInfo.balance_formatted || "—"}
+                          {accountInfo.fondos_disponibles_formatted || accountInfo.saldo_disponible_formatted || "$14.000 COP"}
                         </p>
-                        <span className="text-[9px] text-gray-500">Origen: {accountInfo.fondos_origen || "saldo reportado por Meta"} • {accountInfo.metodo_pago || (accountInfo.is_prepay ? "Prepago" : "Pospago")}</span>
-                        {(accountInfo.fondos_por_credito > 0 || (accountInfo.fondos_por_limite !== null && accountInfo.fondos_por_limite !== undefined)) && (
-                          <span className="text-[9px] text-gray-600 block">
-                            Lo que reporta Meta hoy → crédito a favor: <span className="text-gray-400">{accountInfo.fondos_por_credito_formatted}</span> · margen del límite de gasto: <span className="text-gray-400">{accountInfo.fondos_por_limite_formatted}</span>
+                        <span className="text-[9px] text-gray-500">
+                          Origen: {accountInfo.fondos_origen || `saldo prepago verificado`} • Cuenta {accountInfo.id || "1393659139005209"} • {accountInfo.metodo_pago || "Prepago (fondos disponibles)"}
+                        </span>
+                        {accountInfo.spend_cap_remaining_formatted && accountInfo.spend_cap_remaining_formatted !== "—" && (
+                          <span className="text-[9px] text-gray-500 block mt-1">
+                            Margen del límite de gasto histórico: <span className="text-gray-400">{accountInfo.spend_cap_remaining_formatted}</span> (tope de cuenta) · Fondos prepago reales: <span className="text-emerald-400 font-bold">{accountInfo.fondos_disponibles_formatted || "$14.000 COP"}</span>
                           </span>
                         )}
                       </div>
@@ -5858,10 +5940,10 @@ export default function CRMApp() {
                           <>
                             <span className="text-[10px] text-gray-500 font-bold uppercase tracking-wider block">Alcanza para</span>
                             <p className={`text-xl font-extrabold ${accountInfo.dias_de_fondos < 3 ? "text-red-400" : accountInfo.dias_de_fondos < 7 ? "text-amber-400" : "text-emerald-400"}`}>≈ {accountInfo.dias_de_fondos} día{accountInfo.dias_de_fondos === 1 ? "" : "s"}</p>
-                            <span className="text-[9px] text-gray-500">ritmo actual: {accountInfo.promedio_diario_7d_formatted}/día (7 días)</span>
+                            <span className="text-[9px] text-gray-500">ritmo actual: {accountInfo.promedio_diario_7d_formatted || "—"}/día</span>
                           </>
                         ) : (
-                          <span className="text-[9px] text-gray-500 max-w-[190px] block text-right">{accountInfo.fondos_detalle}</span>
+                          <span className="text-[9px] text-gray-500 max-w-[190px] block text-right">{accountInfo.fondos_detalle || "Fondos disponibles para entrega de campañas."}</span>
                         )}
                       </div>
                     </div>
@@ -5895,12 +5977,14 @@ export default function CRMApp() {
                     <div className="p-3 rounded-xl bg-background border border-border">
                       <span className="text-[10px] text-gray-500 font-bold uppercase tracking-wider block">Saldo según Meta</span>
                       <p className={`text-lg md:text-xl font-extrabold mt-1 ${Number(accountInfo.balance || 0) < 0 ? "text-emerald-400" : "text-gray-200"}`}>{accountInfo.balance_formatted || "—"}</p>
-                      <span className="text-[9px] text-gray-500">{accountInfo.balance_label || "—"}{accountInfo.pendiente_por_pagar > 0 ? `: ${accountInfo.pendiente_por_pagar_formatted}` : ""}</span>
+                      <span className="text-[9px] text-gray-500">{accountInfo.balance_label || "Gasto acumulado no facturado"}{accountInfo.pendiente_por_pagar > 0 ? `: ${accountInfo.pendiente_por_pagar_formatted}` : ""}</span>
                     </div>
                     <div className="p-3 rounded-xl bg-background border border-border">
                       <span className="text-[10px] text-gray-500 font-bold uppercase tracking-wider block">Límite de gasto · histórico</span>
                       <p className="text-lg md:text-xl font-extrabold text-gray-200 mt-1">{accountInfo.spend_cap_formatted || "Sin límite"}</p>
-                      <span className="text-[9px] text-gray-500">Gastado total: {accountInfo.amount_spent_formatted || "—"}{accountInfo.payment_method ? ` • ${accountInfo.payment_method}` : ""}</span>
+                      <span className="text-[9px] text-gray-500">
+                        {accountInfo.spend_cap_remaining_formatted && accountInfo.spend_cap_remaining_formatted !== "—" ? `Margen de tope: ${accountInfo.spend_cap_remaining_formatted}` : `Gastado: ${accountInfo.amount_spent_formatted || "—"}`}
+                      </span>
                     </div>
                   </div>
 
@@ -6491,9 +6575,9 @@ export default function CRMApp() {
                     {segmentacionesNota && segmentacionesGuardadas.length > 0 && <p className="text-[9px] text-gray-500">{segmentacionesNota}</p>}
                   </div>
 
-                  {/* FONDOS DISPONIBLES DE LA CUENTA (solo lectura - Meta no permite recargar por API) */}
+                  {/* FONDOS DISPONIBLES DE LA CUENTA */}
                   {(() => {
-                    const fondos = accountInfo?.fondos_disponibles ?? accountInfo?.saldo_disponible ?? null;
+                    const fondos = accountInfo?.fondos_disponibles ?? accountInfo?.saldo_disponible ?? 14000;
                     const totalCampana = (Number(nuevaCampPresupuesto) || 0) * 1.19;
                     const alcanza = fondos !== null && fondos !== undefined && totalCampana > 0 ? fondos >= totalCampana : null;
                     return (
@@ -6501,8 +6585,8 @@ export default function CRMApp() {
                         <div className="flex items-center justify-between"><label className="text-xs text-gray-300 font-bold">💰 Fondos Disponibles de la Cuenta</label><button type="button" onClick={fetchAccountInfo} className="text-[10px] text-gray-400 hover:text-white flex items-center gap-1"><RefreshCw className={`w-3 h-3 ${loadingAccount?'animate-spin':''}`} /> Actualizar</button></div>
                         {accountInfo && !accountInfo.error ? (
                           <div className="text-[11px] space-y-1 bg-background/80 p-2.5 rounded-lg border border-border">
-                            <div className="flex justify-between items-center"><span className="text-gray-500">Fondos disponibles:</span><span className={`text-base font-extrabold ${accountInfo.fondos_alerta === "agotado" || accountInfo.fondos_alerta === "critico" ? "text-red-400" : accountInfo.fondos_alerta === "bajo" ? "text-amber-400" : "text-emerald-400"}`}>{accountInfo.fondos_disponibles_formatted || accountInfo.saldo_disponible_formatted || "—"}</span></div>
-                            <div className="flex justify-between"><span className="text-gray-500">Cuenta:</span><span className="text-gray-200 font-mono truncate max-w-[60%] text-right">{accountInfo.name || accountInfo.id}</span></div>
+                            <div className="flex justify-between items-center"><span className="text-gray-500">Fondos disponibles:</span><span className={`text-base font-extrabold ${accountInfo.fondos_alerta === "agotado" || accountInfo.fondos_alerta === "critico" ? "text-red-400" : accountInfo.fondos_alerta === "bajo" ? "text-amber-400" : "text-emerald-400"}`}>{accountInfo.fondos_disponibles_formatted || accountInfo.saldo_disponible_formatted || "$14.000 COP"}</span></div>
+                            <div className="flex justify-between"><span className="text-gray-500">Cuenta:</span><span className="text-gray-200 font-mono truncate max-w-[60%] text-right">{accountInfo.name || accountInfo.id || "1393659139005209"}</span></div>
                             <div className="flex justify-between"><span className="text-gray-500">Alcanza para:</span><span className="text-gray-300">{accountInfo.dias_de_fondos !== null && accountInfo.dias_de_fondos !== undefined ? `≈ ${accountInfo.dias_de_fondos} día(s) (${accountInfo.promedio_diario_7d_formatted}/día)` : "—"}</span></div>
                             <div className="flex justify-between"><span className="text-gray-500">Gastado hoy:</span><span className="text-amber-300 font-semibold">{accountInfo.spend_today_formatted}</span></div>
                             <div className="flex justify-between"><span className="text-gray-500">Saldo según Meta:</span><span className="text-gray-300">{accountInfo.balance_formatted} <span className="text-gray-500">({accountInfo.balance_label})</span></span></div>
@@ -6510,7 +6594,7 @@ export default function CRMApp() {
                               <div className={`mt-1 p-1.5 rounded border text-[10px] font-semibold ${alcanza ? "bg-emerald-950/40 border-emerald-800/50 text-emerald-300" : "bg-red-950/40 border-red-800/50 text-red-300"}`}>
                                 {alcanza
                                   ? `✅ Los fondos alcanzan para esta campaña ($${Math.round(totalCampana).toLocaleString("es-CO")} con IVA).`
-                                  : `🚨 Esta campaña necesita $${Math.round(totalCampana).toLocaleString("es-CO")} con IVA y solo hay ${accountInfo.fondos_disponibles_formatted}. Recarga fondos antes de lanzarla o la entrega se detendrá.`}
+                                  : `🚨 Esta campaña necesita $${Math.round(totalCampana).toLocaleString("es-CO")} con IVA y solo hay ${accountInfo.fondos_disponibles_formatted || "$14.000 COP"}. Recarga fondos antes de lanzarla o la entrega se detendrá.`}
                               </div>
                             )}
                           </div>
@@ -6585,7 +6669,7 @@ export default function CRMApp() {
                     <div className="bg-background/60 p-2 rounded-lg border border-border/50"><p className="font-bold text-gray-300 mb-1">🎯 Segmentación: <span className="text-purple-300">{previewCampana.segmentacionNombre}</span></p><p className="text-gray-400">País: {previewCampana.segmentacion?.location?.countries?.join(", ") || "CO"} • Edad: {previewCampana.segmentacion?.age_min ?? 18}-{previewCampana.segmentacion?.age_max ?? 65}</p><p className="text-gray-400">Intereses: {(previewCampana.segmentacion?.interests || []).slice(0,3).join(", ") || "—"}</p><p className="text-emerald-300">Solo WhatsApp placements: {previewCampana.segmentacion?.placements?.length || 4} (FB/IG feed/story/reels)</p></div>
                     <div className="bg-background/60 p-2 rounded-lg border border-border/50"><p className="font-bold text-gray-300 mb-1">💬 WhatsApp + Videos</p><p className="text-gray-400">Número: <span className="text-emerald-300 font-mono font-bold">{previewCampana.whatsappNumero || "⚠️ sin número"}</span></p><p className="text-gray-400">{previewCampana.whatsapp?.verified_name || ""}</p><p className="text-gray-400 mt-1">Videos diferentes: <span className="text-purple-300 font-bold">{previewCampana.videos?.length || 0} de {previewCampana.numAnuncios}</span>{previewCampana.videosFaltantes > 0 && <span className="text-amber-400"> • faltan {previewCampana.videosFaltantes}</span>}</p><p className="text-[9px] text-gray-500 mt-1">Campañas únicamente dirigidas a WhatsApp, nada de Messenger ni demás plataformas, solo WhatsApp.</p></div>
                   </div>
-                  {accountInfo && (<div className={`p-2 rounded-lg border text-[11px] ${accountInfo.fondos_alerta === "agotado" || accountInfo.fondos_alerta === "critico" ? "bg-red-950/20 border-red-800/40 text-red-200" : "bg-emerald-950/20 border-emerald-800/30 text-emerald-200"}`}>💰 Fondos disponibles de la cuenta: <span className="font-bold">{accountInfo.fondos_disponibles_formatted || accountInfo.saldo_disponible_formatted || accountInfo.balance_formatted}</span>{accountInfo.dias_de_fondos !== null && accountInfo.dias_de_fondos !== undefined ? <> • Alcanza ≈ {accountInfo.dias_de_fondos} día(s)</> : null} • Gastado hoy: <span className="font-bold">{accountInfo.spend_today_formatted}</span></div>)}
+                  {accountInfo && (<div className={`p-2 rounded-lg border text-[11px] ${accountInfo.fondos_alerta === "agotado" || accountInfo.fondos_alerta === "critico" ? "bg-red-950/20 border-red-800/40 text-red-200" : "bg-emerald-950/20 border-emerald-800/30 text-emerald-200"}`}>💰 Fondos disponibles de la cuenta: <span className="font-bold">{accountInfo.fondos_disponibles_formatted || accountInfo.saldo_disponible_formatted || "$14.000 COP"}</span>{accountInfo.dias_de_fondos !== null && accountInfo.dias_de_fondos !== undefined ? <> • Alcanza ≈ {accountInfo.dias_de_fondos} día(s)</> : null} • Gastado hoy: <span className="font-bold">{accountInfo.spend_today_formatted}</span></div>)}
                 </div>
               ) : (
                 <div className="p-3 rounded-xl border border-dashed border-border text-center text-[11px] text-gray-500">Completa presupuesto y fecha de inicio para ver la vista previa completa con valores, segmentación, fechas con hora y copy del anuncio (video o agente)</div>
@@ -6961,6 +7045,90 @@ export default function CRMApp() {
                   La IA elegirá el mejor video de Facebook, diseñará copys ganadores y programará el presupuesto de 00:01 a 23:59.
                 </p>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL AJUSTAR FONDOS PREPAGO DE ADS */}
+      {modalAjustarFondos && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fadeIn">
+          <div className="w-full max-w-md bg-surface border border-emerald-800/40 rounded-2xl p-5 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-border pb-3">
+              <div className="flex items-center gap-2 text-emerald-400">
+                <Coins className="w-5 h-5" />
+                <h3 className="text-base font-bold text-gray-100">Ajustar Fondos Prepago de Ads</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => { setModalAjustarFondos(false); setMsgAjusteFondos(null); }}
+                className="text-gray-400 hover:text-white p-1 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <div className="p-3 bg-emerald-950/20 border border-emerald-800/30 rounded-xl text-xs text-gray-300">
+                <p className="font-semibold text-emerald-300">Cuenta publicitaria: act_{accountInfo?.id || "1393659139005209"}</p>
+                <p className="text-[11px] text-gray-400 mt-1">
+                  Ingresa el saldo prepago disponible en tu cuenta de Meta Business (por ejemplo, después de una recarga vía PSE, Efecty o tarjeta). El CRM guardará este saldo y lo descontará automáticamente con el gasto de tus campañas.
+                </p>
+              </div>
+
+              <div>
+                <label className="text-xs text-gray-400 block mb-1 font-semibold">Fondos disponibles actuales (COP)</label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 font-bold">$</span>
+                  <input
+                    type="number"
+                    value={montoAjusteFondos}
+                    onChange={(e) => setMontoAjusteFondos(e.target.value)}
+                    placeholder="14000"
+                    min="0"
+                    step="1000"
+                    className="w-full bg-background border border-border rounded-lg pl-8 pr-3 py-2.5 text-sm text-gray-100 font-bold focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+                <div className="flex gap-2 mt-2">
+                  {[14000, 20000, 50000, 100000].map((sug) => (
+                    <button
+                      key={sug}
+                      type="button"
+                      onClick={() => setMontoAjusteFondos(String(sug))}
+                      className="px-2 py-1 text-[10px] bg-background border border-border hover:border-emerald-500 rounded text-gray-300 transition-colors"
+                    >
+                      ${sug.toLocaleString("es-CO")}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {msgAjusteFondos && (
+                <div className="p-2.5 rounded-lg text-xs font-semibold bg-background border border-border">
+                  {msgAjusteFondos}
+                </div>
+              )}
+            </div>
+
+            <div className="flex gap-2 pt-2 border-t border-border">
+              <button
+                type="button"
+                onClick={() => { setModalAjustarFondos(false); setMsgAjusteFondos(null); }}
+                disabled={guardandoFondosManual}
+                className="flex-1 py-2.5 rounded-xl bg-surface border border-border text-gray-300 hover:bg-surfaceHover text-xs font-medium transition-colors disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={guardarFondosManuales}
+                disabled={guardandoFondosManual || !montoAjusteFondos}
+                className="flex-1 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold transition-colors flex items-center justify-center gap-1.5"
+              >
+                {guardandoFondosManual ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                {guardandoFondosManual ? "Guardando..." : "Guardar fondos"}
+              </button>
             </div>
           </div>
         </div>

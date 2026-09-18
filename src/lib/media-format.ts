@@ -183,7 +183,11 @@ export interface OpcionesRuta {
   fecha?: Date;
 }
 
-/** Ruta determinista y ordenada por mes dentro del bucket. */
+/** Ruta determinista y ordenada por mes dentro del bucket.
+ * Para respuestas rápidas con hash, la ruta es SIEMPRE `${carpeta}/${hash}.${ext}`
+ * sin mes, así dos teléfonos en meses distintos escriben el mismo objeto (upsert)
+ * y no quedan copias huérfanas. Para mensajes se mantiene AAAA-MM por trazabilidad.
+ */
 export function rutaDeObjeto(mime: string, opciones: OpcionesRuta = {}): string {
   const ahora = opciones.fecha || new Date();
   const yyyy = ahora.getFullYear();
@@ -192,7 +196,10 @@ export function rutaDeObjeto(mime: string, opciones: OpcionesRuta = {}): string 
   const ext = extensionPorMime(mime);
   if (opciones.hash) {
     const hash = opciones.hash.replace(/[^a-f0-9]/gi, "").slice(0, 40);
-    if (hash) return `${carpeta}/${yyyy}-${mm}/${hash}.${ext}`;
+    if (hash) {
+      if (carpeta === CARPETA_RESPUESTAS_RAPIDAS) return `${carpeta}/${hash}.${ext}`;
+      return `${carpeta}/${yyyy}-${mm}/${hash}.${ext}`;
+    }
   }
   const unico = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   return `${carpeta}/${yyyy}-${mm}/${unico}-${limpiarNombreBase(opciones.nombreBase || "adjunto")}.${ext}`;

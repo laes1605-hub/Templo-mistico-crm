@@ -1,8 +1,60 @@
 # Build Info - Templo Místico CRM
 
-**Fecha:** 2026-09-16 (rama `arena/01a0ab64-templo-mistico-crm`)
+**Fecha:** 2026-09-19 (rama `arena/01a0ba5c-templo-mistico-crm`)
 **Commit:** (ver git log)
-**Branch:** arena/01a0ab64-templo-mistico-crm
+**Branch:** arena/01a0ba5c-templo-mistico-crm
+
+## Build 2026-09-19: los recordatorios de WhatsApp API vuelven a salir (Supabase nuevo)
+
+**Problema:** los recordatorios automáticos de WhatsApp API no llegaban.
+
+### Diagnóstico (verificado contra el proyecto real, no supuesto)
+
+- **El bucle estaba conectado al revés**: el nodo «Procesar uno a uno» (Loop Over
+  Items) tiene las salidas 0 = `done` y 1 = `loop`; los ítems viajan por `loop` y
+  `done` entrega `[]` hasta terminar (comprobado en `SplitInBatchesV3.node.ts`,
+  `return [[], returnItems]`). El envío estaba conectado a `done` y `loop` se
+  apuntaba a sí mismo, así que **nunca se ejecutaba el envío**: por eso una prueba
+  manual del workflow no enviaba nada. Ahora `build:recordatorios` fuerza
+  `loop → Enviar → Registrar → vuelve al bucle`, deja `done` vacío y **falla el
+  build** si alguien lo invierte. Las pruebas simulan el bucle completo.
+- Las credenciales del código apuntan al proyecto `zcljlddtcoyfyvshlyfk` y
+  responden: `recordatorios_whatsapp` existe y la service_role lee y escribe.
+  El proyecto **no** era el problema.
+- El último recordatorio registrado era del **10/09/2026**. Justo ahí dejó de
+  salir el intento de la etapa *Datos*.
+- Causa: el workflow pedía `pipeline_etapas?grupo=eq.templo` y después comparaba
+  por nombre. El CRM crea y edita las etapas con `grupo = 'general'`
+  (`agregarEtapaPipeline` en `src/app/page.tsx`), así que al unificar el pipeline
+  **Datos** quedó en `general`: el workflow no la reconocía y no enviaba nada.
+  También exigía `clientes.grupo = 'templo'`, lo que descartaba a los chats que
+  el operador había movido a la cartera Personal.
+
+### Arreglo (`n8n/03-recordatorios-whatsapp-por-etapa.json`)
+
+- Las etapas se reconocen **solo por NOMBRE, en todo el pipeline** (sin filtrar
+  por grupo), sin acentos ni mayúsculas y admitiendo sufijos («Datos (API)»).
+- El canal lo decide la **conversación** (`fuente = 'meta_business'`), no
+  `clientes.grupo`.
+- Si falta una etapa, el workflow **no revienta**: lo informa en un ítem final
+  de diagnóstico (`_diagnostico: true`) con `etapasReconocidas`,
+  `etapasDelPipeline`, `conteo.omitidas.*` y `avisos`: en una sola mirada se ve
+  por qué no salió nada.
+- **Ventana de 24 h**: fuera de ella Meta rechaza el texto libre, así que no se
+  intenta el envío (antes fallaba en silencio).
+- El nodo de envío guarda el motivo exacto devuelto por Chatwoot/Meta en el
+  campo `error` (antes solo quedaba en los logs del servidor).
+- Las **credenciales van escritas dentro de cada nodo** (esta instancia de n8n
+  no permite variables de entorno). Cambiar de proyecto Supabase es editar solo
+  `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY` en los tres nodos.
+- `n8n/recordatorios/CODIGO-PARA-PEGAR.md` trae los tres nodos completos con las
+  llaves dentro para copiar y pegar a mano en n8n.
+- El código de los nodos ya no vive dentro del JSON: se edita en
+  `n8n/recordatorios/code/*.js` y se regenera con `npm run build:recordatorios`.
+- Verificación: `npm run test:recordatorios` — **71 pruebas OK** sobre el código
+  real de los nodos (Chatwoot y Supabase simulados), incluidas las consultas
+  exactas validadas contra el proyecto real. Detalle en
+  `n8n/03-README-recordatorios.md`.
 
 ## Build 2026-09-16: las notas de voz del chat vuelven a sonar (reproductor robusto)
 

@@ -4,6 +4,10 @@
 // Guarda el envío en public.recordatorios_whatsapp para que el siguiente ciclo
 // no repita el mismo intento. Las credenciales van escritas aquí adentro, en el
 // mismo proyecto Supabase que el nodo de búsqueda.
+//
+// IMPORTANTE · el bucle
+//   Este nodo vuelve a entrar al nodo "Procesar uno a uno" para que el bucle
+//   saque el siguiente ítem. Si no vuelve, solo se envía el primer recordatorio.
 // ============================================================================
 // ---------------------------------------------------------------------------
 // CREDENCIALES (escritas aquí adentro)
@@ -26,34 +30,62 @@ if (!TOKEN || !SUPABASE_KEY) {
   throw new Error('Faltan CHATWOOT_API_TOKEN o SUPABASE_SERVICE_ROLE_KEY');
 }
 
-const d = $input.item.json;
-if (!d || d._diagnostico === true) return [{ json: d || {} }];
-if (d.enviado !== true) return [{ json: d }];
+// ---------------------------------------------------------------------------
+// ÍTEMS DE ENTRADA (funciona en los dos modos del nodo Code, ver nodo anterior)
+// ---------------------------------------------------------------------------
+function itemsDeEntrada() {
+  try {
+    const actual = $input.item;
+    if (actual && actual.json) return [actual];
+  } catch (error) {}
+  try {
+    const todos = $input.all();
+    if (Array.isArray(todos) && todos.length) return todos;
+  } catch (error) {}
+  try {
+    const primero = $input.first();
+    if (primero && primero.json) return [primero];
+  } catch (error) {}
+  return [];
+}
 
 const fecha = new Date().toISOString().slice(0, 10);
-try {
-  await this.helpers.httpRequest({
-    method: 'POST',
-    url: `${SUPABASE_URL}/rest/v1/recordatorios_whatsapp`,
-    headers: {
-      apikey: SUPABASE_KEY,
-      Authorization: `Bearer ${SUPABASE_KEY}`,
-      'Content-Type': 'application/json',
-      Prefer: 'resolution=ignore-duplicates,return=minimal'
-    },
-    body: {
-      cliente_id: d.clienteId,
-      conversacion_id: d.conversacionId,
-      etapa: d.estado,
-      tipo: d.etapa,
-      plantilla: d.intento,
-      fecha: fecha,
-      mensaje: d.mensaje,
-      proveedor: 'chatwoot'
-    },
-    json: true
-  });
-  return [{ json: { ...d, registrado: true } }];
-} catch (e) {
-  return [{ json: { ...d, registrado: false, errorRegistro: (e && e.message) || 'error registrando' } }];
+const resultados = [];
+
+for (const item of itemsDeEntrada()) {
+  const d = (item && item.json) || {};
+
+  if (d._diagnostico === true || d.enviado !== true) {
+    resultados.push({ json: d });
+    continue;
+  }
+
+  try {
+    await this.helpers.httpRequest({
+      method: 'POST',
+      url: `${SUPABASE_URL}/rest/v1/recordatorios_whatsapp`,
+      headers: {
+        apikey: SUPABASE_KEY,
+        Authorization: `Bearer ${SUPABASE_KEY}`,
+        'Content-Type': 'application/json',
+        Prefer: 'resolution=ignore-duplicates,return=minimal'
+      },
+      body: {
+        cliente_id: d.clienteId,
+        conversacion_id: d.conversacionId,
+        etapa: d.estado,
+        tipo: d.etapa,
+        plantilla: d.intento,
+        fecha: fecha,
+        mensaje: d.mensaje,
+        proveedor: 'chatwoot'
+      },
+      json: true
+    });
+    resultados.push({ json: { ...d, registrado: true } });
+  } catch (e) {
+    resultados.push({ json: { ...d, registrado: false, errorRegistro: (e && e.message) || 'error registrando' } });
+  }
 }
+
+return resultados;

@@ -8,15 +8,42 @@ Archivos:
 - `03-recordatorios-whatsapp-por-etapa.json`: workflow importable en n8n (se genera con `npm run build:recordatorios`).
 - `recordatorios/CODIGO-PARA-PEGAR.md`: **los tres nodos completos con las llaves dentro**, para copiar y pegar a mano en n8n.
 - `recordatorios/code/*.js`: código real de los tres nodos Code (aquí se edita, no dentro del JSON).
-- `scripts/prueba-recordatorios.mjs`: 57 pruebas sobre el código de los nodos (`npm run test:recordatorios`).
+- `scripts/prueba-recordatorios.mjs`: 71 pruebas sobre el código de los nodos (`npm run test:recordatorios`).
 - `supabase/migrations/20260825000002_recordatorios_whatsapp_etapa.sql`: tabla de auditoría e idempotencia (ya viene incluida en `MIGRAR-A-NUEVO-SUPABASE.sql`, bloque `[04/26]`).
 
 ---
 
 ## ⚠️ Arreglo del 19/09/2026: por qué no llegaban los recordatorios
 
-Los recordatorios dejaron de enviarse el **10/09/2026**. La causa no era Supabase:
-el workflow buscaba la etapa así:
+**Causa 1 (la que dejaba el workflow mudo): las conexiones del bucle estaban al revés.**
+
+El nodo **Procesar uno a uno** («Loop Over Items / Split in Batches») tiene dos
+salidas y en este orden: **0 = done**, **1 = loop**. En el código fuente de n8n
+(`SplitInBatchesV3`) los ítems salen por `loop` y `done` entrega un **arreglo
+vacío** hasta que el bucle termina:
+
+```ts
+outputNames: ['done', 'loop'],
+...
+return [[], returnItems];   // done = [] · loop = los ítems
+```
+
+El workflow tenía el envío conectado a **done** (vacío) y **loop** apuntando al
+propio nodo, así que n8n nunca ejecutaba el envío: **no salía ningún mensaje**.
+
+Correcto:
+
+```
+Procesar uno a uno · loop (abajo)  →  Enviar por WhatsApp API  →  Registrar envío  →  vuelve al bucle
+Procesar uno a uno · done (arriba) →  (sin conectar)
+```
+
+Desde ahora `npm run build:recordatorios` **fuerza esas conexiones y falla** si
+alguien las vuelve a invertir, y las pruebas simulan el bucle completo.
+
+**Causa 2: las etapas se buscaban con un filtro que ya no aplicaba.**
+
+Los recordatorios dejaron de registrarse el **10/09/2026**. El workflow buscaba la etapa así:
 
 ```text
 pipeline_etapas?grupo=eq.templo     ← y luego comparaba por nombre
@@ -117,7 +144,7 @@ ventanaCerrada, sinTelefono, error) y `avisos`.
 ## Mantenimiento
 
 ```bash
-npm run test:recordatorios   # 57 pruebas sobre el código real de los nodos
+npm run test:recordatorios   # 71 pruebas sobre el código real de los nodos
 npm run build:recordatorios  # regenera el JSON importable desde recordatorios/code/*.js
 ```
 

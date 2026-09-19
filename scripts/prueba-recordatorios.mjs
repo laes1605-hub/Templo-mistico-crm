@@ -65,8 +65,20 @@ function compilar(jsCode) {
   );
 }
 
-// Entrada del nodo Code: $input.first() y $input.item apuntan al mismo ítem.
-const entrada = (json) => ({ first: () => ({ json: json }), item: { json: json } });
+// Entrada del nodo Code. Se prueban los dos modos de n8n por separado:
+//   · «Run Once for All Items» (por defecto): hay $input.all() y $input.first();
+//     $input.item puede no existir.
+//   · «Run Once for Each Item»: existe $input.item.
+const entradaTodos = (json) => ({ all: () => [{ json: json }], first: () => ({ json: json }) });
+const entradaPorItem = (json) => ({ item: { json: json }, all: () => [{ json: json }], first: () => ({ json: json }) });
+// El más hostil: $input.item existe pero revienta si se toca (como en algunos n8n).
+const entradaSinItem = (json) => new Proxy({ all: () => [{ json: json }], first: () => ({ json: json }) }, {
+  get(objetivo, prop) {
+    if (prop === 'item') throw new Error('Can\'t use $input.item in this mode');
+    return objetivo[prop];
+  }
+});
+const entrada = entradaTodos;
 
 // ---------------------------------------------------------------------------
 // Chatwoot + Supabase simulados
@@ -369,6 +381,131 @@ grupo("4) Credenciales escritas en el nodo (n8n sin variables de entorno)");
   const r = await ejecutarBuscar(escenario());
   check("El nodo apunta al proyecto Supabase del CRM", /zcljlddtcoyfyvshlyfk\.supabase\.co/.test(CODIGO.buscar));
   check("El diagnóstico explica cómo se resuelven las etapas", Boolean(r.diagnostico?.estadosDeLaEtapa));
+}
+
+
+// ---------------------------------------------------------------------------
+// 7) El bucle completo (aquí estaba el fallo que impedía todo envío)
+// ---------------------------------------------------------------------------
+grupo("7) Bucle «Procesar uno a uno»: la salida correcta es «loop»");
+
+{
+  // En n8n, "Loop Over Items (Split in Batches)" tiene las salidas en este
+  // orden: 0 = done, 1 = loop. Los ítems salen SIEMPRE por «loop»; «done»
+  // entrega [] hasta que el bucle se agota (SplitInBatchesV3: `return [[], items]`).
+  const conexiones = workflow.connections || {};
+  const salidas = ((conexiones["Procesar uno a uno"] || {}).main) || [];
+  const destinos = (i) => (salidas[i] || []).map((c) => c.node);
+
+  check(
+    "La salida 1 (loop) lleva los ítems a «Enviar por WhatsApp API»",
+    destinos(1).join() === "Enviar por WhatsApp API",
+    "destinos: " + JSON.stringify(destinos(1))
+  );
+  check(
+    "La salida 0 (done) está vacía: ahí no se envía nada",
+    destinos(0).length === 0,
+    "destinos: " + JSON.stringify(destinos(0))
+  );
+  check(
+    "La salida 0 (done) NO se auto-conecta al bucle",
+    !destinos(0).includes("Procesar uno a uno")
+  );
+  check(
+    "«Enviar por WhatsApp API» pasa a «Registrar envío e impedir duplicados»",
+    ((conexiones["Enviar por WhatsApp API"] || {}).main[0] || []).map((c) => c.node).join() === "Registrar envío e impedir duplicados"
+  );
+  check(
+    "«Registrar envío e impedir duplicados» vuelve al bucle para el siguiente ítem",
+    ((conexiones["Registrar envío e impedir duplicados"] || {}).main[0] || []).map((c) => c.node).join() === "Procesar uno a uno"
+  );
+  check(
+    "El disparador y la búsqueda siguen encadenados",
+    ((conexiones["Cada 15 minutos"] || {}).main[0] || []).map((c) => c.node).join() === "Buscar clientes y preparar recordatorio" &&
+      ((conexiones["Buscar clientes y preparar recordatorio"] || {}).main[0] || []).map((c) => c.node).join() === "Procesar uno a uno"
+  );
+}
+
+{
+  // Simulación del bucle tal como lo ejecuta n8n con lotes de 1 ítem:
+  // el nodo de bucle entrega un ítem por «loop», el envío lo manda, el registro
+  // lo guarda y vuelve a entrar; cuando no quedan ítems, «done» sale vacío.
+  async function simularBucle(items, servidor) {
+    const enviar = compilar(CODIGO.enviar);
+    const registrar = compilar(CODIGO.registrar);
+    let enviados = 0;
+    let registrados = 0;
+    for (const item of items) {
+      // `items` ya son los json de salida del primer nodo (no objetos {json}).
+      const trasEnviar = await enviar(servidor.helpers, entradaTodos(item), () => ({}));
+      const trasRegistrar = await registrar(servidor.helpers, entradaTodos(trasEnviar[0].json), () => ({}));
+      if (trasEnviar[0].json.enviado === true) enviados++;
+      if (trasRegistrar[0].json.registrado === true) registrados++;
+    }
+    return { enviados, registrados, done: [] }; // «done» entrega [] al final
+  }
+
+  const servidor = servidorFalso({
+    etapas: ETAPAS_REALES,
+    convs: {
+      271: filaSupabase(),
+      272: filaSupabase({ id: "conv-272", cliente_id: "cli-2" }, { id: "cli-2", estado: "etapa_1787876104854" }),
+    },
+    abiertos: [
+      conversacion(),
+      conversacion({ id: 272, meta: { sender: { name: "Luis Gomez", phone_number: "+595981111222" } } }),
+    ],
+    mensajes: {
+      271: [{ message_type: 0, created_at: hace(2), content: "hola" }],
+      272: [{ message_type: 0, created_at: hace(4), content: "buenas" }],
+    },
+    registros: {},
+  });
+
+  const preparados = await ejecutarBuscar({
+    etapas: ETAPAS_REALES,
+    convs: {
+      271: filaSupabase(),
+      272: filaSupabase({ id: "conv-272", cliente_id: "cli-2" }, { id: "cli-2", estado: "etapa_1787876104854" }),
+    },
+    abiertos: [
+      conversacion(),
+      conversacion({ id: 272, meta: { sender: { name: "Luis Gomez", phone_number: "+595981111222" } } }),
+    ],
+    mensajes: {
+      271: [{ message_type: 0, created_at: hace(2), content: "hola" }],
+      272: [{ message_type: 0, created_at: hace(4), content: "buenas" }],
+    },
+    registros: {},
+  });
+  check("El primer nodo prepara un recordatorio por cada cliente elegible", preparados.recordatorios.length === 2);
+
+  const servidorBucle = servidorFalso({});
+  const resultado = await simularBucle(preparados.items, servidorBucle);
+  check("El bucle envía TODOS los recordatorios preparados (no solo el primero)", resultado.enviados === 2, "enviados: " + resultado.enviados);
+  check("Y registra los dos envíos para no repetirlos", resultado.registrados === 2, "registrados: " + resultado.registrados);
+  check("El ítem de diagnóstico pasa el bucle sin enviarse", servidorBucle.estado.enviadosChatwoot.length === 2);
+}
+
+{
+  // Si $input.item revienta (modo «todos los ítems»), el nodo igual funciona.
+  const servidor = servidorFalso({});
+  const item = { conversationId: 271, mensaje: "Hola" };
+  const salida = await compilar(CODIGO.enviar)(servidor.helpers, entradaSinItem(item), () => ({}));
+  check("El envío funciona aunque $input.item no exista", salida[0].json.enviado === true && servidor.estado.enviadosChatwoot.length === 1);
+
+  const servidor2 = servidorFalso({});
+  const salida2 = await compilar(CODIGO.enviar)(servidor2.helpers, entradaPorItem(item), () => ({}));
+  check("El envío también funciona en modo «Run Once for Each Item»", salida2[0].json.enviado === true && servidor2.estado.enviadosChatwoot.length === 1);
+
+  const servidor3 = servidorFalso({});
+  const lote = { all: () => [{ json: { conversationId: 271, mensaje: "A" } }, { json: { conversationId: 272, mensaje: "B" } }] };
+  const salida3 = await compilar(CODIGO.enviar)(servidor3.helpers, lote, () => ({}));
+  check("Con un lote de varios ítems los envía todos", salida3.length === 2 && servidor3.estado.enviadosChatwoot.length === 2);
+
+  const servidor4 = servidorFalso({});
+  const registro = await compilar(CODIGO.registrar)(servidor4.helpers, { all: () => [{ json: { enviado: true, clienteId: "cli-1", conversacionId: "conv-1", estado: "e1", etapa: "datos", intento: 1, mensaje: "x" } }] }, () => ({}));
+  check("El registro también aguanta lotes y modo todos-los-ítems", registro[0].json.registrado === true && servidor4.estado.insertadosSupabase.length === 1);
 }
 
 // ---------------------------------------------------------------------------

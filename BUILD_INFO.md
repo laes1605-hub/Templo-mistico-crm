@@ -10,6 +10,14 @@
 
 ### Diagnóstico (verificado contra el proyecto real, no supuesto)
 
+- **El bucle estaba conectado al revés**: el nodo «Procesar uno a uno» (Loop Over
+  Items) tiene las salidas 0 = `done` y 1 = `loop`; los ítems viajan por `loop` y
+  `done` entrega `[]` hasta terminar (comprobado en `SplitInBatchesV3.node.ts`,
+  `return [[], returnItems]`). El envío estaba conectado a `done` y `loop` se
+  apuntaba a sí mismo, así que **nunca se ejecutaba el envío**: por eso una prueba
+  manual del workflow no enviaba nada. Ahora `build:recordatorios` fuerza
+  `loop → Enviar → Registrar → vuelve al bucle`, deja `done` vacío y **falla el
+  build** si alguien lo invierte. Las pruebas simulan el bucle completo.
 - Las credenciales del código apuntan al proyecto `zcljlddtcoyfyvshlyfk` y
   responden: `recordatorios_whatsapp` existe y la service_role lee y escribe.
   El proyecto **no** era el problema.
@@ -43,7 +51,7 @@
   llaves dentro para copiar y pegar a mano en n8n.
 - El código de los nodos ya no vive dentro del JSON: se edita en
   `n8n/recordatorios/code/*.js` y se regenera con `npm run build:recordatorios`.
-- Verificación: `npm run test:recordatorios` — **57 pruebas OK** sobre el código
+- Verificación: `npm run test:recordatorios` — **71 pruebas OK** sobre el código
   real de los nodos (Chatwoot y Supabase simulados), incluidas las consultas
   exactas validadas contra el proyecto real. Detalle en
   `n8n/03-README-recordatorios.md`.

@@ -5,6 +5,11 @@
 // Los ítems de diagnóstico (_diagnostico: true) solo pasan de largo.
 // Las credenciales van escritas aquí adentro (esta instancia de n8n no permite
 // variables de entorno).
+//
+// IMPORTANTE · el bucle
+//   Este nodo va conectado a la salida «loop» (la de abajo) del nodo
+//   "Procesar uno a uno". Si se conecta a «done» (la de arriba) no llega nada,
+//   porque esa salida entrega un arreglo vacío hasta que el bucle termina.
 // ============================================================================
 // ---------------------------------------------------------------------------
 // CREDENCIALES (escritas aquí adentro)
@@ -27,34 +32,67 @@ if (!TOKEN || !SUPABASE_KEY) {
   throw new Error('Faltan CHATWOOT_API_TOKEN o SUPABASE_SERVICE_ROLE_KEY');
 }
 
-const d = $input.item.json;
-
-if (d && d._diagnostico === true) {
-  return [{ json: { ...d, enviado: false, omitido: 'diagnostico', error: null } }];
-}
-if (!d || !d.conversationId || !d.mensaje) {
-  return [{ json: { ...(d || {}), enviado: false, error: 'Sin conversationId o mensaje: no se envió nada.' } }];
-}
-
-try {
-  await this.helpers.httpRequest({
-    method: 'POST',
-    url: `${CHATWOOT_URL}/api/v1/accounts/${ACCOUNT_ID}/conversations/${d.conversationId}/messages`,
-    headers: { api_access_token: TOKEN, 'Content-Type': 'application/json' },
-    body: { content: d.mensaje, message_type: 'outgoing', private: false },
-    json: true
-  });
-  return [{ json: { ...d, enviado: true, error: null } }];
-} catch (e) {
-  // El motivo real (token vencido, ventana de 24 h cerrada, etc.) queda visible
-  // en la salida del nodo en lugar de perderse en los logs del servidor.
-  let detalle = '';
+// ---------------------------------------------------------------------------
+// ÍTEMS DE ENTRADA
+// ---------------------------------------------------------------------------
+// Funciona en los dos modos del nodo Code y con lotes de cualquier tamaño:
+//   · modo «Run Once for All Items» (el que viene por defecto) → $input.all()
+//   · modo «Run Once for Each Item» → $input.item
+// En el bucle el lote es de 1 ítem, así que en ambos casos se procesa el mismo.
+function itemsDeEntrada() {
   try {
-    const cuerpo = e && e.response && e.response.body;
-    if (cuerpo) detalle = typeof cuerpo === 'string' ? cuerpo : JSON.stringify(cuerpo);
+    const actual = $input.item;
+    if (actual && actual.json) return [actual];
   } catch (error) {
-    detalle = '';
+    // En «Run Once for All Items» puede no existir: se sigue con $input.all().
   }
-  const motivo = (e && e.message) || 'error de envío';
-  return [{ json: { ...d, enviado: false, error: detalle ? motivo + ' · ' + detalle.slice(0, 300) : motivo } }];
+  try {
+    const todos = $input.all();
+    if (Array.isArray(todos) && todos.length) return todos;
+  } catch (error) {}
+  try {
+    const primero = $input.first();
+    if (primero && primero.json) return [primero];
+  } catch (error) {}
+  return [];
 }
+
+const resultados = [];
+
+for (const item of itemsDeEntrada()) {
+  const d = (item && item.json) || {};
+
+  if (d._diagnostico === true) {
+    resultados.push({ json: { ...d, enviado: false, omitido: 'diagnostico', error: null } });
+    continue;
+  }
+  if (!d.conversationId || !d.mensaje) {
+    resultados.push({ json: { ...d, enviado: false, error: 'Sin conversationId o mensaje: no se envió nada.' } });
+    continue;
+  }
+
+  try {
+    await this.helpers.httpRequest({
+      method: 'POST',
+      url: `${CHATWOOT_URL}/api/v1/accounts/${ACCOUNT_ID}/conversations/${d.conversationId}/messages`,
+      headers: { api_access_token: TOKEN, 'Content-Type': 'application/json' },
+      body: { content: d.mensaje, message_type: 'outgoing', private: false },
+      json: true
+    });
+    resultados.push({ json: { ...d, enviado: true, error: null } });
+  } catch (e) {
+    // El motivo real (token vencido, ventana de 24 h cerrada, etc.) queda visible
+    // en la salida del nodo en lugar de perderse en los logs del servidor.
+    let detalle = '';
+    try {
+      const cuerpo = e && e.response && e.response.body;
+      if (cuerpo) detalle = typeof cuerpo === 'string' ? cuerpo : JSON.stringify(cuerpo);
+    } catch (error) {
+      detalle = '';
+    }
+    const motivo = (e && e.message) || 'error de envío';
+    resultados.push({ json: { ...d, enviado: false, error: detalle ? motivo + ' · ' + detalle.slice(0, 300) : motivo } });
+  }
+}
+
+return resultados;

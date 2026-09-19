@@ -431,7 +431,8 @@ return salidas;
 // ----------------------------------------------------------------------------
 // Manda el mensaje por la conversación de Chatwoot (bandeja del WhatsApp API).
 // Los ítems de diagnóstico (_diagnostico: true) solo pasan de largo.
-// Credenciales: variables de entorno de n8n con respaldo escrito aquí.
+// Las credenciales van escritas aquí adentro (esta instancia de n8n no permite
+// variables de entorno).
 // ============================================================================
 // ---------------------------------------------------------------------------
 // CREDENCIALES (escritas aquí adentro)
@@ -494,8 +495,8 @@ try {
 // RECORDATORIOS DE WHATSAPP API · nodo "Registrar envío e impedir duplicados"
 // ----------------------------------------------------------------------------
 // Guarda el envío en public.recordatorios_whatsapp para que el siguiente ciclo
-// no repita el mismo intento. Credenciales: variables de entorno de n8n con
-// respaldo escrito aquí (mismo Supabase que el nodo de búsqueda).
+// no repita el mismo intento. Las credenciales van escritas aquí adentro, en el
+// mismo proyecto Supabase que el nodo de búsqueda.
 // ============================================================================
 // ---------------------------------------------------------------------------
 // CREDENCIALES (escritas aquí adentro)

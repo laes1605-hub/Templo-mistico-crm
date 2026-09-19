@@ -1,7 +1,10 @@
 // ============================================================================
 // RECORDATORIOS DE WHATSAPP API · nodo "Enviar por WhatsApp API"
 // ----------------------------------------------------------------------------
-// Manda el mensaje por la conversación de Chatwoot (bandeja del WhatsApp API).
+// Manda el mensaje por la conversación de Chatwoot. Es el mismo endpoint para
+// las dos bandejas: el WhatsApp API (fuente meta_business) y el WhatsApp
+// Personal (fuente evolution) — los recordatorios de «No contesta» salen por el
+// chat personal, que no tiene la ventana de 24 h de Meta.
 // Los ítems de diagnóstico (_diagnostico: true) solo pasan de largo.
 // Las credenciales van escritas aquí adentro (esta instancia de n8n no permite
 // variables de entorno).

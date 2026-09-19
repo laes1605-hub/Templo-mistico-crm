@@ -82,8 +82,9 @@ export function variantePorTiempo(horas, reglas) {
 }
 
 /** Misma decisión que el nodo: horas sin responder + variantes ya enviadas → qué toca. */
-export function decidir({ horas, enviadas = [] }, reglas) {
-  if (horas >= reglas.ventanaApiHoras) return { accion: "ventana" };
+export function decidir({ horas, enviadas = [], canal = "api" }, reglas) {
+  // La ventana de 24 h es de Meta: solo aplica al WhatsApp API. El personal no la tiene.
+  if (canal === "api" && horas >= reglas.ventanaApiHoras) return { accion: "ventana" };
   const variante = variantePorTiempo(horas, reglas);
   if (!variante) {
     return { accion: "espera", faltaHoras: reglas.umbralesHoras[0] - horas, intento: 1 };
@@ -105,15 +106,27 @@ async function traer(url, key) {
   const codigos = etapas.map((e) => tipoDeEtapa(e.nombre, REGLAS_GLOBALES)).filter(Boolean);
   const claves = etapas.filter((e) => tipoDeEtapa(e.nombre, REGLAS_GLOBALES)).map((e) => e.clave);
   const conversaciones = await pedir(
-    "conversaciones?fuente=eq.meta_business&select=cliente_id,chatwoot_conversation_id,numero_whatsapp,ultimo_entrante_api_en,ultimo_mensaje_en,archivada,silenciado,clientes!inner(id,nombre,nombre_manual,estado,es_spam)&archivada=eq.false&limit=1000"
+    "conversaciones?fuente=eq.meta_business&select=cliente_id,chatwoot_conversation_id,numero_whatsapp,ultimo_entrante_api_en,ultimo_mensaje_en,archivada,silenciado,clientes!inner(id,nombre,nombre_manual,estado,estado_desde,es_spam)&archivada=eq.false&limit=1000"
+  );
+  const personales = await pedir(
+    "conversaciones?fuente=eq.evolution&select=cliente_id,chatwoot_conversation_id,chatwoot_conversation_ids,archivada,silenciado&limit=1000"
   );
   const registros = await pedir("recordatorios_whatsapp?select=cliente_id,etapa,tipo,plantilla,enviado_en&order=enviado_en.desc&limit=1000");
-  return { etapas, conversaciones, registros, tiposDetectados: codigos };
+  return { etapas, conversaciones, personales, registros, tiposDetectados: codigos };
 }
 
 let REGLAS_GLOBALES = null;
 
-export function preparar({ etapas, conversaciones, registros }, reglas, ahora) {
+export function preparar({ etapas, conversaciones, personales, registros }, reglas, ahora) {
+  // Chat de WhatsApp Personal por cliente (fuente = evolution): por ahí salen
+  // los recordatorios de «No contesta», sin la ventana de 24 h de Meta.
+  const personalPorCliente = new Map();
+  for (const f of personales || []) {
+    if (!f || !f.cliente_id || f.archivada === true || f.silenciado === true) continue;
+    if (personalPorCliente.has(f.cliente_id)) continue;
+    const ids = Array.isArray(f.chatwoot_conversation_ids) ? f.chatwoot_conversation_ids : [];
+    personalPorCliente.set(f.cliente_id, f.chatwoot_conversation_id || (ids.length ? ids[ids.length - 1] : null));
+  }
   const tipoPorClave = new Map();
   for (const e of etapas || []) {
     const tipo = tipoDeEtapa(e.nombre, reglas);
@@ -144,14 +157,23 @@ export function preparar({ etapas, conversaciones, registros }, reglas, ahora) {
     const tipo = tipoPorClave.get(String(cliente.estado || "").trim());
     if (!tipo) continue;
     const marca = c.ultimo_entrante_api_en || null;
-    const horas = marca ? (ahora.getTime() - new Date(marca).getTime()) / 3600000 : null;
+    // «No contesta» cuenta desde que el chat entró a la etapa; si falta esa
+    // columna (migración pendiente), se usa el último mensaje del cliente.
+    const marcaEtapa = tipo === "noContesta" ? cliente.estado_desde || null : null;
+    const reloj = marcaEtapa ? "etapa" : "mensaje";
+    const base = marcaEtapa || marca;
+    const horas = base ? (ahora.getTime() - new Date(base).getTime()) / 3600000 : null;
+    const chatPersonal = tipo === "noContesta" ? personalPorCliente.get(cliente.id) || null : null;
     filas.push({
       cliente: cliente.nombre_manual || cliente.nombre || "(sin nombre)",
       clienteId: cliente.id,
       etapa: tipo,
       nombreEtapa: (etapas.find((e) => String(e.clave) === String(cliente.estado)) || {}).nombre || cliente.estado,
       conversacionId: c.chatwoot_conversation_id,
-      marca,
+      canal: chatPersonal ? "personal" : "api",
+      chatDestino: chatPersonal || c.chatwoot_conversation_id,
+      reloj,
+      marca: base,
       horas,
       intentos: intentos.get(cliente.id + "|" + cliente.estado) || 0,
       enviadas: Array.from(enviadas.get(cliente.id + "|" + cliente.estado) || []).sort((a, b) => a - b),
@@ -167,7 +189,7 @@ export function informe(filas, reglas, ahora) {
   const salen = [], esperan = [], ventana = [], repetidas = [], sinMarca = [];
   for (const f of filas) {
     if (f.horas === null) { sinMarca.push(f); continue; }
-    const d = decidir({ horas: f.horas, enviadas: f.enviadas }, reglas);
+    const d = decidir({ horas: f.horas, enviadas: f.enviadas, canal: f.canal }, reglas);
     if (d.accion === "enviar") salen.push({ ...f, ...d });
     else if (d.accion === "espera") esperan.push({ ...f, ...d });
     else if (d.accion === "repetida") repetidas.push({ ...f, ...d });
@@ -200,8 +222,10 @@ export function imprimir({ salen, porLimite = [], esperan, repetidas, ventana, s
     " y " + reglas.etapasRecordatorio.noContesta.slice(0, 2).join("/") + " · variante a las " + reglas.umbralesHoras.join(" / ") + " h · ventana " + reglas.ventanaApiHoras + " h");
 
   console.log("\n✅ SALDRÍA AHORA (" + salen.length + ")");
-  console.log("  " + linea(["ETAPA", "CLIENTE", "SIN RESPONDER", "ENVÍA", "HISTÓRICOS"], [13, 30, 14, 13, 11]));
-  for (const f of salen) console.log("  " + linea([e(f.etapa), f.cliente, h(f.horas), "plantilla " + f.intento, f.intentos], [13, 30, 14, 13, 11]));
+  console.log("  " + linea(["ETAPA", "CLIENTE", "SIN RESPONDER", "ENVÍA", "CANAL", "CHAT", "HISTÓRICOS"], [13, 28, 14, 12, 12, 8, 11]));
+  for (const f of salen) {
+    console.log("  " + linea([e(f.etapa), f.cliente, h(f.horas), "plantilla " + f.intento, f.canal, f.chatDestino, f.intentos], [13, 28, 14, 12, 12, 8, 11]));
+  }
 
   if (repetidas.length) {
     console.log("\n🔁 YA SE ENVIÓ esa misma plantilla en las últimas 24 h (" + repetidas.length + ") — no se repite");

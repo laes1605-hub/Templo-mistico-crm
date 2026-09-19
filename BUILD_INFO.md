@@ -4,6 +4,35 @@
 **Commit:** (ver git log)
 **Branch:** arena/01a0ba5c-templo-mistico-crm
 
+## Build 2026-09-19 (v5): «No contesta» cuenta desde la etapa y sale por WhatsApp Personal
+
+**Problema:** «No contesta» contaba desde el último mensaje del cliente, no desde
+que el chat entra a esa pestaña; y si la ventana de 24 h de Meta ya estaba cerrada,
+esos clientes no recibían nada.
+
+### Arreglo
+
+- **Reloj de la etapa**: `supabase/migrations/20260921000002_estado_desde_recordatorios.sql`
+  agrega `clientes.estado_desde` (fecha de entrada a la etapa) y un trigger que la
+  actualiza en cada cambio de etapa. Los clientes que ya existían toman como fecha
+  de entrada su último mensaje por el WhatsApp API. «Datos» sigue contando desde el
+  último mensaje del cliente.
+- **Canal por etapa**: los recordatorios de «No contesta» salen por el chat de
+  **WhatsApp Personal** del cliente (conversación `fuente = evolution`), donde la
+  ventana de 24 h de Meta no existe. Si el cliente no tiene chat personal, se usa el
+  del API con su ventana, y si tampoco hay, se cuenta en
+  `conteo.omitidas.sinChatPersonal` con su aviso.
+- **Compatibilidad**: si la migración aún no está corrida, el nodo pide las
+  conversaciones sin `estado_desde`, sigue funcionando con el reloj del último
+  mensaje y lo avisa (`avisos`, `estadoDesdeDisponible = false`).
+- El diagnóstico suma `canalPorEtapa`, `relojPorEtapa`, `estadoDesdeDisponible`,
+  `conteo.enviadosPorPersonal` y `conteo.errorChatPersonal`.
+- `scripts/simular-recordatorios.mjs` refleja lo mismo: columna de canal y chat,
+  reloj de la etapa y sin ventana de 24 h para el WhatsApp Personal.
+- Verificación: **116 pruebas OK** (12 nuevas para «No contesta»: 20 min en la
+  etapa no sale, 40 min sale por el personal, 48 h → plantilla 4, sin chat personal
+  se omite con aviso, sin migración se usa el último mensaje).
+
 ## Build 2026-09-19: los recordatorios de WhatsApp API vuelven a salir (Supabase nuevo)
 
 **Problema:** los recordatorios automáticos de WhatsApp API no llegaban.
@@ -85,7 +114,7 @@
 - `npm run simular:recordatorios`: prueba en seco con datos reales (qué saldría, qué
   espera tiempo y qué queda fuera de la ventana de 24 h). Extrae las reglas del
   propio workflow, así que no puede desincronizarse.
-- Verificación: `npm run test:recordatorios` — **104 pruebas OK** sobre el código
+- Verificación: `npm run test:recordatorios` — **116 pruebas OK** sobre el código
   real de los nodos (Chatwoot y Supabase simulados), incluidas las consultas
   exactas validadas contra el proyecto real. Detalle en
   `n8n/03-README-recordatorios.md`.

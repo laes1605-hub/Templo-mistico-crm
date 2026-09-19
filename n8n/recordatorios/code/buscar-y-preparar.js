@@ -1,8 +1,9 @@
 // ============================================================================
 // RECORDATORIOS DE WHATSAPP API · nodo "Buscar clientes y preparar recordatorio"
 // ----------------------------------------------------------------------------
-// VERSIÓN 4 · 2026-09-19 · los candidatos salen de SUPABASE, no del listado de
-// Chatwoot (era lo que dejaba la pasada en uno o dos clientes).
+// VERSIÓN 5 · 2026-09-19 · los candidatos salen de SUPABASE, no del listado de
+// Chatwoot (era lo que dejaba la pasada en uno o dos clientes), «No contesta»
+// cuenta desde que el chat ENTRA a la etapa y se envía por el WhatsApp Personal.
 //
 // QUÉ HACE
 //   Cada 15 minutos revisa los chats del WhatsApp API (bandeja de Meta) que
@@ -31,6 +32,19 @@
 //   verificar la hora del último mensaje del cliente cuando el CRM registró
 //   actividad posterior. Esas verificaciones son pocas (las cuentas que hacen
 //   falta), no una por chat.
+//
+// CÓMO SE CUENTA EL TIEMPO EN CADA ETAPA (v5)
+//   · «Datos» → desde el último mensaje del cliente. Esa marca es también la que
+//     decide la ventana de 24 h del WhatsApp API (regla de Meta).
+//   · «No contesta» → desde que el chat ENTRÓ a la etapa: `clientes.estado_desde`,
+//     que mantiene el trigger de la migración 20260921000002. Así el reloj cuenta
+//     desde que se le intentó llamar, no desde el último mensaje. Si esa columna
+//     todavía no existe, se usa el último mensaje del cliente (y el diagnóstico lo
+//     avisa en `avisos` / `estadoDesdeDisponible`).
+//   · El recordatorio de «No contesta» se envía por el chat de WhatsApp Personal
+//     del cliente (fuente = evolution), porque esa etapa la atiende el personal y
+//     ahí NO existe la ventana de 24 h de Meta. Si el cliente no tiene chat
+//     personal, se usa el del API (con su ventana de 24 h).
 //
 // QUÉ MÁS SE ARREGLÓ HOY
 //   1. Salía UN recordatorio por pasada: los nodos Code leían «$input.item»
@@ -87,7 +101,7 @@ const sbHeaders = {
 const getJson = (url, headers) => this.helpers.httpRequest({ method: 'GET', url, headers, json: true });
 
 const ahora = Math.floor(Date.now() / 1000);
-const VERSION = 'recordatorios-api · 2026-09-19 · v4 (candidatos desde Supabase)';
+const VERSION = 'recordatorios-api · 2026-09-19 · v5 (No contesta por etapa + WhatsApp Personal)';
 
 // ---------------------------------------------------------------------------
 // 2) ETAPAS QUE GENERAN RECORDATORIO (se buscan por NOMBRE, nunca por clave)
@@ -219,7 +233,10 @@ const conteo = {
   llamadasChatwoot: 0,
   verificadosEnChatwoot: 0,
   recordatoriosPreparados: 0,
+  enviadosPorApi: 0,
+  enviadosPorPersonal: 0,
   enviosGuardados24h: 0,
+  errorChatPersonal: null,
   omitidas: {
     sinVinculoApi: 0,
     archivada: 0,
@@ -228,6 +245,7 @@ const conteo = {
     etapaSinRecordatorio: 0,
     sinConversacionChatwoot: 0,
     sinMensajesEntrantes: 0,
+    sinChatPersonal: 0,
     varianteYaEnviada: 0,
     porLimite: 0,
     esperandoTiempo: 0,
@@ -250,18 +268,60 @@ const omitir = (motivo, fila, horas) => {
   });
 };
 
+const COLUMNAS_CANDIDATAS =
+  '/rest/v1/conversaciones?select=id,cliente_id,chatwoot_conversation_id,chatwoot_conversation_ids,numero_whatsapp,estado,archivada,silenciado,ultimo_entrante_api_en,ultimo_mensaje_en,clientes!inner(id,nombre,nombre_manual,telefono,estado,es_spam';
+const colaCandidatas =
+  '&fuente=eq.meta_business&order=ultimo_entrante_api_en.asc.nullslast&limit=1000';
+
 let candidatas = [];
 let errorConversaciones = null;
+let sinEstadoDesde = false;
 try {
-  const respuesta = await getJson(
-    SUPABASE_URL +
-      '/rest/v1/conversaciones?select=id,cliente_id,chatwoot_conversation_id,chatwoot_conversation_ids,numero_whatsapp,estado,archivada,silenciado,ultimo_entrante_api_en,ultimo_mensaje_en,clientes!inner(id,nombre,nombre_manual,telefono,estado,es_spam)' +
-      '&fuente=eq.meta_business&order=ultimo_entrante_api_en.asc.nullslast&limit=1000',
-    sbHeaders
-  );
+  // `clientes.estado_desde` (fecha de entrada a la etapa) lo agrega la migración
+  // 20260921000002. Si todavía no se corrió, se reintenta sin esa columna para
+  // que el workflow siga funcionando (y el diagnóstico lo avisa).
+  const respuesta = await getJson(SUPABASE_URL + COLUMNAS_CANDIDATAS + ',estado_desde)' + colaCandidatas, sbHeaders);
   if (Array.isArray(respuesta)) candidatas = respuesta;
 } catch (error) {
-  errorConversaciones = (error && error.message) || 'error leyendo conversaciones';
+  try {
+    const respaldo = await getJson(SUPABASE_URL + COLUMNAS_CANDIDATAS + ')' + colaCandidatas, sbHeaders);
+    if (Array.isArray(respaldo)) candidatas = respaldo;
+    sinEstadoDesde = true;
+  } catch (error2) {
+    errorConversaciones = (error2 && error2.message) || (error && error.message) || 'error leyendo conversaciones';
+  }
+}
+
+// «No contesta» se atiende por el WhatsApp Personal: ahí no existe la ventana de
+// 24 h de Meta. Se busca, en UNA consulta, el chat de WhatsApp Personal
+// (fuente = evolution) de los clientes que están en esa etapa.
+const clientesSinContesta = [];
+for (const fila of candidatas) {
+  if (!fila || !fila.clientes || !fila.cliente_id) continue;
+  if (etapaDe(fila.clientes.estado) !== 'noContesta') continue;
+  if (clientesSinContesta.indexOf(fila.cliente_id) === -1) clientesSinContesta.push(fila.cliente_id);
+}
+const chatPersonalPorCliente = new Map();
+if (clientesSinContesta.length) {
+  try {
+    const filas = await getJson(
+      SUPABASE_URL +
+        '/rest/v1/conversaciones?select=cliente_id,chatwoot_conversation_id,chatwoot_conversation_ids,archivada,silenciado,ultimo_entrante_en&fuente=eq.evolution&cliente_id=in.(' +
+        clientesSinContesta.join(',') +
+        ')&limit=200',
+      sbHeaders
+    );
+    for (const fila of Array.isArray(filas) ? filas : []) {
+      if (!fila || fila.archivada === true || fila.silenciado === true) continue;
+      const ids = Array.isArray(fila.chatwoot_conversation_ids) ? fila.chatwoot_conversation_ids : [];
+      const id = fila.chatwoot_conversation_id || (ids.length ? ids[ids.length - 1] : null);
+      if (id && !chatPersonalPorCliente.has(fila.cliente_id)) {
+        chatPersonalPorCliente.set(fila.cliente_id, Number(id) || id);
+      }
+    }
+  } catch (error) {
+    conteo.errorChatPersonal = (error && error.message) || 'error buscando el chat personal';
+  }
 }
 
 // Envíos de las últimas 24 h, en UNA consulta: sirve para no repetir la misma
@@ -362,31 +422,34 @@ for (const fila of candidatas) {
       omitir('etapa sin recordatorio (' + String(cliente.estado || 'sin etapa') + ')', etiqueta, null);
       continue;
     }
-    if (!chat) {
+    // Canal por el que se atiende la etapa: «No contesta» va por el WhatsApp
+    // Personal (fuente = evolution), donde NO existe la ventana de 24 h de Meta.
+    // Las demás etapas siguen por el chat del WhatsApp API.
+    const chatPersonal = tipo === 'noContesta' ? chatPersonalPorCliente.get(cliente.id) || null : null;
+    const canal = chatPersonal ? 'personal' : 'api';
+    const chatDestino = canal === 'personal' ? chatPersonal : chat;
+    if (!chatDestino) {
       conteo.omitidas.sinConversacionChatwoot++;
       omitir('sin número de chat de Chatwoot', etiqueta, null);
       continue;
     }
 
     // Hora del último mensaje del cliente: la del CRM y, si hubo actividad
-    // después, confirmada contra Chatwoot.
+    // después, confirmada contra Chatwoot. Esta marca es la que decide la
+    // ventana de 24 h del API (regla de Meta).
     let marca = enSegundos(fila.ultimo_entrante_api_en);
     let fuenteTiempo = 'crm';
     const ultimoMensaje = enSegundos(fila.ultimo_mensaje_en);
     const actividadDespues =
       marca !== null && ultimoMensaje !== null && ultimoMensaje > marca + MARGEN_VERIFICACION_SEGUNDOS;
 
-    if (marca === null || actividadDespues) {
+    if (chat && (marca === null || actividadDespues)) {
       try {
         const verificada = await ultimaEntranteDeChatwoot(chat);
         if (verificada) {
           marca = verificada;
           fuenteTiempo = 'chatwoot';
           conteo.verificadosEnChatwoot++;
-        } else if (marca === null) {
-          conteo.omitidas.sinMensajesEntrantes++;
-          omitir('el cliente todavía no ha escrito', etiqueta, null);
-          continue;
         }
       } catch (error) {
         conteo.omitidas.verificacionFallida++;
@@ -395,28 +458,42 @@ for (const fila of candidatas) {
             'Chatwoot #' + chat + ': ' + ((error && error.message) || 'error') + ' (se usó la hora guardada en el CRM)'
           );
         }
-        if (marca === null) {
-          conteo.omitidas.sinMensajesEntrantes++;
-          omitir('sin hora de mensaje y Chatwoot no respondió', etiqueta, null);
-          continue;
-        }
       }
     }
+    if (marca === null) {
+      conteo.omitidas.sinMensajesEntrantes++;
+      omitir('el cliente todavía no ha escrito', etiqueta, null);
+      continue;
+    }
+    const horasDelMensaje = (ahora - marca) / 3600;
 
-    const horasDesdeRespuesta = (ahora * 1000 - marca * 1000) / 3600000;
-
-    // Fuera de la ventana de 24 h de WhatsApp API el texto libre no se entrega.
-    if (horasDesdeRespuesta >= VENTANA_API_HORAS) {
+    // Fuera de la ventana de 24 h el WhatsApp API no deja enviar texto libre.
+    // Por el WhatsApp Personal no hay ese límite.
+    if (canal === 'api' && tipo === 'noContesta' && horasDelMensaje >= VENTANA_API_HORAS) {
+      conteo.omitidas.sinChatPersonal++;
+      omitir('No contesta sin WhatsApp Personal y la ventana de 24 h del API ya venció', etiqueta, horasDelMensaje);
+      continue;
+    }
+    if (canal === 'api' && horasDelMensaje >= VENTANA_API_HORAS) {
       conteo.omitidas.ventanaCerrada++;
-      omitir('ventana de 24 h vencida', etiqueta, horasDesdeRespuesta);
+      omitir('ventana de 24 h vencida', etiqueta, horasDelMensaje);
       continue;
     }
 
+    // Reloj de la variante:
+    //   · Datos → desde el último mensaje del cliente.
+    //   · No contesta → desde que el chat ENTRÓ a la etapa (clientes.estado_desde),
+    //     porque ahí lo que importa es cuánto lleva esperando desde que se le
+    //     intentó llamar. Si la migración aún no está, se usa el último mensaje.
+    const marcaEtapa = tipo === 'noContesta' ? enSegundos(cliente.estado_desde) : null;
+    const reloj = marcaEtapa !== null ? 'etapa' : 'mensaje';
+    const horas = reloj === 'etapa' ? (ahora - marcaEtapa) / 3600 : horasDelMensaje;
+
     // Variante que le toca por el tiempo que lleva sin contestar.
-    const variante = variantePorTiempo(horasDesdeRespuesta);
+    const variante = variantePorTiempo(horas);
     if (!variante) {
       conteo.omitidas.esperandoTiempo++;
-      omitir('todavía no cumple los 30 min', etiqueta, horasDesdeRespuesta);
+      omitir('todavía no cumple los 30 min', etiqueta, horas);
       continue;
     }
 
@@ -425,7 +502,7 @@ for (const fila of candidatas) {
     // repite el mismo mensaje mientras la ventana siga abierta.
     if (enviosRecientes.has(claveEnvio(cliente.id, cliente.estado, variante))) {
       conteo.omitidas.varianteYaEnviada++;
-      omitir('la variante ' + variante + ' ya se envió en las últimas 24 h', etiqueta, horasDesdeRespuesta);
+      omitir('la variante ' + variante + ' ya se envió en las últimas 24 h', etiqueta, horas);
       continue;
     }
 
@@ -436,22 +513,27 @@ for (const fila of candidatas) {
     ).replace(/[^0-9]/g, '');
     if (!telefono || !mensaje) {
       conteo.omitidas.sinTelefono++;
-      omitir('sin teléfono', etiqueta, horasDesdeRespuesta);
+      omitir('sin teléfono', etiqueta, horas);
       continue;
     }
 
+    if (canal === 'personal') conteo.enviadosPorPersonal++;
+    else conteo.enviadosPorApi++;
+
     listas.push({
       json: {
-        conversationId: Number(chat) || chat,
+        conversationId: Number(chatDestino) || chatDestino,
         conversacionId: fila.id,
         clienteId: cliente.id,
         etapa: tipo,
         estado: cliente.estado,
+        canal: canal,
         telefono: telefono,
         mensaje: mensaje,
         intento: variante,
         nombre: primerNombre,
-        horasDesdeRespuesta: Number(horasDesdeRespuesta.toFixed(1)),
+        horasDesdeRespuesta: Number(horas.toFixed(1)),
+        reloj: reloj,
         fuenteTiempo: fuenteTiempo
       }
     });
@@ -513,6 +595,20 @@ if (conteo.omitidas.porLimite > 0) {
     conteo.omitidas.porLimite + ' para la siguiente pasada, dentro de 15 minutos.'
   );
 }
+if (sinEstadoDesde) {
+  avisos.push(
+    'Falta la columna clientes.estado_desde (migración 20260921000002): «No contesta» todavía cuenta desde el último mensaje del cliente.'
+  );
+}
+if (conteo.errorChatPersonal) {
+  avisos.push('No se pudo buscar el chat de WhatsApp Personal de los clientes de «No contesta»: ' + conteo.errorChatPersonal);
+}
+if (conteo.omitidas.sinChatPersonal > 0) {
+  avisos.push(
+    'Hay ' + conteo.omitidas.sinChatPersonal + ' chat(s) de «No contesta» sin WhatsApp Personal y con la ventana del API cerrada: ' +
+    'esos no tienen por dónde recibir el recordatorio.'
+  );
+}
 if (conteo.omitidas.silenciado > 0) {
   avisos.push('Hay ' + conteo.omitidas.silenciado + ' chat(s) silenciados en el CRM: no reciben recordatorio hasta que los reactives.');
 }
@@ -530,6 +626,7 @@ const resumen =
   ' · en espera (<30 min): ' + conteo.omitidas.esperandoTiempo +
   ' · fuera de etapa: ' + conteo.omitidas.etapaSinRecordatorio +
   ' · pausados/archivados/spam: ' + (conteo.omitidas.silenciado + conteo.omitidas.archivada + conteo.omitidas.spam) +
+  ' · por WhatsApp Personal: ' + conteo.enviadosPorPersonal +
   ' · enviados guardados (24 h): ' + conteo.enviosGuardados24h;
 
 // Ítem de diagnóstico: siempre se envía al final para poder ver en n8n por qué
@@ -543,6 +640,13 @@ salidas.push({
     fuenteDeDatos:
       'Supabase: conversaciones (fuente = meta_business) + clientes.estado. ' +
       'Ya no depende del listado de Chatwoot, así que ni su paginación ni sus páginas pueden cortar la pasada.',
+    canalPorEtapa:
+      'Datos → WhatsApp API (ventana de 24 h de Meta). ' +
+      'No contesta → WhatsApp Personal (sin ventana), y si el cliente no tiene chat personal se usa el del API.',
+    relojPorEtapa:
+      'Datos → desde el último mensaje del cliente. ' +
+      'No contesta → desde que el chat entró a la etapa (clientes.estado_desde); si falta esa fecha, desde el último mensaje.',
+    estadoDesdeDisponible: !sinEstadoDesde,
     estadosDeLaEtapa: 'Se buscan por NOMBRE en todo el pipeline (ya no se exige grupo = templo).',
     pausasQueApagan: [
       'conversaciones.silenciado = true',

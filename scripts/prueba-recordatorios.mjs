@@ -103,8 +103,21 @@ function servidorFalso(cfg = {}) {
         // Igual que PostgREST: la consulta del nodo trae TODAS las filas del API
         // con su cliente (una sola llamada); si piden un chat concreto, esa.
         if (cfg.errorConversaciones) throw new Error("relation conversaciones does not exist");
+        // La migración que agrega clientes.estado_desde puede no estar corrida.
+        if (cfg.errorEstadoDesde && url.includes("estado_desde")) {
+          throw new Error("column clientes.estado_desde does not exist");
+        }
+        const fuente = String(q.get("fuente") || "").replace(/^eq\./, "");
+        const ids = String(q.get("cliente_id") || "")
+          .replace(/^in\.\(/, "")
+          .replace(/\)$/, "")
+          .split(",")
+          .filter(Boolean);
+        let todas = fuente === "evolution"
+          ? cfg.personales || []
+          : Array.isArray(cfg.convs) ? cfg.convs : Object.values(cfg.convs || {});
+        if (ids.length) todas = todas.filter((f) => ids.indexOf(f.cliente_id) !== -1);
         const cw = String(q.get("chatwoot_conversation_id") || "").replace(/^eq\./, "");
-        const todas = Array.isArray(cfg.convs) ? cfg.convs : Object.values(cfg.convs || {});
         return cw ? todas.filter((f) => String(f.chatwoot_conversation_id) === cw) : todas;
       }
       if (p.endsWith("/recordatorios_whatsapp")) {
@@ -353,6 +366,69 @@ grupo("2) Qué chats entran (fuente meta_business, sin depender de Chatwoot)");
   );
   check("Sin Chatwoot igual se envía con la hora del CRM", r.recordatorios.length === 1 && r.recordatorios[0].fuenteTiempo === "crm");
   check("Y el diagnóstico deja el error visible", (r.diagnostico.errores || []).some((e) => /Chatwoot/.test(e)));
+}
+
+// ---------------------------------------------------------------------------
+// 2b) «No contesta»: reloj desde que entra a la etapa y envío por WhatsApp Personal
+// ---------------------------------------------------------------------------
+grupo("2b) «No contesta»: reloj por etapa y envío por el WhatsApp Personal");
+
+const chatPersonal = () => [
+  { cliente_id: "cli-1", chatwoot_conversation_id: 273, chatwoot_conversation_ids: ["273"], archivada: false, silenciado: false, ultimo_entrante_en: null },
+];
+const enNoContesta = (horasEtapa, horasMensaje, extra = {}) =>
+  escenario({
+    convs: [filaConHoras(horasMensaje, {}, { estado: "etapa_templo_1787618330816", estado_desde: iso(hace(horasEtapa)), ...extra })],
+    personales: chatPersonal(),
+  });
+
+{
+  const r = await ejecutarBuscar(enNoContesta(0.33, 30));
+  check(
+    "Con 20 min en la etapa todavía no sale (aunque su mensaje sea de hace 30 h)",
+    r.recordatorios.length === 0 && r.diagnostico.conteo.omitidas.esperandoTiempo === 1
+  );
+}
+{
+  const r = await ejecutarBuscar(enNoContesta(0.67, 30));
+  check("40 min en la etapa → plantilla 1", r.recordatorios[0]?.intento === 1, "intento: " + r.recordatorios[0]?.intento);
+  check("Se envía por el chat de WhatsApp Personal", r.recordatorios[0]?.canal === "personal" && r.recordatorios[0]?.conversationId === 273);
+  check("El reloj es el de la etapa", r.recordatorios[0]?.reloj === "etapa");
+  check(
+    "La ventana de 24 h del API ya no bloquea ese recordatorio",
+    r.diagnostico.conteo.omitidas.ventanaCerrada === 0 && r.diagnostico.conteo.enviadosPorPersonal === 1
+  );
+}
+{
+  const r = await ejecutarBuscar(enNoContesta(48, 80));
+  check("Dos días en «No contesta» → plantilla 4 por el personal", r.recordatorios[0]?.intento === 4 && r.recordatorios[0]?.canal === "personal");
+}
+{
+  const r = await ejecutarBuscar(
+    escenario({ convs: [filaConHoras(30, {}, { estado: "etapa_templo_1787618330816", estado_desde: iso(hace(48)) })], personales: [] })
+  );
+  check(
+    "Sin WhatsApp Personal y ventana cerrada se omite con motivo",
+    r.recordatorios.length === 0 && r.diagnostico.conteo.omitidas.sinChatPersonal === 1
+  );
+  check("Y el aviso lo explica", (r.diagnostico.avisos || []).some((a) => /WhatsApp Personal/.test(a)));
+}
+{
+  const r = await ejecutarBuscar(
+    escenario({ convs: [filaConHoras(5, {}, { estado: "etapa_templo_1787618330816", estado_desde: iso(hace(1)) })], personales: [] })
+  );
+  check("Sin WhatsApp Personal se usa el chat del API (con su ventana)", r.recordatorios[0]?.canal === "api" && r.recordatorios[0]?.intento === 1);
+}
+{
+  // «Datos» sigue contando desde el último mensaje del cliente.
+  const r = await ejecutarBuscar(escenario({ convs: [filaConHoras(5)], personales: chatPersonal() }));
+  check("«Datos» no usa el reloj de la etapa ni el canal personal", r.recordatorios[0]?.reloj === "mensaje" && r.recordatorios[0]?.canal === "api" && r.recordatorios[0]?.intento === 2);
+}
+{
+  // Migración pendiente: el nodo reintenta sin la columna y sigue funcionando.
+  const r = await ejecutarBuscar(escenario({ errorEstadoDesde: true }));
+  check("Si falta clientes.estado_desde el workflow sigue funcionando", r.recordatorios.length === 1 && r.diagnostico.estadoDesdeDisponible === false);
+  check("Y el aviso lo dice", (r.diagnostico.avisos || []).some((a) => /estado_desde/.test(a)));
 }
 
 // ---------------------------------------------------------------------------

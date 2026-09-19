@@ -9,7 +9,7 @@ Archivos:
 - `recordatorios/CODIGO-PARA-PEGAR.md`: **los tres nodos completos con las llaves dentro**, para copiar y pegar a mano en n8n.
 - `recordatorios/code/*.js`: código real de los tres nodos Code (aquí se edita, no dentro del JSON).
 - `scripts/simular-recordatorios.mjs`: prueba en seco con los datos reales (`npm run simular:recordatorios`).
-- `scripts/prueba-recordatorios.mjs`: 104 pruebas sobre el código de los nodos (`npm run test:recordatorios`).
+- `scripts/prueba-recordatorios.mjs`: 116 pruebas sobre el código de los nodos (`npm run test:recordatorios`).
 - `supabase/migrations/20260825000002_recordatorios_whatsapp_etapa.sql`: tabla de auditoría e idempotencia (ya viene incluida en `MIGRAR-A-NUEVO-SUPABASE.sql`, bloque `[04/26]`).
 
 ---
@@ -67,6 +67,20 @@ cliente):
 La misma plantilla **no se repite dentro de las 24 h** siguientes (el ciclo corre
 cada 15 minutos) y la pasada tiene un tope de seguridad de **60 envíos**: lo que
 sobra sale en la siguiente pasada.
+
+**Qué reloj usa cada etapa (v5).**
+
+| Etapa | Reloj | Canal |
+| --- | --- | --- |
+| Datos | desde el **último mensaje del cliente** | WhatsApp API (ventana de 24 h de Meta) |
+| No contesta | desde que el chat **entró a la etapa** (`clientes.estado_desde`) | **WhatsApp Personal** (sin ventana) |
+
+Para «No contesta» el CRM guarda la fecha de entrada con el trigger de
+`supabase/migrations/20260921000002_estado_desde_recordatorios.sql`. Si esa
+migración todavía no está corrida, el workflow funciona igual, cuenta desde el
+último mensaje y lo avisa en `avisos` (`estadoDesdeDisponible = false`).
+Los clientes de «No contesta» que ya existían toman como fecha de entrada su
+último mensaje por el WhatsApp API, así nadie recibe un recordatorio de golpe.
 
 **Causa 3: las etapas se buscaban con un filtro que ya no aplicaba.**
 
@@ -145,7 +159,7 @@ simulador: se extraen del propio workflow, así que no pueden desincronizarse.
 - No repite la misma plantilla dentro de las 24 h siguientes y no pasa de **60 envíos por pasada** (el resto sale en la siguiente).
 - **Ya no se leen etiquetas de Chatwoot.** El silencio lo decide el CRM: `conversaciones.silenciado = true`, el cliente marcado como `es_spam`, la conversación archivada o una etapa que no es de recordatorio.
 - **`bot-pausado` no silencia** (a propósito, y ya no aplica): Luna deja esa etiqueta justo cuando envía la lista de requisitos y pasa el chat a **Datos**, es decir, marca exactamente a los clientes que deben recibir el recordatorio de datos. Vetarla dejaba fuera 102 chats abiertos del CRM. Para pausar los recordatorios de un chat, silencia la conversación en el CRM.
-- No envía si la **ventana de 24 h** del WhatsApp API ya se cerró.
+- No envía si la **ventana de 24 h** del WhatsApp API ya se cerró (en «No contesta» eso no aplica: va por el WhatsApp Personal).
 - Registra cada envío en `recordatorios_whatsapp`; la restricción única evita duplicados del mismo día, etapa, tipo e intento. Los envíos antiguos guardados como `sinRespuesta`, `noContesta` o `no_contesta` cuentan igual para no repetir.
 - No cierra ni marca como perdido automáticamente a ningún cliente.
 
@@ -171,10 +185,13 @@ descartados con su motivo y sus horas) y `avisos`.
 2. Abre la última ejecución y mira el último ítem de **Buscar clientes y preparar recordatorio**
    (el del diagnóstico). Empieza por **`resumen`**: dice en una línea cuántos chats revisó,
    cuántos recordatorios van a salir y cuántos quedaron fuera por cada motivo. Después:
-   - `version` debe contener `2026-09-19 · v4`: si no, ese nodo todavía tiene el código viejo.
+   - `version` debe contener `2026-09-19 · v5`: si no, ese nodo todavía tiene el código viejo.
    - `conteo.recordatoriosPreparados > 0` y `avisos` sin nada grave → salió (revisa el nodo de envío).
    - `avisos` menciona una etapa → revisa Pipeline → Configurar etapas (nombre visible).
    - `conteo.omitidas.ventanaCerrada` alto → esos chats deben atenderse por WhatsApp Personal (etapa Vencidos).
+   - `conteo.omitidas.sinChatPersonal` alto → clientes de «No contesta» sin chat de WhatsApp Personal: no tienen por dónde recibir el aviso.
+   - `estadoDesdeDisponible: false` → falta correr `20260921000002_estado_desde_recordatorios.sql`; «No contesta» está contando desde el último mensaje.
+   - `conteo.enviadosPorPersonal` → cuántos de esta pasada salen por el WhatsApp Personal.
    - `omitidasPorChat` dice, chat por chat, por qué no salió (ventana vencida, ya enviado, en espera, silenciado…).
 3. En Supabase, confirma que hay envíos nuevos:
 
@@ -193,7 +210,7 @@ descartados con su motivo y sus horas) y `avisos`.
 ## Mantenimiento
 
 ```bash
-npm run test:recordatorios   # 104 pruebas sobre el código real de los nodos
+npm run test:recordatorios   # 116 pruebas sobre el código real de los nodos
 npm run build:recordatorios  # regenera el JSON importable desde recordatorios/code/*.js
 ```
 

@@ -18,7 +18,12 @@ import { fileURLToPath } from "node:url";
 
 const raiz = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const RUTA_WORKFLOW = path.join(raiz, "n8n", "03-recordatorios-whatsapp-por-etapa.json");
+const RUTA_SQL = path.join(raiz, "supabase", "migrations", "20260921000002_estado_desde_recordatorios.sql");
 const PUERTO = Number(process.env.PORT || 4173);
+
+function leerSql() {
+  return fs.readFileSync(RUTA_SQL, "utf8");
+}
 
 function leerWorkflow() {
   const json = fs.readFileSync(RUTA_WORKFLOW, "utf8");
@@ -76,13 +81,17 @@ const PAGINA = `<!doctype html>
   <div class="pasos">
     <h2>Cómo importarlo</h2>
     <ol>
+      <li><b>Primero, una sola vez:</b> copia el <b>SQL de abajo</b> y pégalo en Supabase →
+          <b>SQL Editor</b> → <b>Run</b>. Guarda la fecha en la que cada chat entra a su etapa, que es
+          lo que usa el recordatorio de «No contesta». Si todavía no lo corres, el workflow igual
+          funciona (lo avisa en <code>avisos</code>), pero «No contesta» cuenta desde el último mensaje.</li>
       <li>n8n → <b>Workflows</b> → menú <b>⋯</b> → <b>Import from File…</b> y elige el archivo descargado.
           <br>O bien: <b>Import from Clipboard</b> después de pulsar «Copiar JSON completo».</li>
       <li>Abre el workflow y pulsa <b>Execute Workflow</b> una sola vez.</li>
       <li>Revisa la salida del primer nodo: el <b>último ítem</b> trae el diagnóstico
           (<code>_diagnostico: true</code>). Empieza por <code>resumen</code>, que dice en una línea
           cuántos chats revisó y cuántos recordatorios van a salir. <code>version</code> debe contener
-          <code>2026-09-19 · v4</code>: si no, ese nodo todavía tiene el código viejo.</li>
+          <code>2026-09-19 · v5</code>: si no, ese nodo todavía tiene el código viejo.</li>
       <li><b>Actívalo</b> y <b>desactiva/borra el workflow viejo</b> de recordatorios (y cualquier nodo
           duplicado con «1» al final) para no duplicar envíos.</li>
       <li>Este JSON <b>ya no lleva el nodo «Procesar uno a uno»</b>: la cadena es
@@ -90,9 +99,24 @@ const PAGINA = `<!doctype html>
       <li>Los candidatos salen de <b>Supabase</b> (tabla <code>conversaciones</code>), no del listado de
           Chatwoot: una sola consulta trae todos los chats del API. Chatwoot solo se usa para
           enviar y para verificar alguna hora suelta.</li>
+      <li><b>«Datos»</b> cuenta desde el último mensaje del cliente y se envía por el WhatsApp API
+          (con la ventana de 24 h de Meta). <b>«No contesta»</b> cuenta desde que el chat entró a esa
+          pestaña y se envía por el <b>WhatsApp Personal</b>, donde esa ventana no existe.</li>
     </ol>
     <p class="aviso">⚠️ Este archivo contiene la service_role de Supabase y el token de Chatwoot. No compartas
     esta URL fuera del equipo y rota esas llaves cuando puedas.</p>
+  </div>
+
+  <div class="pasos">
+    <h2>SQL para «No contesta» (correr una vez en Supabase)</h2>
+    <div class="barra">
+      <button id="copiarSql">📋 Copiar SQL</button>
+      <a class="boton secundario" href="/estado-desde.sql" download="estado-desde-recordatorios.sql">⬇️ Descargar .sql</a>
+      <span class="ok" id="okSql"></span>
+    </div>
+    <textarea id="sql" spellcheck="false" readonly aria-label="SQL de la migración" style="height:34vh">SQL_AQUI</textarea>
+    <p class="sub" style="margin-top:10px">Agrega <code>clientes.estado_desde</code> y un trigger que lo actualiza
+    cada vez que un cliente cambia de etapa. Es idempotente: puedes correrlo las veces que quieras.</p>
   </div>
 </main>
 <script>
@@ -122,9 +146,27 @@ const PAGINA = `<!doctype html>
     }
     setTimeout(() => { ok.textContent = ""; }, 6000);
   });
+
+  const cajaSql = document.getElementById("sql");
+  const okSql = document.getElementById("okSql");
+  document.getElementById("copiarSql").addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(cajaSql.value);
+      okSql.textContent = "✅ SQL copiado. Pégalo en Supabase → SQL Editor → Run.";
+    } catch (e) {
+      cajaSql.removeAttribute("readonly");
+      cajaSql.select();
+      document.execCommand("copy");
+      cajaSql.setAttribute("readonly", "readonly");
+      okSql.textContent = "✅ SQL copiado (respaldo del navegador).";
+    }
+    setTimeout(() => { okSql.textContent = ""; }, 6000);
+  });
 </script>
 </body>
 </html>`;
+
+const PAGINA_FINAL = PAGINA.replace("SQL_AQUI", leerSql().replace(/<\/script>/g, "<\\/script>"));
 
 const servidor = http.createServer((req, res) => {
   const url = new URL(req.url, "http://localhost");
@@ -153,9 +195,23 @@ const servidor = http.createServer((req, res) => {
     return;
   }
 
+  if (url.pathname === "/estado-desde.sql") {
+    let sql;
+    try {
+      sql = leerSql();
+    } catch (error) {
+      res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("No se pudo leer el SQL: " + error.message);
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" });
+    res.end(sql);
+    return;
+  }
+
   if (url.pathname === "/" || url.pathname === "/index.html") {
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
-    res.end(PAGINA);
+    res.end(PAGINA_FINAL);
     return;
   }
 

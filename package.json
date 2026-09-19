@@ -20,6 +20,7 @@
     "servir:recordatorios": "node scripts/servir-recordatorios.mjs",
     "check:luna": "node scripts/validar-workflow-luna.mjs",
     "test:recordatorios": "node scripts/prueba-recordatorios.mjs",
+    "simular:recordatorios": "node scripts/simular-recordatorios.mjs",
     "test:tiempo": "node scripts/prueba-tiempo-chat.mjs",
     "test:eliminar": "sucrase-node scripts/prueba-eliminar-cliente.ts",
     "test:eliminar:sql": "node scripts/prueba-eliminar-cliente-sql.mjs",

@@ -8,7 +8,8 @@ Archivos:
 - `03-recordatorios-whatsapp-por-etapa.json`: workflow importable en n8n (se genera con `npm run build:recordatorios`).
 - `recordatorios/CODIGO-PARA-PEGAR.md`: **los tres nodos completos con las llaves dentro**, para copiar y pegar a mano en n8n.
 - `recordatorios/code/*.js`: código real de los tres nodos Code (aquí se edita, no dentro del JSON).
-- `scripts/prueba-recordatorios.mjs`: 71 pruebas sobre el código de los nodos (`npm run test:recordatorios`).
+- `scripts/simular-recordatorios.mjs`: prueba en seco con los datos reales (`npm run simular:recordatorios`).
+- `scripts/prueba-recordatorios.mjs`: 88 pruebas sobre el código de los nodos (`npm run test:recordatorios`).
 - `supabase/migrations/20260825000002_recordatorios_whatsapp_etapa.sql`: tabla de auditoría e idempotencia (ya viene incluida en `MIGRAR-A-NUEVO-SUPABASE.sql`, bloque `[04/26]`).
 
 ---
@@ -95,11 +96,23 @@ Ahora:
 
 ---
 
+## Prueba en seco (ver qué va a enviar, sin enviar nada)
+
+```bash
+npm run simular:recordatorios
+```
+
+Consulta Supabase y muestra tres listas: **lo que saldría ahora** (cliente, etapa,
+horas sin responder, qué plantilla y cuántos envíos lleva), **lo que espera tiempo**
+(con cuánto falta) y **lo que no se toca** (fuera de la ventana de 24 h del WhatsApp
+API → se atienden por el WhatsApp Personal). Las reglas no están escritas en el
+simulador: se extraen del propio workflow, así que no pueden desincronizarse.
+
 ## Comportamiento
 
 - Revisa solo **conversaciones abiertas** de Chatwoot (máx. 500) vinculadas en Supabase con `fuente = 'meta_business'`.
 - **Lead nuevo queda excluido**: no recibe ningún recordatorio.
-- Solo actúa en las etapas cuyo **nombre visible** sea **Datos** o **Sin respuesta / No contesta**. El nombre se compara sin acentos ni mayúsculas y acepta sufijos («Datos (API)»).
+- Solo actúa en las etapas cuyo **nombre visible** sea **Datos** o **Sin respuesta / No contesta**: en cualquier otra etapa (incluido **Nuevo Lead**) no envía nada. El nombre se compara sin acentos ni mayúsculas y acepta sufijos («Datos (API)»).
 - Busca la última respuesta entrante del cliente en los mensajes de Chatwoot. El cronómetro corre desde esa respuesta, aunque después haya respondido el agente.
 - Envía como máximo **cuatro mensajes por cliente y etapa**: 30 min, 3 h, 12 h y 23 h 30 min.
 - No envía a spam, archivados, `bot-pausado`, `recordatorios-pausados`, `lead-perdido` ni `perdido` (las etiquetas se comparan con cualquier separador: `bot-pausado` = `Bot Pausado`).

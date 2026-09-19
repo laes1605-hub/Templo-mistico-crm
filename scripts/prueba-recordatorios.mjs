@@ -15,7 +15,8 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { extraerReglas, decidir, preparar, informe, tipoDeEtapa } from "./simular-recordatorios.mjs";
 
 const raiz = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const RUTA_WORKFLOW = path.join(raiz, "n8n", "03-recordatorios-whatsapp-por-etapa.json");
@@ -570,6 +571,76 @@ check("Conserva los tres nodos Code y el bucle uno a uno", ["Buscar clientes y p
   for (const [nombre, jsCode] of Object.entries({ "Buscar clientes y preparar recordatorio": CODIGO.buscar, "Enviar por WhatsApp API": CODIGO.enviar, "Registrar envío e impedir duplicados": CODIGO.registrar })) {
     check("El bloque de «" + nombre + "» coincide con el nodo del workflow", contenido.includes(jsCode));
   }
+}
+
+
+// ---------------------------------------------------------------------------
+// 8) Simulador (prueba en seco): mismas reglas que n8n
+// ---------------------------------------------------------------------------
+grupo("8) Simulador de prueba en seco");
+
+{
+  const reglas = extraerReglas();
+  check("Extrae los umbrales del propio workflow", JSON.stringify(reglas.umbralesHoras) === "[0.5,3,12,23.5]", JSON.stringify(reglas.umbralesHoras));
+  check("Extrae la ventana de 24 h del propio workflow", reglas.ventanaApiHoras === 24);
+  check("Solo Datos y No contesta generan recordatorio", tipoDeEtapa("Datos", reglas) === "datos" && tipoDeEtapa("No contesta", reglas) === "noContesta");
+  check("«Nuevo Lead» y las demás etapas NO generan recordatorio", tipoDeEtapa("Nuevo Lead", reglas) === null && tipoDeEtapa("En Consulta", reglas) === null && tipoDeEtapa("Trabajo Completado", reglas) === null);
+  check("«Sin respuesta» (nombre alternativo) también es no contesta", tipoDeEtapa("Sin respuesta", reglas) === "noContesta");
+  check("El nombre se reconoce sin acentos ni mayúsculas y con sufijos", tipoDeEtapa("DATOS (API)", reglas) === "datos");
+
+  // La decisión del simulador debe coincidir con la del nodo (misma tabla del grupo 3).
+  const casos = [
+    { horas: 0.33, intentos: 0, esperado: "espera" },
+    { horas: 0.6, intentos: 0, esperado: "enviar", intento: 1 },
+    { horas: 4, intentos: 1, esperado: "enviar", intento: 2 },
+    { horas: 13, intentos: 2, esperado: "enviar", intento: 3 },
+    { horas: 23.7, intentos: 3, esperado: "enviar", intento: 4 },
+    { horas: 25, intentos: 0, esperado: "ventana" },
+    { horas: 10, intentos: 4, esperado: "completo" },
+  ];
+  for (const c of casos) {
+    const d = decidir({ horas: c.horas, intentos: c.intentos }, reglas);
+    check(
+      "A " + c.horas + " h con " + c.intentos + " enviados → " + c.esperado + (c.intento ? " (plantilla " + c.intento + ")" : ""),
+      d.accion === c.esperado && (!c.intento || d.intento === c.intento),
+      JSON.stringify(d)
+    );
+  }
+}
+
+{
+  // preparar(): cruza etapas + conversaciones + envíos previos como lo hace n8n.
+  const reglas = extraerReglas();
+  const etapas = [
+    { clave: "etapa_1", nombre: "Datos", es_spam: false, es_archivado: false },
+    { clave: "etapa_2", nombre: "No contesta", es_spam: false, es_archivado: false },
+    { clave: "nuevo_lead", nombre: "Nuevo Lead", es_spam: false, es_archivado: false },
+  ];
+  const conversaciones = [
+    { cliente_id: "c1", chatwoot_conversation_id: 1, ultimo_entrante_api_en: "2026-09-19T13:00:00Z", clientes: { id: "c1", nombre: "Ana", estado: "etapa_1", es_spam: false } },
+    { cliente_id: "c2", chatwoot_conversation_id: 2, ultimo_entrante_api_en: "2026-09-19T13:00:00Z", clientes: { id: "c2", nombre: "Luis", estado: "etapa_2", es_spam: false } },
+    { cliente_id: "c3", chatwoot_conversation_id: 3, ultimo_entrante_api_en: "2026-09-19T13:00:00Z", clientes: { id: "c3", nombre: "Sin etapa", estado: "nuevo_lead", es_spam: false } },
+    { cliente_id: "c4", chatwoot_conversation_id: 4, ultimo_entrante_api_en: "2026-09-19T13:00:00Z", clientes: { id: "c4", nombre: "Spam", estado: "etapa_1", es_spam: true } },
+  ];
+  const registros = [
+    // Envío histórico con la variante antigua: debe contar para no repetir.
+    { cliente_id: "c2", etapa: "etapa_2", tipo: "sinRespuesta", plantilla: 1, enviado_en: "2026-08-27T15:15:17Z" },
+  ];
+  const ahora = new Date("2026-09-19T19:00:00Z");
+  const filas = preparar({ etapas, conversaciones, registros }, reglas, ahora);
+
+  check("Solo entran los clientes de Datos y No contesta (no Nuevo Lead ni spam)", filas.length === 2, "filas: " + filas.length);
+  const ana = filas.find((f) => f.cliente === "Ana");
+  const luis = filas.find((f) => f.cliente === "Luis");
+  check("Calcula las horas sin responder desde el último mensaje del cliente", ana.horas === 6);
+  check("Cuenta los envíos previos aunque estén guardados como «sinRespuesta»", luis.intentos === 1 && luis.etapa === "noContesta");
+
+  const rep = informe(filas, reglas, ahora);
+  check(
+    "El informe asigna el intento según los envíos previos (Ana 1.º, Luis 2.º)",
+    rep.salen.length === 2 && rep.salen.find((f) => f.cliente === "Ana").intento === 1 && rep.salen.find((f) => f.cliente === "Luis").intento === 2,
+    JSON.stringify(rep.salen.map((f) => [f.cliente, f.intento]))
+  );
 }
 
 // ---------------------------------------------------------------------------

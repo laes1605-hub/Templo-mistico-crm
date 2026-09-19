@@ -51,7 +51,10 @@
   llaves dentro para copiar y pegar a mano en n8n.
 - El código de los nodos ya no vive dentro del JSON: se edita en
   `n8n/recordatorios/code/*.js` y se regenera con `npm run build:recordatorios`.
-- Verificación: `npm run test:recordatorios` — **71 pruebas OK** sobre el código
+- `npm run simular:recordatorios`: prueba en seco con datos reales (qué saldría, qué
+  espera tiempo y qué queda fuera de la ventana de 24 h). Extrae las reglas del
+  propio workflow, así que no puede desincronizarse.
+- Verificación: `npm run test:recordatorios` — **88 pruebas OK** sobre el código
   real de los nodos (Chatwoot y Supabase simulados), incluidas las consultas
   exactas validadas contra el proyecto real. Detalle en
   `n8n/03-README-recordatorios.md`.

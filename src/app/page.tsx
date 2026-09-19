@@ -591,7 +591,7 @@ export default function CRMApp() {
   useEffect(() => {
     const onVis = () => {
       if (typeof document !== "undefined" && document.visibilityState === "visible" && selectedConvRef.current) {
-        marcarLeido(selectedConvRef.current.id);
+        marcarLeido(selectedConvRef.current);
       }
     };
     document.addEventListener("visibilitychange", onVis);
@@ -601,6 +601,8 @@ export default function CRMApp() {
   // ===================== NOTIFICACIONES DE MENSAJES ENTRANTES =====================
   const conversacionesRef = useRef<any[]>([]);
   const selectedConvRef = useRef<any | null>(null);
+  // Marca local de chats recién leídos (evita que un fetch con datos viejos los haga reaparecer 2s después)
+  const leidosRecientesRef = useRef<Map<string, number>>(new Map());
   useEffect(() => { conversacionesRef.current = conversaciones; }, [conversaciones]);
   useEffect(() => { selectedConvRef.current = selectedConv; }, [selectedConv]);
 
@@ -1326,9 +1328,64 @@ export default function CRMApp() {
   // ===================== MENSAJES NO LEÍDOS =====================
   // El contador solo se limpia cuando el operador abre/revisa el chat.
   // La respuesta de la agente (tipo "enviado") no cuenta y no lo limpia.
-  async function marcarLeido(convId: string) {
-    try { await supabase.rpc("marcar_leido", { p_conv_id: convId }); } catch {}
-    setConversaciones(prev => prev.map(c => (c.id === convId ? { ...c, no_leidos: 0 } : c)));
+  async function marcarLeido(convId: string | string[] | any) {
+    // Acepta id, array de ids o objeto conversación (con all_conv_ids y cliente_id)
+    let ids: string[] = [];
+    let clienteId: string | null = null;
+    try {
+      if (Array.isArray(convId)) {
+        ids = convId.map((x: any) => String(x)).filter(Boolean);
+      } else if (typeof convId === "object" && convId !== null) {
+        const c: any = convId;
+        ids = (c.all_conv_ids || [c.id]).map((x: any) => String(x)).filter(Boolean);
+        clienteId = c.cliente_id ? String(c.cliente_id) : null;
+      } else {
+        const idStr = String(convId);
+        ids = [idStr];
+        const conv = conversacionesRef.current.find((x: any) => x.id === idStr || (x.all_conv_ids && x.all_conv_ids.includes(idStr)));
+        if (conv) {
+          ids = (conv.all_conv_ids || [conv.id]).map((x: any) => String(x)).filter(Boolean);
+          clienteId = conv.cliente_id ? String(conv.cliente_id) : null;
+        }
+      }
+    } catch {
+      ids = [String(convId)];
+    }
+
+    // Guardar marca local de leído reciente (10s) para que un fetch con datos viejos no lo haga reaparecer
+    try {
+      const ahora = Date.now();
+      if (clienteId) leidosRecientesRef.current.set(String(clienteId), ahora);
+      for (const id of ids) leidosRecientesRef.current.set(String(id), ahora);
+      // limpiar entradas viejas
+      for (const [k, v] of leidosRecientesRef.current.entries()) {
+        if (ahora - v > 15000) leidosRecientesRef.current.delete(k);
+      }
+    } catch {}
+
+    // Optimista: limpia todas las filas que comparten cliente_id o cualquiera de los ids (evita que reaparezca a los 2s por merge)
+    setConversaciones((prev) =>
+      prev.map((c: any) => {
+        const matchId = ids.includes(String(c.id)) || (c.all_conv_ids && c.all_conv_ids.some((i: any) => ids.includes(String(i))));
+        const matchCliente = clienteId && c.cliente_id && String(c.cliente_id) === clienteId;
+        if (matchId || matchCliente) return { ...c, no_leidos: 0 };
+        return c;
+      })
+    );
+
+    // DB: marcar leído. La migración nueva hace que marcar_leido limpie por cliente_id, pero mantenemos fallback por compatibilidad
+    try {
+      for (const id of ids) {
+        try {
+          await supabase.rpc("marcar_leido", { p_conv_id: id });
+        } catch {}
+      }
+      if (clienteId) {
+        try {
+          await supabase.from("conversaciones").update({ no_leidos: 0, ultimo_leido_en: new Date().toISOString() }).eq("cliente_id", clienteId);
+        } catch {}
+      }
+    } catch {}
   }
 
   async function sincronizarNoLeidos() {
@@ -1528,8 +1585,28 @@ export default function CRMApp() {
           });
         }
       });
-      const lista = Array.from(convsPorCliente.values());
+      let lista = Array.from(convsPorCliente.values());
       if (!hayColumnaVentana) await completarVentanaSinMigracion(lista);
+      // Fix: si el chat fue marcado como leído hace <10s y no hay mensajes nuevos después, no dejar que un fetch con datos viejos lo haga reaparecer en Por leer
+      try {
+        const ahora = Date.now();
+        lista = lista.map((c: any) => {
+          const cid = String(c.cliente_id || "");
+          const ids = (c.all_conv_ids || [c.id]).map((x: any) => String(x));
+          let leidoTs = 0;
+          if (cid) leidoTs = Math.max(leidoTs, leidosRecientesRef.current.get(cid) || 0);
+          for (const id of ids) leidoTs = Math.max(leidoTs, leidosRecientesRef.current.get(id) || 0);
+          if (leidoTs && ahora - leidoTs < 10000) {
+            const ultimoMsgMs = c.ultimo_mensaje_en ? Date.parse(c.ultimo_mensaje_en) : 0;
+            // Si el último mensaje es anterior a cuando lo marcamos leído, es un dato viejo que debe quedarse en 0
+            // Si hay un mensaje nuevo después de marcar leído, respetamos el contador
+            if (!ultimoMsgMs || ultimoMsgMs <= leidoTs + 1500) {
+              return { ...c, no_leidos: 0 };
+            }
+          }
+          return c;
+        });
+      } catch {}
       setConversaciones(lista);
     }
     setLoadingChats(false);
@@ -2980,8 +3057,8 @@ export default function CRMApp() {
       const estCliente = esSpamCliente ? "spam" : normalizarEstado(conv.clientes?.estado);
       setChatCategoria(estCliente);
     }
-    // Revisar el chat limpia el contador de mensajes no leídos
-    marcarLeido(conv.id);
+    // Revisar el chat limpia el contador de mensajes no leídos (por cliente_id + all_conv_ids para no reaparecer)
+    marcarLeido(conv);
     setIsEditingNombre(false);
     setIsEditingNotas(false);
     setTempNotas(conv.clientes?.notas_personales || "");

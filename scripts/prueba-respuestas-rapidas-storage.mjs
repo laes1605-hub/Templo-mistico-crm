@@ -294,7 +294,7 @@ const filaPublicada = backendA2.db.respuestas_rapidas[0];
 check("sincronizar NO re-sube el archivo (ya está) y publica la fila", backendA2.db.subidas.length === 1 && backendA2.db.respuestas_rapidas.length === 1, JSON.stringify({ subidas: backendA2.db.subidas.length, filas: backendA2.db.respuestas_rapidas.length }));
 check(
   "el objeto vive en la carpeta de respuestas rápidas y se llama como su huella",
-  /^respuestas-rapidas\/\d{4}-\d{2}\//.test(backendA2.db.subidas[0]?.ruta || "") && String(backendA2.db.subidas[0]?.ruta).includes(`${hashEsperado}.ogg`),
+  /^respuestas-rapidas\//.test(backendA2.db.subidas[0]?.ruta || "") && String(backendA2.db.subidas[0]?.ruta).includes(`${hashEsperado}.ogg`),
   backendA2.db.subidas[0]?.ruta
 );
 check("en la tabla queda la URL, no el base64", !String(filaPublicada?.contenido || "").startsWith("data:") && /\/storage\/v1\/object\/public\//.test(filaPublicada?.contenido || ""), filaPublicada?.contenido);

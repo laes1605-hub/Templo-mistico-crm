@@ -115,7 +115,9 @@ simulador: se extraen del propio workflow, así que no pueden desincronizarse.
 - Solo actúa en las etapas cuyo **nombre visible** sea **Datos** o **Sin respuesta / No contesta**: en cualquier otra etapa (incluido **Nuevo Lead**) no envía nada. El nombre se compara sin acentos ni mayúsculas y acepta sufijos («Datos (API)»).
 - Busca la última respuesta entrante del cliente en los mensajes de Chatwoot. El cronómetro corre desde esa respuesta, aunque después haya respondido el agente.
 - Envía como máximo **cuatro mensajes por cliente y etapa**: 30 min, 3 h, 12 h y 23 h 30 min.
-- No envía a spam, archivados, `bot-pausado`, `recordatorios-pausados`, `lead-perdido` ni `perdido` (las etiquetas se comparan con cualquier separador: `bot-pausado` = `Bot Pausado`).
+- No envía si el chat tiene las etiquetas `recordatorios-pausados`, `lead-perdido`, `perdido` o `spam` (las etiquetas se comparan sin acentos y con cualquier separador: `recordatorios-pausados` = `Recordatorios Pausados`).
+- **`bot-pausado` NO silencia el recordatorio** (a propósito): Luna deja esa etiqueta justo cuando envía la lista de requisitos y pasa el chat a **Datos**, es decir, marca exactamente a los clientes que deben recibir el recordatorio de datos. Vetarla dejaba fuera 102 chats abiertos del CRM. Si lo quieres al revés, agrega `bot_pausado` a `ETIQUETAS_SILENCIO` en el nodo 1.
+- El diagnóstico final informa `etiquetasQueApagan` y el desglose `conteo.omitidas.porEtiqueta` para ver qué etiqueta está frenando envíos.
 - No envía si la **ventana de 24 h** del WhatsApp API ya se cerró.
 - Registra cada envío en `recordatorios_whatsapp`; la restricción única evita duplicados del mismo día, etapa, tipo e intento. Los envíos antiguos guardados como `sinRespuesta`, `noContesta` o `no_contesta` cuentan igual para no repetir.
 - No cierra ni marca como perdido automáticamente a ningún cliente.

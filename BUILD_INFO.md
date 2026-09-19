@@ -10,6 +10,14 @@
 
 ### Diagnóstico (verificado contra el proyecto real, no supuesto)
 
+- **La etiqueta `bot-pausado` vetaba a los clientes correctos**: el workflow no
+  enviaba a los chats con esa etiqueta, pero Luna la pone justo cuando envía la
+  lista de requisitos y pasa el chat a **Datos**. En el CRM había **102 chats
+  abiertos** con `bot-pausado` frente a **129** en `etapa-datos`: casi todos los
+  candidatos quedaban silenciados por la propia etiqueta del flujo. Ahora
+  `bot-pausado` no veta (siguen vetando `recordatorios-pausados`, `perdido`,
+  `lead-perdido` y `spam`) y el diagnóstico informa `etiquetasQueApagan` y el
+  desglose `conteo.omitidas.porEtiqueta`.
 - **El bucle estaba conectado al revés**: el nodo «Procesar uno a uno» (Loop Over
   Items) tiene las salidas 0 = `done` y 1 = `loop`; los ítems viajan por `loop` y
   `done` entrega `[]` hasta terminar (comprobado en `SplitInBatchesV3.node.ts`,
@@ -51,10 +59,15 @@
   llaves dentro para copiar y pegar a mano en n8n.
 - El código de los nodos ya no vive dentro del JSON: se edita en
   `n8n/recordatorios/code/*.js` y se regenera con `npm run build:recordatorios`.
+- **Seguridad**: `/api/media/download` adjuntaba el token de Chatwoot a cualquier
+  URL del mismo servidor, así que servía también `/api/v1/...` (se comprobó que
+  devolvía las conversaciones con el token de administrador). Ahora de ese host
+  solo se permiten rutas de `/rails/active_storage/`, que es de donde salen los
+  archivos del chat.
 - `npm run simular:recordatorios`: prueba en seco con datos reales (qué saldría, qué
   espera tiempo y qué queda fuera de la ventana de 24 h). Extrae las reglas del
   propio workflow, así que no puede desincronizarse.
-- Verificación: `npm run test:recordatorios` — **88 pruebas OK** sobre el código
+- Verificación: `npm run test:recordatorios` — **91 pruebas OK** sobre el código
   real de los nodos (Chatwoot y Supabase simulados), incluidas las consultas
   exactas validadas contra el proyecto real. Detalle en
   `n8n/03-README-recordatorios.md`.

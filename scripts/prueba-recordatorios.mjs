@@ -259,16 +259,24 @@ grupo("2) Qué chats entran");
   check("Chat sin vínculo en Supabase (fuente meta_business) se omite", r.recordatorios.length === 0 && r.diagnostico.conteo.omitidas.sinVinculoApi === 1);
 }
 {
-  const r = await ejecutarBuscar(escenario({ abiertos: [conversacion({ labels: ["bot-pausado"] })] }));
-  check("Etiqueta bot-pausado silencia el chat", r.recordatorios.length === 0 && r.diagnostico.conteo.omitidas.etiquetaSilencio === 1);
+  // Luna pone "bot-pausado" justo al pasar el chat a Datos, así que esa etiqueta
+  // NO debe vetar el recordatorio (antes vetaba y por eso no salía casi nada).
+  const r = await ejecutarBuscar(escenario({ abiertos: [conversacion({ labels: ["etapa-datos", "bot-pausado", "lead-tibio"] })] }));
+  check("Etiqueta bot-pausado NO bloquea el recordatorio de Datos", r.recordatorios.length === 1 && r.diagnostico.conteo.omitidas.etiquetaSilencio === 0);
+  check("El diagnóstico muestra qué etiquetas apagan los recordatorios", Array.isArray(r.diagnostico.etiquetasQueApagan) && r.diagnostico.etiquetasQueApagan.indexOf("bot_pausado") === -1);
 }
 {
   const r = await ejecutarBuscar(escenario({ abiertos: [conversacion({ labels: ["recordatorios-pausados"] })] }));
-  check("Etiqueta recordatorios-pausados silencia el chat", r.recordatorios.length === 0);
+  check("Etiqueta recordatorios-pausados SÍ silencia el chat", r.recordatorios.length === 0 && r.diagnostico.conteo.omitidas.etiquetaSilencio === 1);
+  check("El desglose por etiqueta lo deja claro", r.diagnostico.conteo.omitidas.porEtiqueta.recordatorios_pausados === 1);
 }
 {
-  const r = await ejecutarBuscar(escenario({ abiertos: [conversacion({ labels: ["Bot Pausado"] })] }));
-  check("La etiqueta se reconoce con espacios y mayúsculas («Bot Pausado»)", r.recordatorios.length === 0 && r.diagnostico.conteo.omitidas.etiquetaSilencio === 1);
+  const r = await ejecutarBuscar(escenario({ abiertos: [conversacion({ labels: ["lead-perdido"] })] }));
+  check("Etiqueta lead-perdido también silencia", r.recordatorios.length === 0 && r.diagnostico.conteo.omitidas.porEtiqueta.lead_perdido === 1);
+}
+{
+  const r = await ejecutarBuscar(escenario({ abiertos: [conversacion({ labels: ["Recordatorios Pausados"] })] }));
+  check("La etiqueta se reconoce con espacios y mayúsculas", r.recordatorios.length === 0 && r.diagnostico.conteo.omitidas.etiquetaSilencio === 1);
 }
 {
   const r = await ejecutarBuscar(escenario({ convs: { 271: filaSupabase({ archivada: true }) } }));

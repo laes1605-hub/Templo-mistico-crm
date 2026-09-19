@@ -72,10 +72,17 @@ const VARIANTES_TIPO = {
   noContesta: ['noContesta', 'sinRespuesta', 'no_contesta']
 };
 
-// Etiquetas de Chatwoot que apagan los recordatorios de ese chat. Se comparan
-// sin acentos y con cualquier separador: "bot-pausado", "bot pausado" y
-// "Bot_Pausado" son la misma etiqueta.
-const ETIQUETAS_SILENCIO = ['bot_pausado', 'recordatorios_pausados', 'lead_perdido', 'perdido', 'spam'];
+// Etiquetas que APAGAN los recordatorios de ese chat. Se comparan sin acentos y
+// con cualquier separador: "recordatorios-pausados" y "Recordatorios Pausados"
+// son la misma etiqueta.
+//
+// OJO con "bot-pausado": NO está en esta lista a propósito. Luna deja esa
+// etiqueta justo cuando envía la lista de requisitos y pasa el chat a "Datos",
+// así que vetarla silenciaba precisamente a los clientes que deben recibir el
+// recordatorio de datos (en el CRM había 102 chats abiertos con esa etiqueta).
+// Si algún día quieres que "bot-pausado" también silencie el recordatorio,
+// basta con agregarla aquí.
+const ETIQUETAS_SILENCIO = ['recordatorios_pausados', 'lead_perdido', 'perdido', 'spam'];
 
 // Minutos/horas desde la ÚLTIMA respuesta del cliente para cada intento.
 const UMBRALES_HORAS = [0.5, 3, 12, 23.5];
@@ -180,6 +187,7 @@ const conteo = {
   recordatoriosPreparados: 0,
   omitidas: {
     etiquetaSilencio: 0,
+    porEtiqueta: {},
     sinVinculoApi: 0,
     archivada: 0,
     spam: 0,
@@ -220,8 +228,10 @@ const salidas = [];
 for (const conv of conversaciones) {
   try {
     const etiquetas = Array.isArray(conv.labels) ? conv.labels.map(normalizarEtiqueta) : [];
-    if (etiquetas.some((etiqueta) => ETIQUETAS_SILENCIO.indexOf(etiqueta) !== -1)) {
+    const vetada = etiquetas.find((etiqueta) => ETIQUETAS_SILENCIO.indexOf(etiqueta) !== -1);
+    if (vetada) {
       conteo.omitidas.etiquetaSilencio++;
+      conteo.omitidas.porEtiqueta[vetada] = (conteo.omitidas.porEtiqueta[vetada] || 0) + 1;
       continue;
     }
 
@@ -386,6 +396,7 @@ salidas.push({
       cuenta_responsable: e.cuenta_responsable || null
     })),
     umbralesHoras: UMBRALES_HORAS,
+    etiquetasQueApagan: ETIQUETAS_SILENCIO,
     conteo: conteo,
     avisos: avisos,
     errores: errores

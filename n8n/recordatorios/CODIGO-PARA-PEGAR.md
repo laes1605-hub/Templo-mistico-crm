@@ -568,15 +568,20 @@ function itemsDeEntrada() {
 
 const resultados = [];
 
-for (const item of itemsDeEntrada()) {
+// Cuántos ítems llegaron a este nodo en la pasada. Si aquí sale 1 cuando la
+// búsqueda preparó varios, la tanda se está cortando ANTES de este nodo (por
+// ejemplo con el nodo «Procesar uno a uno» o un bucle mal conectado).
+const lote = itemsDeEntrada();
+
+for (const item of lote) {
   const d = (item && item.json) || {};
 
   if (d._diagnostico === true) {
-    resultados.push({ json: { ...d, enviado: false, omitido: 'diagnostico', error: null } });
+    resultados.push({ json: { ...d, enviado: false, omitido: 'diagnostico', error: null, loteRecibido: lote.length } });
     continue;
   }
   if (!d.conversationId || !d.mensaje) {
-    resultados.push({ json: { ...d, enviado: false, error: 'Sin conversationId o mensaje: no se envió nada.' } });
+    resultados.push({ json: { ...d, enviado: false, error: 'Sin conversationId o mensaje: no se envió nada.', loteRecibido: lote.length } });
     continue;
   }
 
@@ -588,7 +593,7 @@ for (const item of itemsDeEntrada()) {
       body: { content: d.mensaje, message_type: 'outgoing', private: false },
       json: true
     });
-    resultados.push({ json: { ...d, enviado: true, error: null } });
+    resultados.push({ json: { ...d, enviado: true, error: null, loteRecibido: lote.length } });
   } catch (e) {
     // El motivo real (token vencido, ventana de 24 h cerrada, etc.) queda visible
     // en la salida del nodo en lugar de perderse en los logs del servidor.
@@ -600,7 +605,7 @@ for (const item of itemsDeEntrada()) {
       detalle = '';
     }
     const motivo = (e && e.message) || 'error de envío';
-    resultados.push({ json: { ...d, enviado: false, error: detalle ? motivo + ' · ' + detalle.slice(0, 300) : motivo } });
+    resultados.push({ json: { ...d, enviado: false, error: detalle ? motivo + ' · ' + detalle.slice(0, 300) : motivo, loteRecibido: lote.length } });
   }
 }
 
@@ -669,11 +674,14 @@ function itemsDeEntrada() {
 const fecha = new Date().toISOString().slice(0, 10);
 const resultados = [];
 
-for (const item of itemsDeEntrada()) {
+// Igual que en el nodo de envío: deja visible cuántos ítems llegaron.
+const lote = itemsDeEntrada();
+
+for (const item of lote) {
   const d = (item && item.json) || {};
 
   if (d._diagnostico === true || d.enviado !== true) {
-    resultados.push({ json: d });
+    resultados.push({ json: { ...d, loteRecibido: lote.length } });
     continue;
   }
 
@@ -699,9 +707,9 @@ for (const item of itemsDeEntrada()) {
       },
       json: true
     });
-    resultados.push({ json: { ...d, registrado: true } });
+    resultados.push({ json: { ...d, registrado: true, loteRecibido: lote.length } });
   } catch (e) {
-    resultados.push({ json: { ...d, registrado: false, errorRegistro: (e && e.message) || 'error registrando' } });
+    resultados.push({ json: { ...d, registrado: false, errorRegistro: (e && e.message) || 'error registrando', loteRecibido: lote.length } });
   }
 }
 

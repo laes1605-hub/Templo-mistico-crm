@@ -57,11 +57,14 @@ function itemsDeEntrada() {
 const fecha = new Date().toISOString().slice(0, 10);
 const resultados = [];
 
-for (const item of itemsDeEntrada()) {
+// Igual que en el nodo de envío: deja visible cuántos ítems llegaron.
+const lote = itemsDeEntrada();
+
+for (const item of lote) {
   const d = (item && item.json) || {};
 
   if (d._diagnostico === true || d.enviado !== true) {
-    resultados.push({ json: d });
+    resultados.push({ json: { ...d, loteRecibido: lote.length } });
     continue;
   }
 
@@ -87,9 +90,9 @@ for (const item of itemsDeEntrada()) {
       },
       json: true
     });
-    resultados.push({ json: { ...d, registrado: true } });
+    resultados.push({ json: { ...d, registrado: true, loteRecibido: lote.length } });
   } catch (e) {
-    resultados.push({ json: { ...d, registrado: false, errorRegistro: (e && e.message) || 'error registrando' } });
+    resultados.push({ json: { ...d, registrado: false, errorRegistro: (e && e.message) || 'error registrando', loteRecibido: lote.length } });
   }
 }
 

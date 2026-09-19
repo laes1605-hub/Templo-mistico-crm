@@ -4,6 +4,66 @@
 **Commit:** (ver git log)
 **Branch:** arena/01a0ba5c-templo-mistico-crm
 
+## Build 2026-09-22: «no me deja sincronizar» — la migración de «duplicados» borraba triggers
+
+**Síntoma:** al pulsar **Sincronizar** en respuestas rápidas:
+
+```text
+No se pudo subir una respuesta: "No contesta":
+null value in column "huella" of relation "respuestas_rapidas" violates not-null constraint
+```
+
+**Causa raíz (una sola, y explica más cosas):**
+`supabase/migrations/20260920000001_fix_migraciones_duplicadas_idempotentes.sql`
+hacía `DROP TRIGGER` de **seis** triggers para poder volver a aplicar migraciones
+viejas sin el error «trigger already exists»… y sólo recreaba las **policies**.
+
+```text
+trg_clientes_atendido · clientes_enrutar_por_numero · conversaciones_enrutar_cliente
+trg_incrementar_no_leidos_entrante · respuestas_rapidas_calcular_huella · trg_actualizar_ultimo_entrante
+```
+
+Como es la última migración por fecha, la base quedaba sin ellos: no había forma
+de volver a crearlos. Consecuencias, todas silenciosas menos la primera:
+
+| Trigger borrado | Lo que rompía |
+| --- | --- |
+| `respuestas_rapidas_calcular_huella` | `huella` es `NOT NULL` y nadie la calculaba → **toda** inserción fallaba (el error de arriba: sincronizar era imposible) |
+| `trg_actualizar_ultimo_entrante` | `conversaciones.ultimo_entrante_en` / `ultimo_entrante_api_en` se quedaban congeladas (comprobado en vivo: mensajes entrantes del 19/09 y marcas del 15/09) |
+| `trg_incrementar_no_leidos_entrante` | los no leídos dejaban de subir |
+| `clientes_enrutar_por_numero` | un lead nuevo no se enlazaba solo por número |
+| `conversaciones_enrutar_cliente` | una conversación nueva no arrastraba al cliente del número |
+| `trg_clientes_atendido` | `atendido` no se marcaba al pasar a «consulta hecha» |
+
+**Comprobado contra el Supabase real (sólo lectura):** las seis respuestas
+rápidas guardadas el 15/09 tienen `huella = md5(tipo || chr(31) || hash_bytes)`
+(el trigger funcionaba entonces) y las marcas `ultimo_entrante_en` no se mueven
+desde el **15/09 22:39** aunque hay mensajes entrantes del **19/09 23:18**.
+
+### Arreglo
+
+- **`supabase/migrations/20260922000001_restaurar_triggers_perdidos.sql`** (nuevo):
+  vuelve a crear los seis triggers, con `DROP IF EXISTS` previo e idempotente.
+  Antes de cada uno comprueba con `to_regprocedure` que la función exista (si
+  falta, avisa con un `NOTICE` en vez de reventar) y al final recalcula las
+  marcas viejas con `recalcular_ultimos_entrantes()` y `sincronizar_no_leidos()`.
+- **`20260920000001_fix_migraciones_duplicadas_idempotentes.sql`**: se quitó el
+  bloque que borraba los triggers (ya no hace falta: todas las migraciones usan
+  `DROP TRIGGER IF EXISTS` + `CREATE TRIGGER` propios).
+- **`MIGRAR-A-NUEVO-SUPABASE.sql`**: al final ahora incluye la restauración de
+  triggers y la fecha de entrada a la etapa, así el paquete también deja la base
+  sana si se vuelve a correr.
+- **`src/lib/respuestas-rapidas.ts`**: cuando falla una subida, el aviso ahora
+  explica el caso conocido («falta el trigger que calcula la huella: corre
+  20260922000001…») en vez de dejar el error crudo de Postgres.
+- **`scripts/prueba-migraciones-triggers.mjs`** (nuevo, `npm run test:sql-triggers`):
+  guardia de regresión — ningún `.sql` puede dejar uno de esos seis triggers
+  borrado sin recrearlo, y la migración de restauración tiene que reponerlos
+  todos. **22 pruebas OK**.
+- La página de importación (puerto 4173) ahora muestra **un solo SQL** para
+  pegar en Supabase (repara los triggers + agrega `clientes.estado_desde`) en
+  `/reparar.sql`.
+
 ## Build 2026-09-19 (v5): «No contesta» cuenta desde la etapa y sale por WhatsApp Personal
 
 **Problema:** «No contesta» contaba desde el último mensaje del cliente, no desde

@@ -110,6 +110,11 @@ Ahora:
 
 1. En Supabase → SQL Editor, ejecuta `MIGRAR-A-NUEVO-SUPABASE.sql` (idempotente) o, si solo faltara la tabla:
    `supabase/migrations/20260825000002_recordatorios_whatsapp_etapa.sql`.
+   En la página del puerto **4173** hay un botón **Copiar SQL** con lo que falte de los
+   últimos arreglos: `20260922000001_restaurar_triggers_perdidos.sql` (repone los triggers
+   que la migración de «duplicados» borraba — entre ellos el que calcula
+   `respuestas_rapidas.huella`, cuyo error bloquea el botón «Sincronizar» del CRM) y
+   `20260921000002_estado_desde_recordatorios.sql` (fecha de entrada a la etapa).
 2. Importa `03-recordatorios-whatsapp-por-etapa.json` **o** pega el código de los tres nodos
    desde `recordatorios/CODIGO-PARA-PEGAR.md`.
    Las **llaves van escritas dentro de cada nodo**: esta instancia de n8n no permite
@@ -212,6 +217,7 @@ descartados con su motivo y sus horas) y `avisos`.
 ```bash
 npm run test:recordatorios   # 116 pruebas sobre el código real de los nodos
 npm run build:recordatorios  # regenera el JSON importable desde recordatorios/code/*.js
+npm run test:sql-triggers    # 22 pruebas: ningún .sql deja un trigger borrado sin recrear
 ```
 
 Para usar otro nombre visible de etapa, agrégalo a `ETAPAS_RECORDATORIO` en

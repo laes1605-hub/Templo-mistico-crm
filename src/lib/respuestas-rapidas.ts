@@ -446,9 +446,23 @@ export async function sincronizarRespuestasRapidas(): Promise<ResultadoSincroniz
       fallos.length > 0
         ? `No se pudo subir ${fallos.length === 1 ? "una respuesta" : `${fallos.length} respuestas`}: ${fallos[0]}${
             fallos.length > 1 ? ` (y ${fallos.length - 1} más)` : ""
-          }. Intenta sincronizar de nuevo.`
+          }.${pistaDeFallo(fallos.join(" "))}`
         : undefined,
   };
+}
+
+/**
+ * Traduce los fallos de Supabase que ya sabemos diagnosticar. El caso típico
+ * (19–22/09/2026): la migración de «duplicados» borró el trigger que calcula
+ * `respuestas_rapidas.huella`, que es NOT NULL, así que TODA inserción fallaba
+ * con un error de Postgres que no le dice nada al operador.
+ */
+function pistaDeFallo(detalle: string): string {
+  const texto = detalle.toLowerCase();
+  if (texto.includes("huella") && texto.includes("not-null")) {
+    return " Falta el trigger que calcula la huella en Supabase: corre supabase/migrations/20260922000001_restaurar_triggers_perdidos.sql y vuelve a sincronizar.";
+  }
+  return " Intenta sincronizar de nuevo.";
 }
 
 export async function guardarRespuestaRapida(

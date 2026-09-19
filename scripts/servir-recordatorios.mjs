@@ -18,11 +18,23 @@ import { fileURLToPath } from "node:url";
 
 const raiz = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const RUTA_WORKFLOW = path.join(raiz, "n8n", "03-recordatorios-whatsapp-por-etapa.json");
-const RUTA_SQL = path.join(raiz, "supabase", "migrations", "20260921000002_estado_desde_recordatorios.sql");
+// SQL que se pega UNA vez en Supabase. Va en orden:
+//   1. restaurar los triggers que la migración de "duplicados" borró sin recrear
+//      (rompía la sincronización de respuestas rápidas: «null value in column
+//      "huella" ... violates not-null constraint»)
+//   2. fecha de entrada a la etapa, que usan los recordatorios de «No contesta»
+const RUTAS_SQL = [
+  path.join(raiz, "supabase", "migrations", "20260922000001_restaurar_triggers_perdidos.sql"),
+  path.join(raiz, "supabase", "migrations", "20260921000002_estado_desde_recordatorios.sql"),
+];
 const PUERTO = Number(process.env.PORT || 4173);
 
 function leerSql() {
-  return fs.readFileSync(RUTA_SQL, "utf8");
+  return (
+    RUTAS_SQL.map((ruta) => fs.readFileSync(ruta, "utf8").trim()).join(
+      "\n\n\n-- " + "=".repeat(74) + "\n\n\n"
+    ) + "\n"
+  );
 }
 
 function leerWorkflow() {
@@ -82,9 +94,10 @@ const PAGINA = `<!doctype html>
     <h2>Cómo importarlo</h2>
     <ol>
       <li><b>Primero, una sola vez:</b> copia el <b>SQL de abajo</b> y pégalo en Supabase →
-          <b>SQL Editor</b> → <b>Run</b>. Guarda la fecha en la que cada chat entra a su etapa, que es
-          lo que usa el recordatorio de «No contesta». Si todavía no lo corres, el workflow igual
-          funciona (lo avisa en <code>avisos</code>), pero «No contesta» cuenta desde el último mensaje.</li>
+          <b>SQL Editor</b> → <b>Run</b>. Repara la sincronización de las respuestas rápidas y guarda la
+          fecha en la que cada chat entra a su etapa (el reloj de «No contesta»). Si aún no lo corres,
+          el workflow igual funciona (lo avisa en <code>avisos</code>), pero «No contesta» cuenta desde
+          el último mensaje.</li>
       <li>n8n → <b>Workflows</b> → menú <b>⋯</b> → <b>Import from File…</b> y elige el archivo descargado.
           <br>O bien: <b>Import from Clipboard</b> después de pulsar «Copiar JSON completo».</li>
       <li>Abre el workflow y pulsa <b>Execute Workflow</b> una sola vez.</li>
@@ -108,15 +121,22 @@ const PAGINA = `<!doctype html>
   </div>
 
   <div class="pasos">
-    <h2>SQL para «No contesta» (correr una vez en Supabase)</h2>
+    <h2>SQL para Supabase (correr una vez)</h2>
+    <p class="sub" style="margin:0 0 10px">Hace dos cosas:</p>
+    <ul class="sub" style="margin:0 0 10px 18px; padding:0">
+      <li><b>Repara la sincronización</b> de las respuestas rápidas: repone el trigger que calcula
+          <code>huella</code> (el error <i>«null value in column "huella" … violates not-null constraint»</i>),
+          las marcas de la ventana de 24 h, los no leídos y el enrutado por número.</li>
+      <li><b>Guarda la fecha en la que cada chat entra a su etapa</b>, que es el reloj de «No contesta».</li>
+    </ul>
     <div class="barra">
       <button id="copiarSql">📋 Copiar SQL</button>
-      <a class="boton secundario" href="/estado-desde.sql" download="estado-desde-recordatorios.sql">⬇️ Descargar .sql</a>
+      <a class="boton secundario" href="/reparar.sql" download="reparar-supabase.sql">⬇️ Descargar .sql</a>
       <span class="ok" id="okSql"></span>
     </div>
-    <textarea id="sql" spellcheck="false" readonly aria-label="SQL de la migración" style="height:34vh">SQL_AQUI</textarea>
-    <p class="sub" style="margin-top:10px">Agrega <code>clientes.estado_desde</code> y un trigger que lo actualiza
-    cada vez que un cliente cambia de etapa. Es idempotente: puedes correrlo las veces que quieras.</p>
+    <textarea id="sql" spellcheck="false" readonly aria-label="SQL de reparación" style="height:38vh">SQL_AQUI</textarea>
+    <p class="sub" style="margin-top:10px">Es idempotente: puedes correrlo las veces que quieras. Al final muestra
+    en <i>Notices</i> cuántas conversaciones reparó y qué triggers faltaban.</p>
   </div>
 </main>
 <script>
@@ -195,7 +215,7 @@ const servidor = http.createServer((req, res) => {
     return;
   }
 
-  if (url.pathname === "/estado-desde.sql") {
+  if (url.pathname === "/estado-desde.sql" || url.pathname === "/reparar.sql") {
     let sql;
     try {
       sql = leerSql();

@@ -9,40 +9,50 @@ Archivos:
 - `recordatorios/CODIGO-PARA-PEGAR.md`: **los tres nodos completos con las llaves dentro**, para copiar y pegar a mano en n8n.
 - `recordatorios/code/*.js`: código real de los tres nodos Code (aquí se edita, no dentro del JSON).
 - `scripts/simular-recordatorios.mjs`: prueba en seco con los datos reales (`npm run simular:recordatorios`).
-- `scripts/prueba-recordatorios.mjs`: 88 pruebas sobre el código de los nodos (`npm run test:recordatorios`).
+- `scripts/prueba-recordatorios.mjs`: 98 pruebas sobre el código de los nodos (`npm run test:recordatorios`).
 - `supabase/migrations/20260825000002_recordatorios_whatsapp_etapa.sql`: tabla de auditoría e idempotencia (ya viene incluida en `MIGRAR-A-NUEVO-SUPABASE.sql`, bloque `[04/26]`).
 
 ---
 
 ## ⚠️ Arreglo del 19/09/2026: por qué no llegaban los recordatorios
 
-**Causa 1 (la que dejaba el workflow mudo): las conexiones del bucle estaban al revés.**
+**Causa 1 (la última, la que dejaba pasar un solo mensaje): los nodos Code leían un único ítem.**
 
-El nodo **Procesar uno a uno** («Loop Over Items / Split in Batches») tiene dos
-salidas y en este orden: **0 = done**, **1 = loop**. En el código fuente de n8n
-(`SplitInBatchesV3`) los ítems salen por `loop` y `done` entrega un **arreglo
-vacío** hasta que el bucle termina:
+El primer nodo entrega **toda la tanda** de clientes que cumplen su tiempo en una
+sola salida. Los nodos de envío y registro leían `$input.item` (un solo ítem) en
+vez de `$input.all()` (la tanda completa), así que en cada pasada salía **un único
+recordatorio**: justo el del primer chat de la lista, porque Chatwoot ordena por
+actividad reciente. Comprobado contra el Supabase real: el 19/09 a las 19:35 UTC se
+registró **un solo envío** cuando había **10 clientes** en Datos/No contesta que ya
+cumplían su tiempo (4 h, 6 h, 18 h, 20 h, 22 h…).
 
-```ts
-outputNames: ['done', 'loop'],
-...
-return [[], returnItems];   // done = [] · loop = los ítems
-```
+Ahora los tres nodos recorren la tanda completa y el workflow **ya no lleva el nodo
+«Procesar uno a uno» ni el bucle**: la cadena es
+`Cada 15 minutos → Buscar → Enviar → Registrar`. El bucle era otra pieza que podía
+cortar la pasada en el primer cliente (con las salidas invertidas no se enviaba
+nada); se eliminó en vez de depender de que la flecha esté bien puesta. El builder
+`npm run build:recordatorios` **fuerza la cadena en línea, el modo «Run Once for All
+Items» de los tres nodos Code y falla** si vuelve a aparecer un bucle.
 
-El workflow tenía el envío conectado a **done** (vacío) y **loop** apuntando al
-propio nodo, así que n8n nunca ejecutaba el envío: **no salía ningún mensaje**.
+**Causa 2: la variante no correspondía al tiempo sin contestar.**
 
-Correcto:
+Antes la plantilla se elegía por el número de recordatorios ya enviados: a quien
+llevaba 14 h sin contestar y no había recibido ninguno le llegaba el texto del
+primero. Ahora se elige por **tiempo sin contestar** (desde el último mensaje del
+cliente):
 
-```
-Procesar uno a uno · loop (abajo)  →  Enviar por WhatsApp API  →  Registrar envío  →  vuelve al bucle
-Procesar uno a uno · done (arriba) →  (sin conectar)
-```
+| Tiempo sin contestar | Plantilla |
+| --- | --- |
+| 30 min – 3 h | 1 |
+| 3 h – 12 h | 2 |
+| 12 h – 23 h 30 | 3 |
+| 23 h 30 – 24 h | 4 |
 
-Desde ahora `npm run build:recordatorios` **fuerza esas conexiones y falla** si
-alguien las vuelve a invertir, y las pruebas simulan el bucle completo.
+La misma plantilla **no se repite dentro de las 24 h** siguientes (el ciclo corre
+cada 15 minutos) y la pasada tiene un tope de seguridad de **60 envíos**: lo que
+sobra sale en la siguiente pasada.
 
-**Causa 2: las etapas se buscaban con un filtro que ya no aplicaba.**
+**Causa 3: las etapas se buscaban con un filtro que ya no aplicaba.**
 
 Los recordatorios dejaron de registrarse el **10/09/2026**. El workflow buscaba la etapa así:
 
@@ -112,9 +122,11 @@ simulador: se extraen del propio workflow, así que no pueden desincronizarse.
 
 - Revisa solo **conversaciones abiertas** de Chatwoot (máx. 500) vinculadas en Supabase con `fuente = 'meta_business'`.
 - **Lead nuevo queda excluido**: no recibe ningún recordatorio.
+- Procesa **toda la tanda** de cada pasada (una sola ejecución por ciclo), sin bucle ni nodo «Procesar uno a uno».
 - Solo actúa en las etapas cuyo **nombre visible** sea **Datos** o **Sin respuesta / No contesta**: en cualquier otra etapa (incluido **Nuevo Lead**) no envía nada. El nombre se compara sin acentos ni mayúsculas y acepta sufijos («Datos (API)»).
 - Busca la última respuesta entrante del cliente en los mensajes de Chatwoot. El cronómetro corre desde esa respuesta, aunque después haya respondido el agente.
-- Envía como máximo **cuatro mensajes por cliente y etapa**: 30 min, 3 h, 12 h y 23 h 30 min.
+- Elige la plantilla por el **tiempo sin contestar**: 30 min → 1 · 3 h → 2 · 12 h → 3 · 23 h 30 → 4. A quien lleva 14 h sin responder le llega la 3.ª, no la 1.ª.
+- No repite la misma plantilla dentro de las 24 h siguientes y no pasa de **60 envíos por pasada** (el resto sale en la siguiente).
 - No envía si el chat tiene las etiquetas `recordatorios-pausados`, `lead-perdido`, `perdido` o `spam` (las etiquetas se comparan sin acentos y con cualquier separador: `recordatorios-pausados` = `Recordatorios Pausados`).
 - **`bot-pausado` NO silencia el recordatorio** (a propósito): Luna deja esa etiqueta justo cuando envía la lista de requisitos y pasa el chat a **Datos**, es decir, marca exactamente a los clientes que deben recibir el recordatorio de datos. Vetarla dejaba fuera 102 chats abiertos del CRM. Si lo quieres al revés, agrega `bot_pausado` a `ETIQUETAS_SILENCIO` en el nodo 1.
 - El diagnóstico final informa `etiquetasQueApagan` y el desglose `conteo.omitidas.porEtiqueta` para ver qué etiqueta está frenando envíos.
@@ -127,9 +139,9 @@ simulador: se extraen del propio workflow, así que no pueden desincronizarse.
 Cada ejecución termina con un ítem con `_diagnostico: true` que **no se envía a nadie**.
 Es la forma rápida de ver por qué no salió nada:
 `etapasReconocidas`, `etapasDelPipeline`, `conteo.recordatoriosPreparados`,
-`conteo.omitidas.*` (etiquetaSilencio, sinVinculoApi, archivada, spam,
-etapaSinRecordatorio, sinMensajesEntrantes, yaCompletos, esperandoTiempo,
-ventanaCerrada, sinTelefono, error) y `avisos`.
+`conteo.omitidas.*` (etiquetaSilencio, porEtiqueta, sinVinculoApi, archivada, spam,
+etapaSinRecordatorio, sinMensajesEntrantes, varianteYaEnviada, porLimite,
+esperandoTiempo, ventanaCerrada, sinTelefono, error) y `avisos`.
 
 ---
 
@@ -159,7 +171,7 @@ ventanaCerrada, sinTelefono, error) y `avisos`.
 ## Mantenimiento
 
 ```bash
-npm run test:recordatorios   # 71 pruebas sobre el código real de los nodos
+npm run test:recordatorios   # 98 pruebas sobre el código real de los nodos
 npm run build:recordatorios  # regenera el JSON importable desde recordatorios/code/*.js
 ```
 

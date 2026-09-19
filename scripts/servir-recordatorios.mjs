@@ -81,7 +81,10 @@ const PAGINA = `<!doctype html>
       <li>Abre el workflow y pulsa <b>Execute Workflow</b> una sola vez.</li>
       <li>Revisa la salida del primer nodo: el <b>último ítem</b> trae el diagnóstico
           (<code>_diagnostico: true</code>) con <code>etapasReconocidas</code>, <code>conteo.omitidas</code> y <code>avisos</code>.</li>
-      <li><b>Actívalo</b> y desactiva el workflow viejo de recordatorios para no duplicar envíos.</li>
+      <li><b>Actívalo</b> y <b>desactiva/borra el workflow viejo</b> de recordatorios (y cualquier nodo
+          duplicado con «1» al final) para no duplicar envíos.</li>
+      <li>Este JSON <b>ya no lleva el nodo «Procesar uno a uno»</b>: la cadena es
+          Buscar → Enviar → Registrar y cada nodo procesa toda la tanda.</li>
     </ol>
     <p class="aviso">⚠️ Este archivo contiene la service_role de Supabase y el token de Chatwoot. No compartas
     esta URL fuera del equipo y rota esas llaves cuando puedas.</p>

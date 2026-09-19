@@ -18,14 +18,24 @@
   `bot-pausado` no veta (siguen vetando `recordatorios-pausados`, `perdido`,
   `lead-perdido` y `spam`) y el diagnóstico informa `etiquetasQueApagan` y el
   desglose `conteo.omitidas.porEtiqueta`.
-- **El bucle estaba conectado al revés**: el nodo «Procesar uno a uno» (Loop Over
-  Items) tiene las salidas 0 = `done` y 1 = `loop`; los ítems viajan por `loop` y
-  `done` entrega `[]` hasta terminar (comprobado en `SplitInBatchesV3.node.ts`,
-  `return [[], returnItems]`). El envío estaba conectado a `done` y `loop` se
-  apuntaba a sí mismo, así que **nunca se ejecutaba el envío**: por eso una prueba
-  manual del workflow no enviaba nada. Ahora `build:recordatorios` fuerza
-  `loop → Enviar → Registrar → vuelve al bucle`, deja `done` vacío y **falla el
-  build** si alguien lo invierte. Las pruebas simulan el bucle completo.
+- **Salía un solo recordatorio por pasada (la causa que quedaba)**: los nodos Code
+  leían `$input.item` (un único ítem) en vez de `$input.all()` (la tanda completa),
+  así que el envío se cortaba en el primer chat de la lista. Comprobado contra el
+  Supabase real: el 19/09 a las 19:35 UTC se registró **un solo envío** cuando
+  había **10 clientes** en Datos/No contesta con su tiempo cumplido (4 h, 6 h,
+  18 h, 20 h, 22 h…). Ahora los tres nodos recorren la tanda completa y el
+  workflow **ya no lleva «Procesar uno a uno» ni bucle**: la cadena es
+  `Cada 15 minutos → Buscar → Enviar → Registrar`. El builder fuerza la cadena, el
+  modo «Run Once for All Items» y **falla** si vuelve a aparecer un bucle.
+- **La variante no correspondía al tiempo sin contestar**: antes se elegía por el
+  número de avisos previos. Ahora la plantilla se elige por tiempo sin contestar
+  (30 min → 1 · 3 h → 2 · 12 h → 3 · 23 h 30 → 4), no se repite la misma en 24 h y
+  la pasada tiene un tope de 60 envíos.
+- **El bucle estaba conectado al revés** (arreglo anterior, ya sin efecto porque el
+  bucle se eliminó): el nodo «Procesar uno a uno» tiene las salidas 0 = `done` y
+  1 = `loop`, los ítems viajan por `loop` y `done` entrega `[]` hasta terminar
+  (comprobado en `SplitInBatchesV3.node.ts`). Con el envío conectado a `done` no se
+  enviaba nada. Dejó de ser un riesgo al quitar el nodo del workflow.
 - Las credenciales del código apuntan al proyecto `zcljlddtcoyfyvshlyfk` y
   responden: `recordatorios_whatsapp` existe y la service_role lee y escribe.
   El proyecto **no** era el problema.
@@ -67,7 +77,7 @@
 - `npm run simular:recordatorios`: prueba en seco con datos reales (qué saldría, qué
   espera tiempo y qué queda fuera de la ventana de 24 h). Extrae las reglas del
   propio workflow, así que no puede desincronizarse.
-- Verificación: `npm run test:recordatorios` — **91 pruebas OK** sobre el código
+- Verificación: `npm run test:recordatorios` — **98 pruebas OK** sobre el código
   real de los nodos (Chatwoot y Supabase simulados), incluidas las consultas
   exactas validadas contra el proyecto real. Detalle en
   `n8n/03-README-recordatorios.md`.

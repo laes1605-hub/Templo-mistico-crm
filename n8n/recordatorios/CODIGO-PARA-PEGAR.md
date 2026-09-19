@@ -12,21 +12,42 @@ const SUPABASE_SERVICE_ROLE_KEY = 'eyJ...';
 > Este archivo se genera con `npm run build:recordatorios`. No lo edites a mano:
 > edita `n8n/recordatorios/code/*.js` y vuelve a generarlo.
 
-## Cómo pegarlo (2 minutos)
+## Lo que cambió (2026-09-19)
+
+1. **Salía un solo recordatorio por pasada**: los nodos Code leían `$input.item`
+   (el primer ítem) en vez de la tanda completa. Ahora recorren **todos** los
+   ítems que reciben.
+2. **La variante se elige por tiempo sin contestar**: 30 min → 1 · 3 h → 2 ·
+   12 h → 3 · 23 h 30 → 4. Ya no depende de cuántos avisos lleve el cliente.
+3. **No se repite la misma variante**: si esa plantilla ya salió en las últimas
+   24 h para ese cliente y esa etapa, se omite (antes saldría cada 15 minutos).
+4. **Se eliminó el nodo «Procesar uno a uno»** y el bucle: la cadena es
+   Buscar → Enviar → Registrar. Un bucle mal conectado cortaba la pasada en el
+   primer cliente.
+5. **Tope de 60 envíos por pasada** (los que sobren salen en la siguiente, 15 min
+   después) y los nodos Code deben quedar en modo **Run Once for All Items**.
+
+## Cómo ponerlo (2 minutos, lo más seguro)
 
 1. En n8n abre el workflow **WhatsApp API · Recordatorios por etapa**.
-2. Entra al nodo, borra todo el contenido del campo **Code** y pega el bloque que
-   corresponda (cada bloque va completo, de la primera línea a la última).
-3. Repite con los tres nodos Code: **Buscar clientes y preparar recordatorio**,
-   **Enviar por WhatsApp API** y **Registrar envío e impedir duplicados**.
-4. Revisa las conexiones del bucle (es el error que impedía todo envío): del nodo
-   **Procesar uno a uno** la flecha debe salir por la salida de **abajo** («loop»)
-   hacia **Enviar por WhatsApp API**, y **Registrar envío e impedir duplicados** debe
-   volver a entrar a **Procesar uno a uno**. La salida de **arriba** («done») se
-   queda sin conectar: entrega un arreglo vacío hasta que el bucle termina.
-5. Guarda, pulsa **Execute Workflow** una vez y revisa la salida del primer nodo:
-   el último ítem trae el diagnóstico (si no sale nada, ahí dice por qué).
-6. Actívalo y **desactiva el workflow anterior** de recordatorios para no duplicar envíos.
+2. Menú (⋮) → **Import from File** → elige
+   `03-recordatorios-whatsapp-por-etapa.json`. Se abre como workflow nuevo y ya
+   trae los tres nodos Code, la cadena en línea y el disparador cada 15 minutos.
+3. Guárdalo, actívalo y **desactiva el workflow anterior** para no duplicar envíos.
+4. Pulsa **Execute Workflow** una vez: el último ítem de la salida del primer nodo
+   trae el diagnóstico (a quién le toca, a quién no y por qué).
+
+## Si prefieres pegar el código a mano
+
+1. Borra el contenido del campo **Code** y pega el bloque completo del nodo que
+   corresponda (los tres bloques van abajo).
+2. **Borra el nodo «Procesar uno a uno»** (y cualquier copia con «1» al final,
+   tipo «Procesar uno a uno1»).
+3. Deja la cadena así: **Cada 15 minutos → Buscar clientes y preparar recordatorio
+   → Enviar por WhatsApp API → Registrar envío e impedir duplicados**. El último
+   nodo no conecta con nada.
+4. En cada nodo Code, arriba a la derecha, revisa que el modo sea
+   **Run Once for All Items** (no «Run Once for Each Item»).
 
 ## Nodo «Buscar clientes y preparar recordatorio»
 
@@ -36,11 +57,17 @@ const SUPABASE_SERVICE_ROLE_KEY = 'eyJ...';
 // ----------------------------------------------------------------------------
 // QUÉ HACE
 //   Cada 15 minutos revisa los chats ABIERTOS que llegaron por el WhatsApp API
-//   (Chatwoot, bandeja de Meta) y están en una etapa de recordatorio. Según el
-//   tiempo que lleve el cliente sin escribir, prepara hasta 4 recordatorios:
-//   30 min · 3 h · 12 h · 23 h 30 min.
+//   (Chatwoot, bandeja de Meta) y están en una etapa de recordatorio. La variante
+//   se elige por el TIEMPO que lleve el cliente sin escribir:
+//   30 min → 1 · 3 h → 2 · 12 h → 3 · 23 h 30 → 4.
+//   La misma variante no se repite dentro de las 24 h siguientes.
 //
-// QUÉ SE ARREGLÓ (2026-09-19, migración al Supabase nuevo)
+// QUÉ SE ARREGLÓ (2026-09-19)
+//   0. Solo salía UN recordatorio por ejecución: los nodos Code leían «$input.item»
+//      (el primer ítem) en vez de la tanda completa. Ahora los tres nodos recorren
+//      TODOS los ítems que reciben, así que en la misma pasada salen todos los que
+//      tocan. Además el workflow ya no lleva el nodo «Procesar uno a uno» ni el
+//      bucle: era otra pieza que podía cortar el envío en el primer cliente.
 //   1. Las etapas se reconocen SOLO por su NOMBRE, en todo el pipeline. Antes se
 //      pedía además grupo = 'templo' y el CRM ahora crea/edita las etapas con
 //      grupo = 'general' ("Datos" quedó en general): el workflow no encontraba
@@ -53,6 +80,8 @@ const SUPABASE_SERVICE_ROLE_KEY = 'eyJ...';
 //   4. Las credenciales van escritas aquí adentro (esta instancia de n8n no
 //      permite variables de entorno). Cambiar de proyecto Supabase = editar
 //      SUPABASE_URL y SUPABASE_SERVICE_ROLE_KEY en el bloque de abajo.
+//   5. La etiqueta «bot-pausado» ya NO silencia: Luna la pone justo cuando pasa
+//      el chat a Datos, así que vetaba a los clientes que deben recibir el aviso.
 // ============================================================================
 
 // ---------------------------------------------------------------------------
@@ -118,7 +147,13 @@ const VARIANTES_TIPO = {
 const ETIQUETAS_SILENCIO = ['recordatorios_pausados', 'lead_perdido', 'perdido', 'spam'];
 
 // Minutos/horas desde la ÚLTIMA respuesta del cliente para cada intento.
+// La variante se elige por TIEMPO, no por cuántos recordatorios lleve: quien
+// lleva 14 h sin contestar recibe el tercero, y quien lleva 1 h el primero.
 const UMBRALES_HORAS = [0.5, 3, 12, 23.5];
+
+// Tope de seguridad por ejecución: con esto una tanda enorme no se dispara de
+// golpe (los que queden fuera salen en la siguiente pasada, 15 min después).
+const LIMITE_ENVIOS_POR_EJECUCION = 60;
 
 // WhatsApp API solo deja responder texto libre dentro de las 24 h siguientes al
 // último mensaje del cliente. Pasado ese plazo Meta rechaza el envío, así que no
@@ -144,6 +179,16 @@ const normalizarEtiqueta = (valor) =>
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '');
+
+// Qué variante (1 a 4) le toca según las horas sin contestar: la última franja
+// que ya se cumplió. Menos de 30 min todavía no cumple ninguna.
+const variantePorTiempo = (horas) => {
+  let variante = 0;
+  for (let i = 0; i < UMBRALES_HORAS.length; i++) {
+    if (horas >= UMBRALES_HORAS[i]) variante = i + 1;
+  }
+  return variante || null;
+};
 
 const tipoDeNombre = (nombre) => {
   const n = normalizar(nombre);
@@ -226,7 +271,8 @@ const conteo = {
     spam: 0,
     etapaSinRecordatorio: 0,
     sinMensajesEntrantes: 0,
-    yaCompletos: 0,
+    varianteYaEnviada: 0,
+    porLimite: 0,
     esperandoTiempo: 0,
     ventanaCerrada: 0,
     sinTelefono: 0,
@@ -327,8 +373,16 @@ for (const conv of conversaciones) {
       continue;
     }
 
-    // Intentos ya enviados a este cliente en esta etapa (incluye los registros
-    // antiguos escritos con la otra variante de tipo).
+    // Variante que le toca por el tiempo que lleva sin contestar.
+    const variante = variantePorTiempo(horasDesdeRespuesta);
+    if (!variante) {
+      conteo.omitidas.esperandoTiempo++;
+      continue;
+    }
+
+    // Guardia contra repetir: si ESA misma variante ya salió en las últimas 24 h
+    // para este cliente en esta etapa, se omite. Así el ciclo de 15 minutos no
+    // repite el mismo mensaje mientras la ventana siga abierta.
     const variantes = VARIANTES_TIPO[tipo].map((v) => encodeURIComponent(v)).join(',');
     const logs = await getJson(
       SUPABASE_URL +
@@ -338,22 +392,25 @@ for (const conv of conversaciones) {
         encodeURIComponent(cliente.estado) +
         '&tipo=in.(' +
         variantes +
-        ')&select=plantilla,enviado_en&order=enviado_en.desc&limit=10',
+        ')&select=plantilla,enviado_en&order=enviado_en.desc&limit=20',
       sbHeaders
     );
-    const intentos = Array.isArray(logs) ? logs.length : 0;
-    if (intentos >= UMBRALES_HORAS.length) {
-      conteo.omitidas.yaCompletos++;
+    const yaEnviada = (Array.isArray(logs) ? logs : []).some((l) => {
+      const cuando = Math.floor(new Date(l.enviado_en).getTime() / 1000);
+      return Number(l.plantilla) === variante && cuando > 0 && ahora - cuando < 24 * 3600;
+    });
+    if (yaEnviada) {
+      conteo.omitidas.varianteYaEnviada++;
       continue;
     }
-    if (horasDesdeRespuesta < UMBRALES_HORAS[intentos]) {
-      conteo.omitidas.esperandoTiempo++;
+    if (conteo.recordatoriosPreparados >= LIMITE_ENVIOS_POR_EJECUCION) {
+      conteo.omitidas.porLimite++;
       continue;
     }
 
     const nombre = String((conv.meta && conv.meta.sender && conv.meta.sender.name) || '').trim();
     const primerNombre = nombre && normalizar(nombre) !== 'cliente' ? nombre.split(' ')[0] : '';
-    const mensaje = plantillas[tipo][intentos].replace('{{nombre}}', primerNombre).replace('Hola .', 'Hola');
+    const mensaje = plantillas[tipo][variante - 1].replace('{{nombre}}', primerNombre).replace('Hola .', 'Hola');
     const telefono = String(
       dbConv.numero_whatsapp ||
         (conv.meta && conv.meta.sender && (conv.meta.sender.phone_number || conv.meta.sender.identifier)) ||
@@ -374,7 +431,7 @@ for (const conv of conversaciones) {
         estado: cliente.estado,
         telefono: telefono,
         mensaje: mensaje,
-        intento: intentos + 1,
+        intento: variante,
         nombre: primerNombre,
         ultimaRespuestaCliente: ultimaRespuesta,
         horasDesdeRespuesta: Math.floor(horasDesdeRespuesta)
@@ -413,6 +470,12 @@ if (conteo.omitidas.ventanaCerrada > 0) {
 if (conteo.recordatoriosPreparados === 0 && conteo.omitidas.esperandoTiempo > 0) {
   avisos.push('Hay ' + conteo.omitidas.esperandoTiempo + ' chat(s) en etapa de recordatorio, pero todavía no cumple el tiempo del siguiente intento.');
 }
+if (conteo.omitidas.porLimite > 0) {
+  avisos.push(
+    'Se prepararon ' + LIMITE_ENVIOS_POR_EJECUCION + ' recordatorios (el tope por ejecución) y quedaron ' +
+    conteo.omitidas.porLimite + ' para la siguiente pasada, dentro de 15 minutos.'
+  );
+}
 
 // Ítem de diagnóstico: siempre se envía al final para poder ver en n8n por qué
 // no se envió nada. Los nodos de envío y registro lo ignoran.
@@ -429,6 +492,7 @@ salidas.push({
       cuenta_responsable: e.cuenta_responsable || null
     })),
     umbralesHoras: UMBRALES_HORAS,
+    limiteEnviosPorEjecucion: LIMITE_ENVIOS_POR_EJECUCION,
     etiquetasQueApagan: ETIQUETAS_SILENCIO,
     conteo: conteo,
     avisos: avisos,
@@ -450,10 +514,10 @@ return salidas;
 // Las credenciales van escritas aquí adentro (esta instancia de n8n no permite
 // variables de entorno).
 //
-// IMPORTANTE · el bucle
-//   Este nodo va conectado a la salida «loop» (la de abajo) del nodo
-//   "Procesar uno a uno". Si se conecta a «done» (la de arriba) no llega nada,
-//   porque esa salida entrega un arreglo vacío hasta que el bucle termina.
+// IMPORTANTE · la cadena
+//   El workflow va en línea: Buscar → Enviar → Registrar (ya no hay nodo
+//   «Procesar uno a uno» ni bucle que pueda cortar la pasada en el primer
+//   cliente). Este nodo envía de a uno, en orden, todos los ítems que recibe.
 // ============================================================================
 // ---------------------------------------------------------------------------
 // CREDENCIALES (escritas aquí adentro)
@@ -477,26 +541,27 @@ if (!TOKEN || !SUPABASE_KEY) {
 }
 
 // ---------------------------------------------------------------------------
-// ÍTEMS DE ENTRADA
+// ÍTEMS DE ENTRADA (tanda completa, no solo el primero)
 // ---------------------------------------------------------------------------
-// Funciona en los dos modos del nodo Code y con lotes de cualquier tamaño:
-//   · modo «Run Once for All Items» (el que viene por defecto) → $input.all()
-//   · modo «Run Once for Each Item» → $input.item
-// En el bucle el lote es de 1 ítem, así que en ambos casos se procesa el mismo.
+// OJO · aquí estaba el motivo de que saliera UN solo recordatorio por pasada.
+// El nodo «Buscar clientes y preparar recordatorio» entrega todos los clientes
+// de golpe, pero este código leía «$input.item» (un único ítem) y enviaba solo
+// ese. Lo correcto es recorrer la tanda completa con $input.all(), que es lo que
+// usa el modo por defecto del nodo Code («Run Once for All Items»).
 function itemsDeEntrada() {
-  try {
-    const actual = $input.item;
-    if (actual && actual.json) return [actual];
-  } catch (error) {
-    // En «Run Once for All Items» puede no existir: se sigue con $input.all().
-  }
   try {
     const todos = $input.all();
     if (Array.isArray(todos) && todos.length) return todos;
-  } catch (error) {}
+  } catch (error) {
+    // Sin $input.all() (modos raros del nodo): se sigue con los otros caminos.
+  }
   try {
     const primero = $input.first();
     if (primero && primero.json) return [primero];
+  } catch (error) {}
+  try {
+    const actual = $input.item;
+    if (actual && actual.json) return [actual];
   } catch (error) {}
   return [];
 }
@@ -552,9 +617,10 @@ return resultados;
 // no repita el mismo intento. Las credenciales van escritas aquí adentro, en el
 // mismo proyecto Supabase que el nodo de búsqueda.
 //
-// IMPORTANTE · el bucle
-//   Este nodo vuelve a entrar al nodo "Procesar uno a uno" para que el bucle
-//   saque el siguiente ítem. Si no vuelve, solo se envía el primer recordatorio.
+// IMPORTANTE · la cadena
+//   El workflow va en línea: Buscar → Enviar → Registrar. Este nodo registra de
+//   una sola pasada todos los envíos que le lleguen (antes solo guardaba el
+//   primero, porque leía $input.item en vez de la tanda completa).
 // ============================================================================
 // ---------------------------------------------------------------------------
 // CREDENCIALES (escritas aquí adentro)
@@ -578,20 +644,24 @@ if (!TOKEN || !SUPABASE_KEY) {
 }
 
 // ---------------------------------------------------------------------------
-// ÍTEMS DE ENTRADA (funciona en los dos modos del nodo Code, ver nodo anterior)
+// ÍTEMS DE ENTRADA (tanda completa, no solo el primero)
 // ---------------------------------------------------------------------------
+// Se recorre $input.all() para registrar TODOS los envíos de la pasada, no solo
+// el primero (era el mismo fallo del nodo de envío).
 function itemsDeEntrada() {
-  try {
-    const actual = $input.item;
-    if (actual && actual.json) return [actual];
-  } catch (error) {}
   try {
     const todos = $input.all();
     if (Array.isArray(todos) && todos.length) return todos;
-  } catch (error) {}
+  } catch (error) {
+    // Sin $input.all() (modos raros del nodo): se sigue con los otros caminos.
+  }
   try {
     const primero = $input.first();
     if (primero && primero.json) return [primero];
+  } catch (error) {}
+  try {
+    const actual = $input.item;
+    if (actual && actual.json) return [actual];
   } catch (error) {}
   return [];
 }

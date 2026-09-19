@@ -5,9 +5,10 @@
 // no repita el mismo intento. Las credenciales van escritas aquí adentro, en el
 // mismo proyecto Supabase que el nodo de búsqueda.
 //
-// IMPORTANTE · el bucle
-//   Este nodo vuelve a entrar al nodo "Procesar uno a uno" para que el bucle
-//   saque el siguiente ítem. Si no vuelve, solo se envía el primer recordatorio.
+// IMPORTANTE · la cadena
+//   El workflow va en línea: Buscar → Enviar → Registrar. Este nodo registra de
+//   una sola pasada todos los envíos que le lleguen (antes solo guardaba el
+//   primero, porque leía $input.item en vez de la tanda completa).
 // ============================================================================
 // ---------------------------------------------------------------------------
 // CREDENCIALES (escritas aquí adentro)
@@ -31,20 +32,24 @@ if (!TOKEN || !SUPABASE_KEY) {
 }
 
 // ---------------------------------------------------------------------------
-// ÍTEMS DE ENTRADA (funciona en los dos modos del nodo Code, ver nodo anterior)
+// ÍTEMS DE ENTRADA (tanda completa, no solo el primero)
 // ---------------------------------------------------------------------------
+// Se recorre $input.all() para registrar TODOS los envíos de la pasada, no solo
+// el primero (era el mismo fallo del nodo de envío).
 function itemsDeEntrada() {
-  try {
-    const actual = $input.item;
-    if (actual && actual.json) return [actual];
-  } catch (error) {}
   try {
     const todos = $input.all();
     if (Array.isArray(todos) && todos.length) return todos;
-  } catch (error) {}
+  } catch (error) {
+    // Sin $input.all() (modos raros del nodo): se sigue con los otros caminos.
+  }
   try {
     const primero = $input.first();
     if (primero && primero.json) return [primero];
+  } catch (error) {}
+  try {
+    const actual = $input.item;
+    if (actual && actual.json) return [actual];
   } catch (error) {}
   return [];
 }

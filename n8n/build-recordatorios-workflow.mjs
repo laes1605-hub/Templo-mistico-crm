@@ -7,6 +7,11 @@
  * n8n/recordatorios/code/*.js. Así el JavaScript se edita en archivos .js
  * normales (con resaltado y pruebas) en vez de dentro de la cadena del JSON.
  *
+ * Además deja la cadena en línea y SIN el nodo «Procesar uno a uno»: cada nodo
+ * Code procesa todos los ítems que recibe, así que un bucle solo agregaba una
+ * pieza que podía cortar la pasada en el primer cliente (era el motivo de que
+ * saliera un único recordatorio).
+ *
  * Uso: node n8n/build-recordatorios-workflow.mjs   (o npm run build:recordatorios)
  */
 import fs from "node:fs";
@@ -17,15 +22,26 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const WORKFLOW = path.join(__dirname, "03-recordatorios-whatsapp-por-etapa.json");
 const CODE = path.join(__dirname, "recordatorios", "code");
 
+const DISPARADOR = "Cada 15 minutos";
+const BUSCAR = "Buscar clientes y preparar recordatorio";
+const ENVIO = "Enviar por WhatsApp API";
+const REGISTRO = "Registrar envío e impedir duplicados";
+
 const NODOS = {
-  "Buscar clientes y preparar recordatorio": "buscar-y-preparar.js",
-  "Enviar por WhatsApp API": "enviar-whatsapp-api.js",
-  "Registrar envío e impedir duplicados": "registrar-envio.js",
+  [BUSCAR]: "buscar-y-preparar.js",
+  [ENVIO]: "enviar-whatsapp-api.js",
+  [REGISTRO]: "registrar-envio.js",
 };
 
 const wf = JSON.parse(fs.readFileSync(WORKFLOW, "utf8"));
 const porNombre = new Map((wf.nodes || []).map((n) => [n.name, n]));
 
+// ---------------------------------------------------------------------------
+// 1) CÓDIGO DE LOS TRES NODOS
+// ---------------------------------------------------------------------------
+// El modo siempre explícito: «Run Once for All Items» es el único que procesa la
+// tanda completa. Si alguien lo cambia a «una vez por ítem», el nodo solo
+// enviaría el primer recordatorio de cada pasada.
 const codigos = {};
 for (const [nombre, archivo] of Object.entries(NODOS)) {
   const nodo = porNombre.get(nombre);
@@ -33,49 +49,66 @@ for (const [nombre, archivo] of Object.entries(NODOS)) {
   const codigo = fs.readFileSync(path.join(CODE, archivo), "utf8").replace(/\s+$/, "");
   codigos[nombre] = codigo;
   nodo.parameters = nodo.parameters || {};
+  nodo.parameters.mode = "runOnceForAllItems";
   nodo.parameters.jsCode = codigo;
   console.log("· " + nombre + " ← n8n/recordatorios/code/" + archivo + " (" + codigo.split("\n").length + " líneas)");
 }
 
+// ---------------------------------------------------------------------------
+// 2) SIN BUCLE: CADENA EN LÍNEA
+// ---------------------------------------------------------------------------
+// El nodo «Loop Over Items (Split in Batches)» tiene dos salidas (0 = done,
+// 1 = loop) y hay que devolver la flecha a su entrada para que saque el
+// siguiente ítem. Con los nodos Code ya procesando la tanda completa, ese bucle
+// sobra: se elimina del JSON para que no pueda volver a cortar los envíos.
+const antes = (wf.nodes || []).length;
+wf.nodes = (wf.nodes || []).filter((n) => n.type !== "n8n-nodes-base.splitInBatches");
+if (wf.nodes.length === antes) console.log("· (no había nodo de bucle que quitar)");
+else console.log("· Nodo de bucle eliminado: los nodos Code procesan la tanda completa");
+
+// Posiciones en el lienzo, para que el workflow se vea ordenado.
+const posiciones = { [BUSCAR]: [-160, 0], [ENVIO]: [80, 0], [REGISTRO]: [320, 0] };
+for (const [nombre, posicion] of Object.entries(posiciones)) {
+  const nodo = porNombre.get(nombre);
+  if (nodo) nodo.position = posicion;
+}
+
+const enlace = (nombre) => ({ node: nombre, type: "main", index: 0 });
+const destinos = (nombre) =>
+  ((wf.connections[nombre] || {}).main?.[0] || []).map((c) => c.node).join();
+
+wf.connections = {
+  [DISPARADOR]: { main: [[enlace(BUSCAR)]] },
+  [BUSCAR]: { main: [[enlace(ENVIO)]] },
+  [ENVIO]: { main: [[enlace(REGISTRO)]] },
+  [REGISTRO]: { main: [[]] },
+};
+
+// Validación: si alguien vuelve a meter un bucle o a cruzar la cadena, el build falla.
+for (const [origen, destinoEsperado] of [
+  [DISPARADOR, BUSCAR],
+  [BUSCAR, ENVIO],
+  [ENVIO, REGISTRO],
+]) {
+  if (destinos(origen) !== destinoEsperado) {
+    throw new Error("«" + origen + "» debe conectar con «" + destinoEsperado + "».");
+  }
+}
+if (destinos(REGISTRO) !== "") {
+  throw new Error("«" + REGISTRO + "» es el último nodo: no debe conectar con nada (ni volver al bucle).");
+}
+if ((wf.nodes || []).some((n) => n.type === "n8n-nodes-base.splitInBatches")) {
+  throw new Error("Volvió a aparecer un nodo de bucle: los nodos Code ya procesan toda la tanda.");
+}
+for (const nombre of Object.keys(NODOS)) {
+  if (porNombre.get(nombre).parameters.mode !== "runOnceForAllItems") {
+    throw new Error("El nodo «" + nombre + "» debe quedar en modo «Run Once for All Items».");
+  }
+}
+console.log("· Cadena en línea: Buscar → Enviar → Registrar (sin bucle) ✓");
+
 // El JSON del repositorio es solo para importar: nunca debe viajar activo.
 wf.active = false;
-
-// ---------------------------------------------------------------------------
-// CONEXIONES DEL BUCLE (aquí estaba el error que impedía todo envío)
-// ---------------------------------------------------------------------------
-// En n8n el nodo "Loop Over Items (Split in Batches)" tiene DOS salidas, y en
-// este orden: 0 = "done" y 1 = "loop" (ver SplitInBatchesV3: outputNames
-// ['done','loop'] y `return [[], returnItems]`). Los ítems salen por "loop"; la
-// salida "done" entrega [] hasta que el bucle termina.
-//
-// El workflow tenía el envío conectado a "done" (vacío) y el "loop" apuntando a
-// sí mismo: por eso NO se enviaba nada. El patrón correcto es:
-//   loop (salida 1) → Enviar → Registrar → vuelve a entrar al nodo del bucle
-const BUCLE = "Procesar uno a uno";
-const ENVIO = "Enviar por WhatsApp API";
-const REGISTRO = "Registrar envío e impedir duplicados";
-const enlace = (nombre) => ({ node: nombre, type: "main", index: 0 });
-
-wf.connections = wf.connections || {};
-wf.connections[BUCLE] = { main: [[], [enlace(ENVIO)]] }; // [done vacío, loop → envío]
-wf.connections[ENVIO] = { main: [[enlace(REGISTRO)]] };
-wf.connections[REGISTRO] = { main: [[enlace(BUCLE)]] };
-
-// Validación: si alguien vuelve a invertir las salidas, el build falla.
-const salidasBucle = wf.connections[BUCLE].main;
-const destino = (indice) => (salidasBucle[indice] || []).map((c) => c.node);
-if (destino(0).length !== 0 || destino(1).join() !== ENVIO) {
-  throw new Error(
-    "Conexiones del bucle mal armadas: la salida 0 (done) debe estar vacía y la salida 1 (loop) debe ir a «" + ENVIO + "»."
-  );
-}
-if ((wf.connections[ENVIO].main[0] || []).map((c) => c.node).join() !== REGISTRO) {
-  throw new Error("«" + ENVIO + "» debe conectar con «" + REGISTRO + "».");
-}
-if ((wf.connections[REGISTRO].main[0] || []).map((c) => c.node).join() !== BUCLE) {
-  throw new Error("«" + REGISTRO + "» debe volver a «" + BUCLE + "» para procesar el siguiente.");
-}
-console.log("· Conexiones del bucle: done (vacío) · loop → Enviar → Registrar → vuelve al bucle ✓");
 
 fs.writeFileSync(WORKFLOW, JSON.stringify(wf, null, 2) + "\n");
 console.log("✅ n8n/03-recordatorios-whatsapp-por-etapa.json actualizado");
@@ -98,21 +131,42 @@ const SUPABASE_SERVICE_ROLE_KEY = 'eyJ...';
 > Este archivo se genera con \`npm run build:recordatorios\`. No lo edites a mano:
 > edita \`n8n/recordatorios/code/*.js\` y vuelve a generarlo.
 
-## Cómo pegarlo (2 minutos)
+## Lo que cambió (2026-09-19)
+
+1. **Salía un solo recordatorio por pasada**: los nodos Code leían \`$input.item\`
+   (el primer ítem) en vez de la tanda completa. Ahora recorren **todos** los
+   ítems que reciben.
+2. **La variante se elige por tiempo sin contestar**: 30 min → 1 · 3 h → 2 ·
+   12 h → 3 · 23 h 30 → 4. Ya no depende de cuántos avisos lleve el cliente.
+3. **No se repite la misma variante**: si esa plantilla ya salió en las últimas
+   24 h para ese cliente y esa etapa, se omite (antes saldría cada 15 minutos).
+4. **Se eliminó el nodo «Procesar uno a uno»** y el bucle: la cadena es
+   Buscar → Enviar → Registrar. Un bucle mal conectado cortaba la pasada en el
+   primer cliente.
+5. **Tope de 60 envíos por pasada** (los que sobren salen en la siguiente, 15 min
+   después) y los nodos Code deben quedar en modo **Run Once for All Items**.
+
+## Cómo ponerlo (2 minutos, lo más seguro)
 
 1. En n8n abre el workflow **WhatsApp API · Recordatorios por etapa**.
-2. Entra al nodo, borra todo el contenido del campo **Code** y pega el bloque que
-   corresponda (cada bloque va completo, de la primera línea a la última).
-3. Repite con los tres nodos Code: **Buscar clientes y preparar recordatorio**,
-   **Enviar por WhatsApp API** y **Registrar envío e impedir duplicados**.
-4. Revisa las conexiones del bucle (es el error que impedía todo envío): del nodo
-   **Procesar uno a uno** la flecha debe salir por la salida de **abajo** («loop»)
-   hacia **Enviar por WhatsApp API**, y **Registrar envío e impedir duplicados** debe
-   volver a entrar a **Procesar uno a uno**. La salida de **arriba** («done») se
-   queda sin conectar: entrega un arreglo vacío hasta que el bucle termina.
-5. Guarda, pulsa **Execute Workflow** una vez y revisa la salida del primer nodo:
-   el último ítem trae el diagnóstico (si no sale nada, ahí dice por qué).
-6. Actívalo y **desactiva el workflow anterior** de recordatorios para no duplicar envíos.
+2. Menú (⋮) → **Import from File** → elige
+   \`03-recordatorios-whatsapp-por-etapa.json\`. Se abre como workflow nuevo y ya
+   trae los tres nodos Code, la cadena en línea y el disparador cada 15 minutos.
+3. Guárdalo, actívalo y **desactiva el workflow anterior** para no duplicar envíos.
+4. Pulsa **Execute Workflow** una vez: el último ítem de la salida del primer nodo
+   trae el diagnóstico (a quién le toca, a quién no y por qué).
+
+## Si prefieres pegar el código a mano
+
+1. Borra el contenido del campo **Code** y pega el bloque completo del nodo que
+   corresponda (los tres bloques van abajo).
+2. **Borra el nodo «Procesar uno a uno»** (y cualquier copia con «1» al final,
+   tipo «Procesar uno a uno1»).
+3. Deja la cadena así: **Cada 15 minutos → Buscar clientes y preparar recordatorio
+   → Enviar por WhatsApp API → Registrar envío e impedir duplicados**. El último
+   nodo no conecta con nada.
+4. En cada nodo Code, arriba a la derecha, revisa que el modo sea
+   **Run Once for All Items** (no «Run Once for Each Item»).
 
 `;
 

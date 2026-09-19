@@ -6,10 +6,10 @@
 // Las credenciales van escritas aquí adentro (esta instancia de n8n no permite
 // variables de entorno).
 //
-// IMPORTANTE · el bucle
-//   Este nodo va conectado a la salida «loop» (la de abajo) del nodo
-//   "Procesar uno a uno". Si se conecta a «done» (la de arriba) no llega nada,
-//   porque esa salida entrega un arreglo vacío hasta que el bucle termina.
+// IMPORTANTE · la cadena
+//   El workflow va en línea: Buscar → Enviar → Registrar (ya no hay nodo
+//   «Procesar uno a uno» ni bucle que pueda cortar la pasada en el primer
+//   cliente). Este nodo envía de a uno, en orden, todos los ítems que recibe.
 // ============================================================================
 // ---------------------------------------------------------------------------
 // CREDENCIALES (escritas aquí adentro)
@@ -33,26 +33,27 @@ if (!TOKEN || !SUPABASE_KEY) {
 }
 
 // ---------------------------------------------------------------------------
-// ÍTEMS DE ENTRADA
+// ÍTEMS DE ENTRADA (tanda completa, no solo el primero)
 // ---------------------------------------------------------------------------
-// Funciona en los dos modos del nodo Code y con lotes de cualquier tamaño:
-//   · modo «Run Once for All Items» (el que viene por defecto) → $input.all()
-//   · modo «Run Once for Each Item» → $input.item
-// En el bucle el lote es de 1 ítem, así que en ambos casos se procesa el mismo.
+// OJO · aquí estaba el motivo de que saliera UN solo recordatorio por pasada.
+// El nodo «Buscar clientes y preparar recordatorio» entrega todos los clientes
+// de golpe, pero este código leía «$input.item» (un único ítem) y enviaba solo
+// ese. Lo correcto es recorrer la tanda completa con $input.all(), que es lo que
+// usa el modo por defecto del nodo Code («Run Once for All Items»).
 function itemsDeEntrada() {
-  try {
-    const actual = $input.item;
-    if (actual && actual.json) return [actual];
-  } catch (error) {
-    // En «Run Once for All Items» puede no existir: se sigue con $input.all().
-  }
   try {
     const todos = $input.all();
     if (Array.isArray(todos) && todos.length) return todos;
-  } catch (error) {}
+  } catch (error) {
+    // Sin $input.all() (modos raros del nodo): se sigue con los otros caminos.
+  }
   try {
     const primero = $input.first();
     if (primero && primero.json) return [primero];
+  } catch (error) {}
+  try {
+    const actual = $input.item;
+    if (actual && actual.json) return [actual];
   } catch (error) {}
   return [];
 }

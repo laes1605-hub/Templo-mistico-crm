@@ -72,14 +72,24 @@ export function tipoDeEtapa(nombre, reglas) {
   return null;
 }
 
-/** Misma decisión que el nodo: intentos previos + horas sin responder → qué envío toca. */
-export function decidir({ horas, intentos }, reglas) {
-  if (horas >= reglas.ventanaApiHoras) return { accion: "ventana" };
-  if (intentos >= reglas.umbralesHoras.length) return { accion: "completo" };
-  if (horas < reglas.umbralesHoras[intentos]) {
-    return { accion: "espera", faltaHoras: reglas.umbralesHoras[intentos] - horas, intento: intentos + 1 };
+/** Qué variante (1 a 4) le toca por el TIEMPO sin responder: la última franja cumplida. */
+export function variantePorTiempo(horas, reglas) {
+  let variante = 0;
+  for (let i = 0; i < reglas.umbralesHoras.length; i++) {
+    if (horas >= reglas.umbralesHoras[i]) variante = i + 1;
   }
-  return { accion: "enviar", intento: intentos + 1, umbralHoras: reglas.umbralesHoras[intentos] };
+  return variante || null;
+}
+
+/** Misma decisión que el nodo: horas sin responder + variantes ya enviadas → qué toca. */
+export function decidir({ horas, enviadas = [] }, reglas) {
+  if (horas >= reglas.ventanaApiHoras) return { accion: "ventana" };
+  const variante = variantePorTiempo(horas, reglas);
+  if (!variante) {
+    return { accion: "espera", faltaHoras: reglas.umbralesHoras[0] - horas, intento: 1 };
+  }
+  if (enviadas.indexOf(variante) !== -1) return { accion: "repetida", intento: variante };
+  return { accion: "enviar", intento: variante, umbralHoras: reglas.umbralesHoras[variante - 1] };
 }
 
 // ---------------------------------------------------------------------------
@@ -110,13 +120,22 @@ export function preparar({ etapas, conversaciones, registros }, reglas, ahora) {
     if (tipo && e.clave) tipoPorClave.set(String(e.clave).trim(), tipo);
   }
 
-  // Intentos ya enviados por cliente + etapa (contando todas las variantes de tipo).
+  // Envíos por cliente + etapa: totales y, sobre todo, qué variante salió en las
+  // últimas 24 h (es la que NO se repite). Cuenta las variantes históricas de
+  // tipo, como el nodo (por ejemplo «sinRespuesta» = no contesta).
   const intentos = new Map();
+  const enviadas = new Map();
   for (const r of registros || []) {
     const variantes = (reglas.variantesTipo[r.tipo] || [r.tipo]).map(normalizar);
     if (variantes.indexOf(normalizar(r.tipo)) === -1) continue;
     const clave = r.cliente_id + "|" + r.etapa;
     intentos.set(clave, (intentos.get(clave) || 0) + 1);
+    const cuando = new Date(r.enviado_en).getTime();
+    if (Number.isFinite(cuando) && ahora.getTime() - cuando < 24 * 3600 * 1000) {
+      const set = enviadas.get(clave) || new Set();
+      set.add(Number(r.plantilla));
+      enviadas.set(clave, set);
+    }
   }
 
   const filas = [];
@@ -136,6 +155,7 @@ export function preparar({ etapas, conversaciones, registros }, reglas, ahora) {
       marca,
       horas,
       intentos: intentos.get(cliente.id + "|" + cliente.estado) || 0,
+      enviadas: Array.from(enviadas.get(cliente.id + "|" + cliente.estado) || []).sort((a, b) => a - b),
     });
   }
   return filas;
@@ -145,47 +165,57 @@ export function preparar({ etapas, conversaciones, registros }, reglas, ahora) {
 // 3) Informe
 // ---------------------------------------------------------------------------
 export function informe(filas, reglas, ahora) {
-  const salen = [], esperan = [], ventana = [], sinMarca = [];
+  const salen = [], esperan = [], ventana = [], repetidas = [], sinMarca = [];
   for (const f of filas) {
     if (f.horas === null) { sinMarca.push(f); continue; }
-    const d = decidir({ horas: f.horas, intentos: f.intentos }, reglas);
+    const d = decidir({ horas: f.horas, enviadas: f.enviadas }, reglas);
     if (d.accion === "enviar") salen.push({ ...f, ...d });
     else if (d.accion === "espera") esperan.push({ ...f, ...d });
-    else if (d.accion === "ventana") ventana.push(f);
-    else ventana.push({ ...f, completo: true });
+    else if (d.accion === "repetida") repetidas.push({ ...f, ...d });
+    else ventana.push(f);
   }
   const porHoras = (a, b) => b.horas - a.horas;
-  return { salen: salen.sort(porHoras), esperan: esperan.sort(porHoras), ventana: ventana.sort(porHoras), sinMarca };
+  return {
+    salen: salen.sort(porHoras),
+    esperan: esperan.sort(porHoras),
+    repetidas: repetidas.sort(porHoras),
+    ventana: ventana.sort(porHoras),
+    sinMarca,
+  };
 }
 
 function linea(campos, anchos) {
   return campos.map((c, i) => String(c ?? "").padEnd(anchos[i]).slice(0, anchos[i])).join("  ");
 }
 
-export function imprimir({ salen, esperan, ventana, sinMarca }, reglas, ahora) {
+export function imprimir({ salen, esperan, repetidas, ventana, sinMarca }, reglas, ahora) {
   const h = (n) => (n >= 100 ? n.toFixed(0) : n.toFixed(1)) + " h";
   const e = (t) => (t === "datos" ? "Datos" : "No contesta");
   console.log("\nPrueba en seco (NO envía nada) · " + ahora.toISOString() + " · " + reglas.etapasRecordatorio.datos.join("/") +
-    " y " + reglas.etapasRecordatorio.noContesta.slice(0, 2).join("/") + " · intentos a las " + reglas.umbralesHoras.join(" / ") + " h · ventana " + reglas.ventanaApiHoras + " h");
+    " y " + reglas.etapasRecordatorio.noContesta.slice(0, 2).join("/") + " · variante a las " + reglas.umbralesHoras.join(" / ") + " h · ventana " + reglas.ventanaApiHoras + " h");
 
   console.log("\n✅ SALDRÍA AHORA (" + salen.length + ")");
-  console.log("  " + linea(["ETAPA", "CLIENTE", "SIN RESPONDER", "ENVÍA", "YA ENVIADOS"], [13, 30, 14, 12, 11]));
-  for (const f of salen) console.log("  " + linea([e(f.etapa), f.cliente, h(f.horas), "plantilla " + f.intento, f.intentos], [13, 30, 14, 12, 11]));
+  console.log("  " + linea(["ETAPA", "CLIENTE", "SIN RESPONDER", "ENVÍA", "HISTÓRICOS"], [13, 30, 14, 13, 11]));
+  for (const f of salen) console.log("  " + linea([e(f.etapa), f.cliente, h(f.horas), "plantilla " + f.intento, f.intentos], [13, 30, 14, 13, 11]));
+
+  if (repetidas.length) {
+    console.log("\n🔁 YA SE ENVIÓ esa misma plantilla en las últimas 24 h (" + repetidas.length + ") — no se repite");
+    console.log("  " + linea(["ETAPA", "CLIENTE", "SIN RESPONDER", "PLANTILLA"], [13, 30, 14, 13]));
+    for (const f of repetidas) console.log("  " + linea([e(f.etapa), f.cliente, h(f.horas), "plantilla " + f.intento], [13, 30, 14, 13]));
+  }
 
   console.log("\n⏳ ESPERAN TIEMPO (" + esperan.length + ")");
   console.log("  " + linea(["ETAPA", "CLIENTE", "SIN RESPONDER", "FALTAN", "PARA"], [13, 30, 14, 10, 12]));
-  for (const f of esperan) console.log("  " + linea([e(f.etapa), f.cliente, h(f.horas), h(f.faltaHoras), "intento " + f.intento], [13, 30, 14, 10, 12]));
+  for (const f of esperan) console.log("  " + linea([e(f.etapa), f.cliente, h(f.horas), h(f.faltaHoras), "plantilla " + f.intento], [13, 30, 14, 10, 12]));
 
   console.log("\n⏰ NO SE TOCAN — fuera de la ventana de 24 h del WhatsApp API (" + ventana.length + ")");
-  console.log("  " + linea(["ETAPA", "CLIENTE", "ÚLTIMO MENSAJE", "MOTIVO"], [13, 30, 14, 26]));
-  for (const f of ventana) {
-    console.log("  " + linea([e(f.etapa), f.cliente, h(f.horas), f.completo ? "ya recibió los 4 intentos" : "van al WhatsApp Personal"], [13, 30, 14, 26]));
-  }
+  for (const f of ventana) console.log("  · " + f.cliente + " (" + h(f.horas) + ")");
 
   if (sinMarca.length) {
     console.log("\n❔ SIN MARCA de mensaje entrante por el API (" + sinMarca.length + "): " + sinMarca.map((f) => f.cliente).join(", "));
   }
-  console.log("\nTotal a enviar ahora: " + salen.length + " · en espera: " + esperan.length + " · fuera de ventana: " + ventana.length + "\n");
+  console.log("\nTotal a enviar ahora: " + salen.length + " · repetidas: " + repetidas.length + " · en espera: " + esperan.length +
+    " · fuera de ventana: " + ventana.length + "\n");
 }
 
 // ---------------------------------------------------------------------------

@@ -3,11 +3,17 @@
 // ----------------------------------------------------------------------------
 // QUÉ HACE
 //   Cada 15 minutos revisa los chats ABIERTOS que llegaron por el WhatsApp API
-//   (Chatwoot, bandeja de Meta) y están en una etapa de recordatorio. Según el
-//   tiempo que lleve el cliente sin escribir, prepara hasta 4 recordatorios:
-//   30 min · 3 h · 12 h · 23 h 30 min.
+//   (Chatwoot, bandeja de Meta) y están en una etapa de recordatorio. La variante
+//   se elige por el TIEMPO que lleve el cliente sin escribir:
+//   30 min → 1 · 3 h → 2 · 12 h → 3 · 23 h 30 → 4.
+//   La misma variante no se repite dentro de las 24 h siguientes.
 //
-// QUÉ SE ARREGLÓ (2026-09-19, migración al Supabase nuevo)
+// QUÉ SE ARREGLÓ (2026-09-19)
+//   0. Solo salía UN recordatorio por ejecución: los nodos Code leían «$input.item»
+//      (el primer ítem) en vez de la tanda completa. Ahora los tres nodos recorren
+//      TODOS los ítems que reciben, así que en la misma pasada salen todos los que
+//      tocan. Además el workflow ya no lleva el nodo «Procesar uno a uno» ni el
+//      bucle: era otra pieza que podía cortar el envío en el primer cliente.
 //   1. Las etapas se reconocen SOLO por su NOMBRE, en todo el pipeline. Antes se
 //      pedía además grupo = 'templo' y el CRM ahora crea/edita las etapas con
 //      grupo = 'general' ("Datos" quedó en general): el workflow no encontraba
@@ -20,6 +26,8 @@
 //   4. Las credenciales van escritas aquí adentro (esta instancia de n8n no
 //      permite variables de entorno). Cambiar de proyecto Supabase = editar
 //      SUPABASE_URL y SUPABASE_SERVICE_ROLE_KEY en el bloque de abajo.
+//   5. La etiqueta «bot-pausado» ya NO silencia: Luna la pone justo cuando pasa
+//      el chat a Datos, así que vetaba a los clientes que deben recibir el aviso.
 // ============================================================================
 
 // ---------------------------------------------------------------------------
@@ -85,7 +93,13 @@ const VARIANTES_TIPO = {
 const ETIQUETAS_SILENCIO = ['recordatorios_pausados', 'lead_perdido', 'perdido', 'spam'];
 
 // Minutos/horas desde la ÚLTIMA respuesta del cliente para cada intento.
+// La variante se elige por TIEMPO, no por cuántos recordatorios lleve: quien
+// lleva 14 h sin contestar recibe el tercero, y quien lleva 1 h el primero.
 const UMBRALES_HORAS = [0.5, 3, 12, 23.5];
+
+// Tope de seguridad por ejecución: con esto una tanda enorme no se dispara de
+// golpe (los que queden fuera salen en la siguiente pasada, 15 min después).
+const LIMITE_ENVIOS_POR_EJECUCION = 60;
 
 // WhatsApp API solo deja responder texto libre dentro de las 24 h siguientes al
 // último mensaje del cliente. Pasado ese plazo Meta rechaza el envío, así que no
@@ -111,6 +125,16 @@ const normalizarEtiqueta = (valor) =>
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '');
+
+// Qué variante (1 a 4) le toca según las horas sin contestar: la última franja
+// que ya se cumplió. Menos de 30 min todavía no cumple ninguna.
+const variantePorTiempo = (horas) => {
+  let variante = 0;
+  for (let i = 0; i < UMBRALES_HORAS.length; i++) {
+    if (horas >= UMBRALES_HORAS[i]) variante = i + 1;
+  }
+  return variante || null;
+};
 
 const tipoDeNombre = (nombre) => {
   const n = normalizar(nombre);
@@ -193,7 +217,8 @@ const conteo = {
     spam: 0,
     etapaSinRecordatorio: 0,
     sinMensajesEntrantes: 0,
-    yaCompletos: 0,
+    varianteYaEnviada: 0,
+    porLimite: 0,
     esperandoTiempo: 0,
     ventanaCerrada: 0,
     sinTelefono: 0,
@@ -294,8 +319,16 @@ for (const conv of conversaciones) {
       continue;
     }
 
-    // Intentos ya enviados a este cliente en esta etapa (incluye los registros
-    // antiguos escritos con la otra variante de tipo).
+    // Variante que le toca por el tiempo que lleva sin contestar.
+    const variante = variantePorTiempo(horasDesdeRespuesta);
+    if (!variante) {
+      conteo.omitidas.esperandoTiempo++;
+      continue;
+    }
+
+    // Guardia contra repetir: si ESA misma variante ya salió en las últimas 24 h
+    // para este cliente en esta etapa, se omite. Así el ciclo de 15 minutos no
+    // repite el mismo mensaje mientras la ventana siga abierta.
     const variantes = VARIANTES_TIPO[tipo].map((v) => encodeURIComponent(v)).join(',');
     const logs = await getJson(
       SUPABASE_URL +
@@ -305,22 +338,25 @@ for (const conv of conversaciones) {
         encodeURIComponent(cliente.estado) +
         '&tipo=in.(' +
         variantes +
-        ')&select=plantilla,enviado_en&order=enviado_en.desc&limit=10',
+        ')&select=plantilla,enviado_en&order=enviado_en.desc&limit=20',
       sbHeaders
     );
-    const intentos = Array.isArray(logs) ? logs.length : 0;
-    if (intentos >= UMBRALES_HORAS.length) {
-      conteo.omitidas.yaCompletos++;
+    const yaEnviada = (Array.isArray(logs) ? logs : []).some((l) => {
+      const cuando = Math.floor(new Date(l.enviado_en).getTime() / 1000);
+      return Number(l.plantilla) === variante && cuando > 0 && ahora - cuando < 24 * 3600;
+    });
+    if (yaEnviada) {
+      conteo.omitidas.varianteYaEnviada++;
       continue;
     }
-    if (horasDesdeRespuesta < UMBRALES_HORAS[intentos]) {
-      conteo.omitidas.esperandoTiempo++;
+    if (conteo.recordatoriosPreparados >= LIMITE_ENVIOS_POR_EJECUCION) {
+      conteo.omitidas.porLimite++;
       continue;
     }
 
     const nombre = String((conv.meta && conv.meta.sender && conv.meta.sender.name) || '').trim();
     const primerNombre = nombre && normalizar(nombre) !== 'cliente' ? nombre.split(' ')[0] : '';
-    const mensaje = plantillas[tipo][intentos].replace('{{nombre}}', primerNombre).replace('Hola .', 'Hola');
+    const mensaje = plantillas[tipo][variante - 1].replace('{{nombre}}', primerNombre).replace('Hola .', 'Hola');
     const telefono = String(
       dbConv.numero_whatsapp ||
         (conv.meta && conv.meta.sender && (conv.meta.sender.phone_number || conv.meta.sender.identifier)) ||
@@ -341,7 +377,7 @@ for (const conv of conversaciones) {
         estado: cliente.estado,
         telefono: telefono,
         mensaje: mensaje,
-        intento: intentos + 1,
+        intento: variante,
         nombre: primerNombre,
         ultimaRespuestaCliente: ultimaRespuesta,
         horasDesdeRespuesta: Math.floor(horasDesdeRespuesta)
@@ -380,6 +416,12 @@ if (conteo.omitidas.ventanaCerrada > 0) {
 if (conteo.recordatoriosPreparados === 0 && conteo.omitidas.esperandoTiempo > 0) {
   avisos.push('Hay ' + conteo.omitidas.esperandoTiempo + ' chat(s) en etapa de recordatorio, pero todavía no cumple el tiempo del siguiente intento.');
 }
+if (conteo.omitidas.porLimite > 0) {
+  avisos.push(
+    'Se prepararon ' + LIMITE_ENVIOS_POR_EJECUCION + ' recordatorios (el tope por ejecución) y quedaron ' +
+    conteo.omitidas.porLimite + ' para la siguiente pasada, dentro de 15 minutos.'
+  );
+}
 
 // Ítem de diagnóstico: siempre se envía al final para poder ver en n8n por qué
 // no se envió nada. Los nodos de envío y registro lo ignoran.
@@ -396,6 +438,7 @@ salidas.push({
       cuenta_responsable: e.cuenta_responsable || null
     })),
     umbralesHoras: UMBRALES_HORAS,
+    limiteEnviosPorEjecucion: LIMITE_ENVIOS_POR_EJECUCION,
     etiquetasQueApagan: ETIQUETAS_SILENCIO,
     conteo: conteo,
     avisos: avisos,

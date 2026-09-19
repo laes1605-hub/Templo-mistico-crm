@@ -296,57 +296,70 @@ grupo("2) Qué chats entran");
 }
 
 // ---------------------------------------------------------------------------
-// 3) Tiempos: 30 min · 3 h · 12 h · 23 h 30 min
+// 3) Variante por tiempo sin contestar: 30 min · 3 h · 12 h · 23 h 30 min
 // ---------------------------------------------------------------------------
-grupo("3) Tiempos de cada intento");
+grupo("3) Cada cliente recibe la variante acorde a su tiempo sin contestar");
 
+const hace24 = new Date(Date.now() - 3600 * 1000).toISOString();
 const tiempos = [
-  { horas: 0.33, previos: [], intento: 0, nota: "20 min → todavía no" },
-  { horas: 0.6, previos: [], intento: 1, nota: "36 min → intento 1" },
-  { horas: 4, previos: [{ tipo: "datos" }], intento: 2, nota: "4 h con 1 enviado → intento 2" },
-  { horas: 13, previos: [{ tipo: "datos" }, { tipo: "datos" }], intento: 3, nota: "13 h con 2 enviados → intento 3" },
-  { horas: 23.7, previos: [{ tipo: "datos" }, { tipo: "datos" }, { tipo: "datos" }], intento: 4, nota: "23,7 h con 3 enviados → intento 4" },
-  { horas: 23.9, previos: [{ tipo: "datos" }, { tipo: "datos" }, { tipo: "datos" }, { tipo: "datos" }], intento: 0, nota: "4 enviados → no se repite" },
+  { horas: 0.33, previos: [], variante: 0, nota: "20 min → todavía no cumple los 30 min" },
+  { horas: 0.6, previos: [], variante: 1, nota: "36 min → variante 1" },
+  { horas: 1, previos: [], variante: 1, nota: "1 h sin contestar (sin ningún envío) → variante 1" },
+  { horas: 4, previos: [], variante: 2, nota: "4 h sin contestar y sin envíos previos → variante 2" },
+  { horas: 8, previos: [], variante: 2, nota: "8 h sin contestar → variante 2" },
+  { horas: 13, previos: [], variante: 3, nota: "13 h sin contestar → variante 3" },
+  { horas: 23.7, previos: [], variante: 4, nota: "23,7 h sin contestar → variante 4" },
+  {
+    horas: 4,
+    previos: [{ tipo: "datos", plantilla: 2, enviado_en: hace24 }],
+    variante: 0,
+    nota: "4 h, pero la variante 2 ya salió hace menos de 24 h → no se repite",
+  },
+  {
+    horas: 4,
+    previos: [{ tipo: "datos", plantilla: 2, enviado_en: "2026-08-27T15:15:17Z" }],
+    variante: 2,
+    nota: "4 h con un envío viejo (más de 24 h) → la variante 2 sí sale",
+  },
 ];
 for (const t of tiempos) {
   const r = await ejecutarBuscar(
     escenario({
       mensajes: { 271: [{ message_type: 0, created_at: hace(t.horas) }] },
-      registros: { "cli-1|etapa_1787876104854": t.previos.map((p, i) => ({ tipo: p.tipo, plantilla: i + 1, enviado_en: new Date().toISOString() })) },
+      registros: { "cli-1|etapa_1787876104854": t.previos },
     })
   );
-  check(t.nota, (r.recordatorios[0]?.intento || 0) === t.intento, "intento: " + r.recordatorios[0]?.intento);
+  check(t.nota, (r.recordatorios[0]?.intento || 0) === t.variante, "intento: " + r.recordatorios[0]?.intento);
 }
 
-{
-  const r = await ejecutarBuscar(escenario({ mensajes: { 271: [{ message_type: 0, created_at: hace(23.9) }] }, registros: { "cli-1|etapa_1787876104854": [{ tipo: "datos" }, { tipo: "datos" }, { tipo: "datos" }].map((p, i) => ({ tipo: p.tipo, plantilla: i + 1 })) } }));
-  check("A 23,9 h (dentro de la ventana de 24 h) sale el 4.º intento", r.recordatorios[0]?.intento === 4);
-}
 {
   const r = await ejecutarBuscar(escenario({ mensajes: { 271: [{ message_type: 0, created_at: hace(25) }] } }));
   check("Pasadas 24 h no se intenta (Meta rechazaría el texto libre)", r.recordatorios.length === 0 && r.diagnostico.conteo.omitidas.ventanaCerrada === 1);
   check("Y el diagnóstico lo explica", (r.diagnostico.avisos || []).some((a) => /ventana de 24 h/.test(a)));
 }
 {
-  // Los envíos viejos del tipo "noContesta" también cuentan para no repetir.
+  // Los envíos del tipo "noContesta" también cuentan para no repetir la variante.
   const r = await ejecutarBuscar(
     escenario({
       convs: { 271: filaSupabase({}, { estado: "etapa_templo_1787618330816" }) },
       mensajes: { 271: [{ message_type: 0, created_at: hace(5) }] },
-      registros: { "cli-1|etapa_templo_1787618330816": [{ tipo: "noContesta", plantilla: 1, enviado_en: "2026-08-29T01:30:16Z" }] },
+      registros: { "cli-1|etapa_templo_1787618330816": [{ tipo: "noContesta", plantilla: 2, enviado_en: hace24 }] },
     })
   );
-  check("Cuenta los envíos antiguos guardados como 'noContesta'", r.recordatorios[0]?.intento === 2, "intento: " + r.recordatorios[0]?.intento);
+  check(
+    "La variante 2 guardada como 'noContesta' no se repite",
+    r.recordatorios.length === 0 && r.diagnostico.conteo.omitidas.varianteYaEnviada === 1
+  );
 }
 {
   const r = await ejecutarBuscar(
     escenario({
       convs: { 271: filaSupabase({}, { estado: "etapa_templo_1787618330816" }) },
       mensajes: { 271: [{ message_type: 0, created_at: hace(5) }] },
-      registros: { "cli-1|etapa_templo_1787618330816": [{ tipo: "sinRespuesta", plantilla: 1, enviado_en: "2026-08-27T15:15:17Z" }] },
+      registros: { "cli-1|etapa_templo_1787618330816": [{ tipo: "sinRespuesta", plantilla: 2, enviado_en: hace24 }] },
     })
   );
-  check("También cuenta los guardados como 'sinRespuesta'", r.recordatorios[0]?.intento === 2, "intento: " + r.recordatorios[0]?.intento);
+  check("También cuenta los guardados como 'sinRespuesta'", r.recordatorios.length === 0 && r.diagnostico.conteo.omitidas.varianteYaEnviada === 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -394,64 +407,56 @@ grupo("4) Credenciales escritas en el nodo (n8n sin variables de entorno)");
 
 
 // ---------------------------------------------------------------------------
-// 7) El bucle completo (aquí estaba el fallo que impedía todo envío)
+// 7) La cadena en línea (aquí estaba el fallo de «solo envió a 1»)
 // ---------------------------------------------------------------------------
-grupo("7) Bucle «Procesar uno a uno»: la salida correcta es «loop»");
+grupo("7) Cadena en línea sin bucle: la tanda completa sale en la misma pasada");
 
 {
-  // En n8n, "Loop Over Items (Split in Batches)" tiene las salidas en este
-  // orden: 0 = done, 1 = loop. Los ítems salen SIEMPRE por «loop»; «done»
-  // entrega [] hasta que el bucle se agota (SplitInBatchesV3: `return [[], items]`).
   const conexiones = workflow.connections || {};
-  const salidas = ((conexiones["Procesar uno a uno"] || {}).main) || [];
-  const destinos = (i) => (salidas[i] || []).map((c) => c.node);
+  const destinos = (nombre) => ((conexiones[nombre] || {}).main?.[0] || []).map((c) => c.node).join();
 
   check(
-    "La salida 1 (loop) lleva los ítems a «Enviar por WhatsApp API»",
-    destinos(1).join() === "Enviar por WhatsApp API",
-    "destinos: " + JSON.stringify(destinos(1))
+    "No hay nodo de bucle «Procesar uno a uno» (no puede cortar la pasada)",
+    !workflow.nodes.some((n) => n.type === "n8n-nodes-base.splitInBatches")
   );
-  check(
-    "La salida 0 (done) está vacía: ahí no se envía nada",
-    destinos(0).length === 0,
-    "destinos: " + JSON.stringify(destinos(0))
-  );
-  check(
-    "La salida 0 (done) NO se auto-conecta al bucle",
-    !destinos(0).includes("Procesar uno a uno")
-  );
-  check(
-    "«Enviar por WhatsApp API» pasa a «Registrar envío e impedir duplicados»",
-    ((conexiones["Enviar por WhatsApp API"] || {}).main[0] || []).map((c) => c.node).join() === "Registrar envío e impedir duplicados"
-  );
-  check(
-    "«Registrar envío e impedir duplicados» vuelve al bucle para el siguiente ítem",
-    ((conexiones["Registrar envío e impedir duplicados"] || {}).main[0] || []).map((c) => c.node).join() === "Procesar uno a uno"
-  );
-  check(
-    "El disparador y la búsqueda siguen encadenados",
-    ((conexiones["Cada 15 minutos"] || {}).main[0] || []).map((c) => c.node).join() === "Buscar clientes y preparar recordatorio" &&
-      ((conexiones["Buscar clientes y preparar recordatorio"] || {}).main[0] || []).map((c) => c.node).join() === "Procesar uno a uno"
-  );
+  check("«Cada 15 minutos» conecta con la búsqueda", destinos("Cada 15 minutos") === "Buscar clientes y preparar recordatorio");
+  check("La búsqueda conecta con el envío", destinos("Buscar clientes y preparar recordatorio") === "Enviar por WhatsApp API");
+  check("El envío conecta con el registro", destinos("Enviar por WhatsApp API") === "Registrar envío e impedir duplicados");
+  check("El registro es el último nodo (no vuelve a ningún lado)", destinos("Registrar envío e impedir duplicados") === "");
+  for (const nombre of [
+    "Buscar clientes y preparar recordatorio",
+    "Enviar por WhatsApp API",
+    "Registrar envío e impedir duplicados",
+  ]) {
+    const nodo = workflow.nodes.find((n) => n.name === nombre);
+    check(
+      "«" + nombre + "» está en modo «Run Once for All Items»",
+      nodo.parameters.mode === "runOnceForAllItems",
+      String(nodo.parameters.mode)
+    );
+  }
 }
 
 {
-  // Simulación del bucle tal como lo ejecuta n8n con lotes de 1 ítem:
-  // el nodo de bucle entrega un ítem por «loop», el envío lo manda, el registro
-  // lo guarda y vuelve a entrar; cuando no quedan ítems, «done» sale vacío.
-  async function simularBucle(items, servidor) {
+  // Una pasada completa como la ejecuta n8n: el nodo Code recibe TODA la tanda
+  // (modo «Run Once for All Items») y debe procesarla completa, no solo el
+  // primer ítem (ese era el fallo: salía un único recordatorio por pasada).
+  async function simularPasada(items, servidor) {
     const enviar = compilar(CODIGO.enviar);
     const registrar = compilar(CODIGO.registrar);
-    let enviados = 0;
-    let registrados = 0;
-    for (const item of items) {
-      // `items` ya son los json de salida del primer nodo (no objetos {json}).
-      const trasEnviar = await enviar(servidor.helpers, entradaTodos(item), () => ({}));
-      const trasRegistrar = await registrar(servidor.helpers, entradaTodos(trasEnviar[0].json), () => ({}));
-      if (trasEnviar[0].json.enviado === true) enviados++;
-      if (trasRegistrar[0].json.registrado === true) registrados++;
-    }
-    return { enviados, registrados, done: [] }; // «done» entrega [] al final
+    const lote = (jsons) => ({ all: () => jsons.map((json) => ({ json })) });
+    const trasEnviar = await enviar(servidor.helpers, lote(items), () => ({}));
+    const trasRegistrar = await registrar(
+      servidor.helpers,
+      lote(trasEnviar.map((i) => i.json)),
+      () => ({})
+    );
+    return {
+      enviados: trasEnviar.filter((i) => i.json.enviado === true).length,
+      registrados: trasRegistrar.filter((i) => i.json.registrado === true).length,
+      diagnosticos: trasEnviar.filter((i) => i.json._diagnostico === true).length,
+      noEnviados: trasEnviar.filter((i) => i.json.enviado !== true).length,
+    };
   }
 
   const servidor = servidorFalso({
@@ -489,11 +494,16 @@ grupo("7) Bucle «Procesar uno a uno»: la salida correcta es «loop»");
   });
   check("El primer nodo prepara un recordatorio por cada cliente elegible", preparados.recordatorios.length === 2);
 
-  const servidorBucle = servidorFalso({});
-  const resultado = await simularBucle(preparados.items, servidorBucle);
-  check("El bucle envía TODOS los recordatorios preparados (no solo el primero)", resultado.enviados === 2, "enviados: " + resultado.enviados);
+  const servidorPasada = servidorFalso({});
+  const resultado = await simularPasada(preparados.items, servidorPasada);
+  check(
+    "Una pasada envía TODOS los recordatorios preparados (no solo el primero)",
+    resultado.enviados === 2,
+    "enviados: " + resultado.enviados
+  );
   check("Y registra los dos envíos para no repetirlos", resultado.registrados === 2, "registrados: " + resultado.registrados);
-  check("El ítem de diagnóstico pasa el bucle sin enviarse", servidorBucle.estado.enviadosChatwoot.length === 2);
+  check("El ítem de diagnóstico pasa la pasada sin enviarse", resultado.diagnosticos === 1 && servidorPasada.estado.enviadosChatwoot.length === 2);
+  check("Nada más se envía en la pasada", resultado.noEnviados === 1, "no enviados: " + resultado.noEnviados);
 }
 
 {
@@ -515,6 +525,19 @@ grupo("7) Bucle «Procesar uno a uno»: la salida correcta es «loop»");
   const servidor4 = servidorFalso({});
   const registro = await compilar(CODIGO.registrar)(servidor4.helpers, { all: () => [{ json: { enviado: true, clienteId: "cli-1", conversacionId: "conv-1", estado: "e1", etapa: "datos", intento: 1, mensaje: "x" } }] }, () => ({}));
   check("El registro también aguanta lotes y modo todos-los-ítems", registro[0].json.registrado === true && servidor4.estado.insertadosSupabase.length === 1);
+
+  const servidor5 = servidorFalso({});
+  const dosEnvios = {
+    all: () => [
+      { json: { enviado: true, clienteId: "cli-1", conversacionId: "conv-1", estado: "e1", etapa: "datos", intento: 1, mensaje: "x" } },
+      { json: { enviado: true, clienteId: "cli-2", conversacionId: "conv-2", estado: "e1", etapa: "datos", intento: 3, mensaje: "y" } },
+    ],
+  };
+  const registro2 = await compilar(CODIGO.registrar)(servidor5.helpers, dosEnvios, () => ({}));
+  check(
+    "El registro guarda TODOS los envíos de la tanda (no solo el primero)",
+    registro2.filter((i) => i.json.registrado === true).length === 2 && servidor5.estado.insertadosSupabase.length === 2
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -569,7 +592,12 @@ check(
   "Conserva el disparador cada 15 minutos",
   workflow.nodes.find((n) => n.name === "Cada 15 minutos").parameters.rule.interval[0].minutesInterval === 15
 );
-check("Conserva los tres nodos Code y el bucle uno a uno", ["Buscar clientes y preparar recordatorio", "Enviar por WhatsApp API", "Registrar envío e impedir duplicados", "Procesar uno a uno"].every((n) => workflow.nodes.some((x) => x.name === n)));
+check(
+  "Conserva los tres nodos Code y ninguno de bucle",
+  ["Buscar clientes y preparar recordatorio", "Enviar por WhatsApp API", "Registrar envío e impedir duplicados"].every((n) =>
+    workflow.nodes.some((x) => x.name === n)
+  ) && !workflow.nodes.some((x) => x.type === "n8n-nodes-base.splitInBatches")
+);
 
 {
   const rutaPegar = path.join(raiz, "n8n", "recordatorios", "CODIGO-PARA-PEGAR.md");
@@ -598,18 +626,19 @@ grupo("8) Simulador de prueba en seco");
 
   // La decisión del simulador debe coincidir con la del nodo (misma tabla del grupo 3).
   const casos = [
-    { horas: 0.33, intentos: 0, esperado: "espera" },
-    { horas: 0.6, intentos: 0, esperado: "enviar", intento: 1 },
-    { horas: 4, intentos: 1, esperado: "enviar", intento: 2 },
-    { horas: 13, intentos: 2, esperado: "enviar", intento: 3 },
-    { horas: 23.7, intentos: 3, esperado: "enviar", intento: 4 },
-    { horas: 25, intentos: 0, esperado: "ventana" },
-    { horas: 10, intentos: 4, esperado: "completo" },
+    { horas: 0.33, enviadas: [], esperado: "espera" },
+    { horas: 0.6, enviadas: [], esperado: "enviar", intento: 1 },
+    { horas: 1, enviadas: [], esperado: "enviar", intento: 1 },
+    { horas: 8, enviadas: [], esperado: "enviar", intento: 2 },
+    { horas: 13, enviadas: [], esperado: "enviar", intento: 3 },
+    { horas: 23.7, enviadas: [], esperado: "enviar", intento: 4 },
+    { horas: 25, enviadas: [], esperado: "ventana" },
+    { horas: 10, enviadas: [2], esperado: "repetida", intento: 2 },
   ];
   for (const c of casos) {
-    const d = decidir({ horas: c.horas, intentos: c.intentos }, reglas);
+    const d = decidir({ horas: c.horas, enviadas: c.enviadas }, reglas);
     check(
-      "A " + c.horas + " h con " + c.intentos + " enviados → " + c.esperado + (c.intento ? " (plantilla " + c.intento + ")" : ""),
+      "A " + c.horas + " h con variantes ya enviadas " + JSON.stringify(c.enviadas) + " → " + c.esperado + (c.intento ? " (plantilla " + c.intento + ")" : ""),
       d.accion === c.esperado && (!c.intento || d.intento === c.intento),
       JSON.stringify(d)
     );
@@ -631,8 +660,9 @@ grupo("8) Simulador de prueba en seco");
     { cliente_id: "c4", chatwoot_conversation_id: 4, ultimo_entrante_api_en: "2026-09-19T13:00:00Z", clientes: { id: "c4", nombre: "Spam", estado: "etapa_1", es_spam: true } },
   ];
   const registros = [
-    // Envío histórico con la variante antigua: debe contar para no repetir.
-    { cliente_id: "c2", etapa: "etapa_2", tipo: "sinRespuesta", plantilla: 1, enviado_en: "2026-08-27T15:15:17Z" },
+    // La variante 2 ya salió hace 30 minutos: no se repite (y el tipo histórico
+    // «sinRespuesta» cuenta igual).
+    { cliente_id: "c2", etapa: "etapa_2", tipo: "sinRespuesta", plantilla: 2, enviado_en: "2026-09-19T18:30:00Z" },
   ];
   const ahora = new Date("2026-09-19T19:00:00Z");
   const filas = preparar({ etapas, conversaciones, registros }, reglas, ahora);
@@ -641,13 +671,16 @@ grupo("8) Simulador de prueba en seco");
   const ana = filas.find((f) => f.cliente === "Ana");
   const luis = filas.find((f) => f.cliente === "Luis");
   check("Calcula las horas sin responder desde el último mensaje del cliente", ana.horas === 6);
-  check("Cuenta los envíos previos aunque estén guardados como «sinRespuesta»", luis.intentos === 1 && luis.etapa === "noContesta");
+  check(
+    "Detecta la variante ya enviada aunque esté guardada como «sinRespuesta»",
+    luis.enviadas.join() === "2" && luis.etapa === "noContesta"
+  );
 
   const rep = informe(filas, reglas, ahora);
   check(
-    "El informe asigna el intento según los envíos previos (Ana 1.º, Luis 2.º)",
-    rep.salen.length === 2 && rep.salen.find((f) => f.cliente === "Ana").intento === 1 && rep.salen.find((f) => f.cliente === "Luis").intento === 2,
-    JSON.stringify(rep.salen.map((f) => [f.cliente, f.intento]))
+    "El informe saca a Ana (6 h → plantilla 2) y deja fuera a Luis (misma plantilla ya enviada)",
+    rep.salen.length === 1 && rep.salen[0].cliente === "Ana" && rep.salen[0].intento === 2 && rep.repetidas.length === 1 && rep.repetidas[0].cliente === "Luis",
+    JSON.stringify({ salen: rep.salen.map((f) => [f.cliente, f.intento]), repetidas: rep.repetidas.map((f) => [f.cliente, f.intento]) })
   );
 }
 

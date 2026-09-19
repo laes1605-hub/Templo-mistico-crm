@@ -17,6 +17,7 @@
     "lint": "next lint",
     "build:luna": "node n8n/build-luna-workflow.mjs",
     "build:recordatorios": "node n8n/build-recordatorios-workflow.mjs",
+    "servir:recordatorios": "node scripts/servir-recordatorios.mjs",
     "check:luna": "node scripts/validar-workflow-luna.mjs",
     "test:recordatorios": "node scripts/prueba-recordatorios.mjs",
     "test:tiempo": "node scripts/prueba-tiempo-chat.mjs",

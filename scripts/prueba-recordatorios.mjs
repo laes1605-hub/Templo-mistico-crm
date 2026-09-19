@@ -59,12 +59,14 @@ function compilar(jsCode) {
   // resuelve con .call({ helpers }), igual que en el nodo Code.
   return new Function(
     "helpers",
-    "$env",
     "$input",
     "$",
     '"use strict";\nreturn (async function () {\n' + jsCode + "\n}).call({ helpers: helpers });"
   );
 }
+
+// Entrada del nodo Code: $input.first() y $input.item apuntan al mismo ítem.
+const entrada = (json) => ({ first: () => ({ json: json }), item: { json: json } });
 
 // ---------------------------------------------------------------------------
 // Chatwoot + Supabase simulados
@@ -171,7 +173,7 @@ function filaSupabase(extra = {}, clienteExtra = {}) {
 async function ejecutarBuscar(cfg) {
   const servidor = servidorFalso(cfg);
   const fn = compilar(CODIGO.buscar);
-  const salida = await fn(servidor.helpers, cfg.env || {}, { first: () => ({ json: {} }) }, () => ({}));
+  const salida = await fn(servidor.helpers, { first: () => ({ json: {} }) }, () => ({}));
   const items = Array.isArray(salida) ? salida.map((i) => i.json) : [];
   return {
     items,
@@ -329,22 +331,31 @@ for (const t of tiempos) {
 // ---------------------------------------------------------------------------
 // 4) Credenciales: variables de entorno del n8n o el respaldo del nodo
 // ---------------------------------------------------------------------------
-grupo("4) Supabase nuevo y credenciales");
+grupo("4) Credenciales escritas en el nodo (n8n sin variables de entorno)");
 
 {
-  const r = await ejecutarBuscar(escenario({ env: { SUPABASE_URL: "https://otro-proyecto.supabase.co", SUPABASE_SERVICE_ROLE_KEY: "clave-nueva" } }));
-  check(
-    "Si existen variables de entorno, se usan (sin tocar el nodo)",
-    r.servidor.llamadas.some((l) => l.url.startsWith("https://otro-proyecto.supabase.co"))
-  );
+  const r = await ejecutarBuscar(escenario());
+  const todoElCodigo = CODIGO.buscar + CODIGO.enviar + CODIGO.registrar;
+  check("Los tres nodos traen la URL de Supabase escrita", (todoElCodigo.match(/const SUPABASE_URL = 'https:\/\/[^']+'/g) || []).length === 3);
+  check("Los tres nodos traen la service_role escrita", (todoElCodigo.match(/const SUPABASE_SERVICE_ROLE_KEY = 'eyJ/g) || []).length === 3);
+  check("Los tres nodos traen el Chatwoot y su token escritos", (todoElCodigo.match(/const CHATWOOT_URL = 'https:/g) || []).length === 3 && (todoElCodigo.match(/const CHATWOOT_API_TOKEN = '/g) || []).length === 3);
+  check("Ya NO se usa $env en ningún nodo (esta instancia de n8n lo bloquea)", todoElCodigo.indexOf("$env") === -1);
+  check("Sin $env el nodo igual funciona", r.recordatorios.length === 1);
 }
 {
-  const bloqueado = new Proxy({}, { get() { throw new Error("Access to env vars denied by config"); } });
-  const r = await ejecutarBuscar(escenario({ env: bloqueado }));
-  check(
-    "Con el acceso a $env bloqueado usa el respaldo del nodo (proyecto del repo)",
-    r.servidor.llamadas.some((l) => l.url.includes("zcljlddtcoyfyvshlyfk.supabase.co"))
+  // Cambiar de proyecto = editar SOLO la línea de la URL en el nodo.
+  const codigoOtroProyecto = CODIGO.buscar.replace(
+    "const SUPABASE_URL = 'https://zcljlddtcoyfyvshlyfk.supabase.co';",
+    "const SUPABASE_URL = 'https://proyecto-nuevo.supabase.co';"
   );
+  const servidor = servidorFalso(escenario());
+  const salida = await compilar(codigoOtroProyecto)(servidor.helpers, { first: () => ({ json: {} }) }, () => ({}));
+  const llamadasSupabase = servidor.llamadas.filter((l) => l.url.includes("supabase.co"));
+  check(
+    "Cambiar la línea SUPABASE_URL redirige TODAS las consultas al proyecto nuevo",
+    llamadasSupabase.length > 0 && llamadasSupabase.every((l) => l.url.startsWith("https://proyecto-nuevo.supabase.co"))
+  );
+  check("Y el workflow sigue funcionando con el proyecto nuevo", salida.filter((i) => !i.json._diagnostico).length === 1);
 }
 {
   const r = await ejecutarBuscar(escenario({ errorEtapas: true }));
@@ -356,7 +367,7 @@ grupo("4) Supabase nuevo y credenciales");
 }
 {
   const r = await ejecutarBuscar(escenario());
-  check("El respaldo del nodo apunta al proyecto Supabase del CRM", /zcljlddtcoyfyvshlyfk\.supabase\.co/.test(CODIGO.buscar));
+  check("El nodo apunta al proyecto Supabase del CRM", /zcljlddtcoyfyvshlyfk\.supabase\.co/.test(CODIGO.buscar));
   check("El diagnóstico explica cómo se resuelven las etapas", Boolean(r.diagnostico?.estadosDeLaEtapa));
 }
 
@@ -368,25 +379,25 @@ grupo("5) Envío y registro");
 {
   const servidor = servidorFalso({});
   const item = { json: { conversationId: 271, clienteId: "cli-1", conversacionId: "conv-271", estado: "etapa_1787876104854", etapa: "datos", intento: 2, mensaje: "Hola Ana, faltan tus datos.", telefono: "595982647259" } };
-  const salida = await compilar(CODIGO.enviar)(servidor.helpers, {}, { item: item }, () => ({}));
+  const salida = await compilar(CODIGO.enviar)(servidor.helpers, entrada(item.json), () => ({}));
   check("Envía el mensaje por la conversación de Chatwoot", salida[0].json.enviado === true && servidor.estado.enviadosChatwoot[0].content === item.json.mensaje);
   check("Marca el mensaje como outgoing y no privado", servidor.estado.enviadosChatwoot[0].message_type === "outgoing" && servidor.estado.enviadosChatwoot[0].private === false);
 }
 {
   const servidor = servidorFalso({});
   const item = { json: { _diagnostico: true, conteo: {} } };
-  const salida = await compilar(CODIGO.enviar)(servidor.helpers, {}, { item: item }, () => ({}));
+  const salida = await compilar(CODIGO.enviar)(servidor.helpers, entrada(item.json), () => ({}));
   check("El ítem de diagnóstico NO se envía a Chatwoot", salida[0].json.enviado === false && servidor.estado.enviadosChatwoot.length === 0);
 }
 {
   const servidor = servidorFalso({ envioFalla: true });
-  const salida = await compilar(CODIGO.enviar)(servidor.helpers, {}, { item: { json: { conversationId: 271, mensaje: "hola" } } }, () => ({}));
+  const salida = await compilar(CODIGO.enviar)(servidor.helpers, entrada({ conversationId: 271, mensaje: "hola" }), () => ({}));
   check("Si Chatwoot rechaza, guarda el motivo visible", salida[0].json.enviado === false && /422/.test(salida[0].json.error || ""));
 }
 {
   const servidor = servidorFalso({});
   const item = { json: { enviado: true, conversationId: 271, conversacionId: "conv-271", clienteId: "cli-1", estado: "etapa_1787876104854", etapa: "datos", intento: 1, mensaje: "Hola" } };
-  const salida = await compilar(CODIGO.registrar)(servidor.helpers, {}, { item: item }, () => ({}));
+  const salida = await compilar(CODIGO.registrar)(servidor.helpers, entrada(item.json), () => ({}));
   const guardado = servidor.estado.insertadosSupabase[0] || {};
   check("Registra el envío en recordatorios_whatsapp", salida[0].json.registrado === true);
   check(
@@ -396,8 +407,8 @@ grupo("5) Envío y registro");
 }
 {
   const servidor = servidorFalso({});
-  await compilar(CODIGO.registrar)(servidor.helpers, {}, { item: { json: { _diagnostico: true } } }, () => ({}));
-  await compilar(CODIGO.registrar)(servidor.helpers, {}, { item: { json: { enviado: false } } }, () => ({}));
+  await compilar(CODIGO.registrar)(servidor.helpers, entrada({ _diagnostico: true }), () => ({}));
+  await compilar(CODIGO.registrar)(servidor.helpers, entrada({ enviado: false }), () => ({}));
   check("No registra nada si el envío falló ni para el diagnóstico", servidor.estado.insertadosSupabase.length === 0);
 }
 
@@ -413,6 +424,16 @@ check(
   workflow.nodes.find((n) => n.name === "Cada 15 minutos").parameters.rule.interval[0].minutesInterval === 15
 );
 check("Conserva los tres nodos Code y el bucle uno a uno", ["Buscar clientes y preparar recordatorio", "Enviar por WhatsApp API", "Registrar envío e impedir duplicados", "Procesar uno a uno"].every((n) => workflow.nodes.some((x) => x.name === n)));
+
+{
+  const rutaPegar = path.join(raiz, "n8n", "recordatorios", "CODIGO-PARA-PEGAR.md");
+  const existe = fs.existsSync(rutaPegar);
+  const contenido = existe ? fs.readFileSync(rutaPegar, "utf8") : "";
+  check("Existe el archivo para copiar y pegar (CODIGO-PARA-PEGAR.md)", existe);
+  for (const [nombre, jsCode] of Object.entries({ "Buscar clientes y preparar recordatorio": CODIGO.buscar, "Enviar por WhatsApp API": CODIGO.enviar, "Registrar envío e impedir duplicados": CODIGO.registrar })) {
+    check("El bloque de «" + nombre + "» coincide con el nodo del workflow", contenido.includes(jsCode));
+  }
+}
 
 // ---------------------------------------------------------------------------
 console.log("\n" + "─".repeat(60));

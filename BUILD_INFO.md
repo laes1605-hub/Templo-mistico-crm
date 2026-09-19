@@ -36,12 +36,14 @@
   intenta el envío (antes fallaba en silencio).
 - El nodo de envío guarda el motivo exacto devuelto por Chatwoot/Meta en el
   campo `error` (antes solo quedaba en los logs del servidor).
-- Credenciales por **variables de entorno de n8n** con respaldo escrito en el
-  nodo (con `$env` bloqueado no falla: usa el respaldo). Cambiar de proyecto
-  Supabase es actualizar `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY`.
+- Las **credenciales van escritas dentro de cada nodo** (esta instancia de n8n
+  no permite variables de entorno). Cambiar de proyecto Supabase es editar solo
+  `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY` en los tres nodos.
+- `n8n/recordatorios/CODIGO-PARA-PEGAR.md` trae los tres nodos completos con las
+  llaves dentro para copiar y pegar a mano en n8n.
 - El código de los nodos ya no vive dentro del JSON: se edita en
   `n8n/recordatorios/code/*.js` y se regenera con `npm run build:recordatorios`.
-- Verificación: `npm run test:recordatorios` — **48 pruebas OK** sobre el código
+- Verificación: `npm run test:recordatorios` — **57 pruebas OK** sobre el código
   real de los nodos (Chatwoot y Supabase simulados), incluidas las consultas
   exactas validadas contra el proyecto real. Detalle en
   `n8n/03-README-recordatorios.md`.

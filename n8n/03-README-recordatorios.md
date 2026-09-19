@@ -6,8 +6,9 @@ nuevo y se desactiva el anterior para no duplicar envíos.
 Archivos:
 
 - `03-recordatorios-whatsapp-por-etapa.json`: workflow importable en n8n (se genera con `npm run build:recordatorios`).
+- `recordatorios/CODIGO-PARA-PEGAR.md`: **los tres nodos completos con las llaves dentro**, para copiar y pegar a mano en n8n.
 - `recordatorios/code/*.js`: código real de los tres nodos Code (aquí se edita, no dentro del JSON).
-- `scripts/prueba-recordatorios.mjs`: 48 pruebas sobre el código de los nodos (`npm run test:recordatorios`).
+- `scripts/prueba-recordatorios.mjs`: 57 pruebas sobre el código de los nodos (`npm run test:recordatorios`).
 - `supabase/migrations/20260825000002_recordatorios_whatsapp_etapa.sql`: tabla de auditoría e idempotencia (ya viene incluida en `MIGRAR-A-NUEVO-SUPABASE.sql`, bloque `[04/26]`).
 
 ---
@@ -32,7 +33,7 @@ Ahora:
 1. Las etapas se reconocen **solo por su NOMBRE, en todo el pipeline** (sin filtrar por grupo).
 2. El canal lo decide la **conversación** (`fuente = 'meta_business'`), no `clientes.grupo`.
 3. Si falta una etapa, el workflow **no revienta**: lo dice en el ítem de diagnóstico.
-4. Las credenciales se leen de **variables de entorno de n8n** y, si no existen, del respaldo escrito en el nodo.
+4. Las credenciales van **escritas dentro del nodo** (esta instancia de n8n no permite variables de entorno).
 5. Si la **ventana de 24 h** del WhatsApp API ya venció, no se intenta el envío (Meta rechaza el texto libre): ese chat se atiende por el WhatsApp Personal.
 
 ---
@@ -41,19 +42,18 @@ Ahora:
 
 1. En Supabase → SQL Editor, ejecuta `MIGRAR-A-NUEVO-SUPABASE.sql` (idempotente) o, si solo faltara la tabla:
    `supabase/migrations/20260825000002_recordatorios_whatsapp_etapa.sql`.
-2. Opcional — variables de entorno de n8n; si no se configuran, se usan los valores escritos en los nodos:
+2. Importa `03-recordatorios-whatsapp-por-etapa.json` **o** pega el código de los tres nodos
+   desde `recordatorios/CODIGO-PARA-PEGAR.md`.
+   Las **llaves van escritas dentro de cada nodo**: esta instancia de n8n no permite
+   variables de entorno, así que no hay nada que configurar fuera del código.
+   Cambiar de proyecto Supabase = editar en los tres nodos solo estas dos líneas:
 
-   ```text
-   CHATWOOT_URL=https://crmesteban.duckdns.org
-   CHATWOOT_API_TOKEN=tu_token
-   CHATWOOT_ACCOUNT_ID=1
-   SUPABASE_URL=https://tu-proyecto.supabase.co
-   SUPABASE_SERVICE_ROLE_KEY=tu_service_role_key
+   ```js
+   const SUPABASE_URL = 'https://zcljlddtcoyfyvshlyfk.supabase.co';
+   const SUPABASE_SERVICE_ROLE_KEY = 'eyJ...';
    ```
 
-   > Cambiar de proyecto Supabase = actualizar `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY`. No hay que editar tres nodos.
-   > Este n8n tiene `N8N_BLOCK_ENV_ACCESS_IN_NODE`; el nodo usa `$env` dentro de `try/catch`, así que con el acceso bloqueado simplemente toma el respaldo.
-3. Importa `03-recordatorios-whatsapp-por-etapa.json`, ejecútalo a mano una vez (botón **Execute Workflow**) y revisa la salida del primer nodo.
+3. Ejecútalo a mano una vez (botón **Execute Workflow**) y revisa la salida del primer nodo.
 4. Actívalo. **Desactiva el workflow anterior** de recordatorios para no duplicar envíos.
 5. Revoca y regenera los tokens que quedaron escritos en el repositorio.
 
@@ -117,7 +117,7 @@ ventanaCerrada, sinTelefono, error) y `avisos`.
 ## Mantenimiento
 
 ```bash
-npm run test:recordatorios   # 48 pruebas sobre el código real de los nodos
+npm run test:recordatorios   # 57 pruebas sobre el código real de los nodos
 npm run build:recordatorios  # regenera el JSON importable desde recordatorios/code/*.js
 ```
 

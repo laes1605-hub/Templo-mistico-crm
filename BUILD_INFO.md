@@ -54,6 +54,14 @@
   por grupo), sin acentos ni mayúsculas y admitiendo sufijos («Datos (API)»).
 - El canal lo decide la **conversación** (`fuente = 'meta_business'`), no
   `clientes.grupo`.
+- **Los candidatos salen de Supabase**, no del listado de Chatwoot. Antes la
+  búsqueda pedía `conversations?status=open` por páginas y luego una consulta por
+  chat: con 271 chats abiertos la pasada se quedaba a medias y solo atendía al
+  primero de la lista (el 19/09 salieron 2 mensajes en vez de 11). Ahora es **una
+  sola consulta** a `conversaciones` con `clientes!inner`, el tiempo sin contestar
+  sale de `ultimo_entrante_api_en` y Chatwoot solo se usa para enviar y para
+  verificar alguna hora. El diagnóstico se abre con `version` y un `resumen` de una
+  línea, más `omitidasPorChat` con el motivo de cada descarte.
 - Si falta una etapa, el workflow **no revienta**: lo informa en un ítem final
   de diagnóstico (`_diagnostico: true`) con `etapasReconocidas`,
   `etapasDelPipeline`, `conteo.omitidas.*` y `avisos`: en una sola mirada se ve
@@ -77,7 +85,7 @@
 - `npm run simular:recordatorios`: prueba en seco con datos reales (qué saldría, qué
   espera tiempo y qué queda fuera de la ventana de 24 h). Extrae las reglas del
   propio workflow, así que no puede desincronizarse.
-- Verificación: `npm run test:recordatorios` — **98 pruebas OK** sobre el código
+- Verificación: `npm run test:recordatorios` — **104 pruebas OK** sobre el código
   real de los nodos (Chatwoot y Supabase simulados), incluidas las consultas
   exactas validadas contra el proyecto real. Detalle en
   `n8n/03-README-recordatorios.md`.

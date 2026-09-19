@@ -51,9 +51,9 @@ export function extraerReglas() {
 
   return {
     etapasRecordatorio: valor(bloque("ETAPAS_RECORDATORIO")),
-    variantesTipo: valor(bloque("VARIANTES_TIPO")),
     umbralesHoras: valor(constante("UMBRALES_HORAS")),
     ventanaApiHoras: valor(constante("VENTANA_API_HORAS")),
+    limiteEnviosPorEjecucion: valor(constante("LIMITE_ENVIOS_POR_EJECUCION")),
     supabaseUrl: (codigo.match(/const SUPABASE_URL = '([^']+)'/) || [])[1],
     supabaseKey: (codigo.match(/const SUPABASE_SERVICE_ROLE_KEY = '([^']+)'/) || [])[1],
   };
@@ -105,7 +105,7 @@ async function traer(url, key) {
   const codigos = etapas.map((e) => tipoDeEtapa(e.nombre, REGLAS_GLOBALES)).filter(Boolean);
   const claves = etapas.filter((e) => tipoDeEtapa(e.nombre, REGLAS_GLOBALES)).map((e) => e.clave);
   const conversaciones = await pedir(
-    "conversaciones?fuente=eq.meta_business&select=cliente_id,chatwoot_conversation_id,numero_whatsapp,ultimo_entrante_api_en,ultimo_mensaje_en,clientes!inner(id,nombre,nombre_manual,estado,es_spam)&archivada=eq.false&limit=1000"
+    "conversaciones?fuente=eq.meta_business&select=cliente_id,chatwoot_conversation_id,numero_whatsapp,ultimo_entrante_api_en,ultimo_mensaje_en,archivada,silenciado,clientes!inner(id,nombre,nombre_manual,estado,es_spam)&archivada=eq.false&limit=1000"
   );
   const registros = await pedir("recordatorios_whatsapp?select=cliente_id,etapa,tipo,plantilla,enviado_en&order=enviado_en.desc&limit=1000");
   return { etapas, conversaciones, registros, tiposDetectados: codigos };
@@ -121,13 +121,11 @@ export function preparar({ etapas, conversaciones, registros }, reglas, ahora) {
   }
 
   // Envíos por cliente + etapa: totales y, sobre todo, qué variante salió en las
-  // últimas 24 h (es la que NO se repite). Cuenta las variantes históricas de
-  // tipo, como el nodo (por ejemplo «sinRespuesta» = no contesta).
+  // últimas 24 h (es la que NO se repite). Como el nodo, se cuenta la plantilla
+  // sin mirar el nombre histórico del tipo («sinRespuesta» = no contesta).
   const intentos = new Map();
   const enviadas = new Map();
   for (const r of registros || []) {
-    const variantes = (reglas.variantesTipo[r.tipo] || [r.tipo]).map(normalizar);
-    if (variantes.indexOf(normalizar(r.tipo)) === -1) continue;
     const clave = r.cliente_id + "|" + r.etapa;
     intentos.set(clave, (intentos.get(clave) || 0) + 1);
     const cuando = new Date(r.enviado_en).getTime();
@@ -142,6 +140,7 @@ export function preparar({ etapas, conversaciones, registros }, reglas, ahora) {
   for (const c of conversaciones || []) {
     const cliente = c.clientes || {};
     if (!cliente.id || cliente.es_spam === true) continue;
+    if (c.archivada === true || c.silenciado === true) continue;
     const tipo = tipoPorClave.get(String(cliente.estado || "").trim());
     if (!tipo) continue;
     const marca = c.ultimo_entrante_api_en || null;
@@ -175,8 +174,14 @@ export function informe(filas, reglas, ahora) {
     else ventana.push(f);
   }
   const porHoras = (a, b) => b.horas - a.horas;
+  salen.sort(porHoras);
+  // Tope por ejecución, igual que el nodo: primero los que llevan más tiempo
+  // esperando; el resto sale en la pasada siguiente (15 minutos después).
+  const limite = reglas.limiteEnviosPorEjecucion || salen.length;
+  const porLimite = salen.slice(limite);
   return {
-    salen: salen.sort(porHoras),
+    salen: salen.slice(0, limite),
+    porLimite,
     esperan: esperan.sort(porHoras),
     repetidas: repetidas.sort(porHoras),
     ventana: ventana.sort(porHoras),
@@ -188,7 +193,7 @@ function linea(campos, anchos) {
   return campos.map((c, i) => String(c ?? "").padEnd(anchos[i]).slice(0, anchos[i])).join("  ");
 }
 
-export function imprimir({ salen, esperan, repetidas, ventana, sinMarca }, reglas, ahora) {
+export function imprimir({ salen, porLimite = [], esperan, repetidas, ventana, sinMarca }, reglas, ahora) {
   const h = (n) => (n >= 100 ? n.toFixed(0) : n.toFixed(1)) + " h";
   const e = (t) => (t === "datos" ? "Datos" : "No contesta");
   console.log("\nPrueba en seco (NO envía nada) · " + ahora.toISOString() + " · " + reglas.etapasRecordatorio.datos.join("/") +
@@ -211,11 +216,16 @@ export function imprimir({ salen, esperan, repetidas, ventana, sinMarca }, regla
   console.log("\n⏰ NO SE TOCAN — fuera de la ventana de 24 h del WhatsApp API (" + ventana.length + ")");
   for (const f of ventana) console.log("  · " + f.cliente + " (" + h(f.horas) + ")");
 
+  if (porLimite.length) {
+    console.log("\n⏭️  QUEDAN PARA LA PASADA SIGUIENTE — tope de " + reglas.limiteEnviosPorEjecucion + " por ejecución (" + porLimite.length + ")");
+    for (const f of porLimite) console.log("  · " + f.cliente + " (" + h(f.horas) + ")");
+  }
+
   if (sinMarca.length) {
     console.log("\n❔ SIN MARCA de mensaje entrante por el API (" + sinMarca.length + "): " + sinMarca.map((f) => f.cliente).join(", "));
   }
   console.log("\nTotal a enviar ahora: " + salen.length + " · repetidas: " + repetidas.length + " · en espera: " + esperan.length +
-    " · fuera de ventana: " + ventana.length + "\n");
+    " · fuera de ventana: " + ventana.length + " · para la siguiente pasada: " + porLimite.length + "\n");
 }
 
 // ---------------------------------------------------------------------------

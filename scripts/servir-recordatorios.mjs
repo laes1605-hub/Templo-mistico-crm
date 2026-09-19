@@ -80,11 +80,16 @@ const PAGINA = `<!doctype html>
           <br>O bien: <b>Import from Clipboard</b> después de pulsar «Copiar JSON completo».</li>
       <li>Abre el workflow y pulsa <b>Execute Workflow</b> una sola vez.</li>
       <li>Revisa la salida del primer nodo: el <b>último ítem</b> trae el diagnóstico
-          (<code>_diagnostico: true</code>) con <code>etapasReconocidas</code>, <code>conteo.omitidas</code> y <code>avisos</code>.</li>
+          (<code>_diagnostico: true</code>). Empieza por <code>resumen</code>, que dice en una línea
+          cuántos chats revisó y cuántos recordatorios van a salir. <code>version</code> debe contener
+          <code>2026-09-19 · v4</code>: si no, ese nodo todavía tiene el código viejo.</li>
       <li><b>Actívalo</b> y <b>desactiva/borra el workflow viejo</b> de recordatorios (y cualquier nodo
           duplicado con «1» al final) para no duplicar envíos.</li>
       <li>Este JSON <b>ya no lleva el nodo «Procesar uno a uno»</b>: la cadena es
           Buscar → Enviar → Registrar y cada nodo procesa toda la tanda.</li>
+      <li>Los candidatos salen de <b>Supabase</b> (tabla <code>conversaciones</code>), no del listado de
+          Chatwoot: una sola consulta trae todos los chats del API. Chatwoot solo se usa para
+          enviar y para verificar alguna hora suelta.</li>
     </ol>
     <p class="aviso">⚠️ Este archivo contiene la service_role de Supabase y el token de Chatwoot. No compartas
     esta URL fuera del equipo y rota esas llaves cuando puedas.</p>

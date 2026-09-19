@@ -100,30 +100,33 @@ function servidorFalso(cfg = {}) {
         return cfg.etapas || [];
       }
       if (p.endsWith("/conversaciones")) {
+        // Igual que PostgREST: la consulta del nodo trae TODAS las filas del API
+        // con su cliente (una sola llamada); si piden un chat concreto, esa.
+        if (cfg.errorConversaciones) throw new Error("relation conversaciones does not exist");
         const cw = String(q.get("chatwoot_conversation_id") || "").replace(/^eq\./, "");
-        const fila = (cfg.convs || {})[cw];
-        return fila ? [fila] : [];
+        const todas = Array.isArray(cfg.convs) ? cfg.convs : Object.values(cfg.convs || {});
+        return cw ? todas.filter((f) => String(f.chatwoot_conversation_id) === cw) : todas;
       }
       if (p.endsWith("/recordatorios_whatsapp")) {
         if (method === "POST") {
           estado.insertadosSupabase.push(body);
           return { ok: true };
         }
-        const clienteId = String(q.get("cliente_id") || "").replace(/^eq\./, "");
-        const etapa = String(q.get("etapa") || "").replace(/^eq\./, "");
-        const tipos = String(q.get("tipo") || "")
-          .replace(/^in\.\(/, "")
-          .replace(/\)$/, "")
-          .split(",")
-          .filter(Boolean);
-        const filas = ((cfg.registros || {})[clienteId + "|" + etapa] || []).filter((r) => tipos.includes(r.tipo));
-        return filas;
+        // El nodo pide UNA vez los envíos de las últimas 24 h.
+        if (cfg.errorRegistros) throw new Error("relation recordatorios_whatsapp does not exist");
+        const corte = String(q.get("enviado_en") || "").replace(/^gte\./, "");
+        const todas = Object.entries(cfg.registros || {}).flatMap(([clave, filasDeClave]) => {
+          const [clienteId, etapa] = clave.split("|");
+          return (filasDeClave || []).map((r) => ({ cliente_id: clienteId, etapa: etapa, ...r }));
+        });
+        return todas.filter((r) => !corte || (r.enviado_en && new Date(r.enviado_en).toISOString() >= corte));
       }
       throw new Error("Consulta Supabase no simulada: " + url);
     }
 
     // Chatwoot
     if (p.endsWith("/messages") && method === "GET") {
+      if (cfg.errorChatwoot) throw new Error("Request failed with status code 401");
       const id = p.split("/conversations/")[1].split("/")[0];
       return { payload: (cfg.mensajes || {})[id] || [] };
     }
@@ -171,16 +174,42 @@ function conversacion(extra = {}) {
   };
 }
 
+const iso = (segundos) => new Date(segundos * 1000).toISOString();
+
+// Fila de `conversaciones` con su cliente, tal como la devuelve Supabase con
+// clientes!inner(*). El tiempo sin contestar sale de ultimo_entrante_api_en.
 function filaSupabase(extra = {}, clienteExtra = {}) {
   return {
     id: "conv-271",
     cliente_id: "cli-1",
+    chatwoot_conversation_id: 271,
+    chatwoot_conversation_ids: ["271"],
     numero_whatsapp: "+595982647259",
     fuente: "meta_business",
+    estado: "activa",
     archivada: false,
-    clientes: { id: "cli-1", estado: "etapa_1787876104854", grupo: "personal", es_spam: false, ...clienteExtra },
+    silenciado: false,
+    ultimo_entrante_api_en: iso(hace(2)),
+    ultimo_mensaje_en: iso(hace(2)),
+    clientes: {
+      id: "cli-1",
+      nombre: "Ana Perez",
+      telefono: "+595982647259",
+      estado: "etapa_1787876104854",
+      grupo: "personal",
+      es_spam: false,
+      ...clienteExtra,
+    },
     ...extra,
   };
+}
+
+// La misma fila con las horas sin contestar que se quieran probar.
+function filaConHoras(horas, extra = {}, clienteExtra = {}) {
+  return filaSupabase(
+    { ultimo_entrante_api_en: iso(hace(horas)), ultimo_mensaje_en: iso(hace(horas)), ...extra },
+    clienteExtra
+  );
 }
 
 async function ejecutarBuscar(cfg) {
@@ -199,8 +228,9 @@ async function ejecutarBuscar(cfg) {
 function escenario(extra = {}) {
   return {
     etapas: ETAPAS_REALES,
-    convs: { 271: filaSupabase() },
-    abiertos: [conversacion()],
+    convs: [filaSupabase()],
+    // Chatwoot ya solo se usa para verificar horas y para enviar: el listado de
+    // conversaciones (abiertos) ya no se consulta.
     mensajes: { 271: [{ message_type: 0, created_at: hace(2), content: "hola" }] },
     registros: {},
     ...extra,
@@ -225,13 +255,13 @@ grupo("1) Etapas por nombre (causa de que no llegaran los recordatorios)");
 }
 
 {
-  const r = await ejecutarBuscar(escenario({ convs: { 271: filaSupabase({}, { estado: "etapa_templo_1787618330816" }) } }));
+  const r = await ejecutarBuscar(escenario({ convs: [filaSupabase({}, { estado: "etapa_templo_1787618330816" })] }));
   check("«No contesta» (grupo templo) genera el recordatorio de llamada", r.recordatorios.length === 1 && r.recordatorios[0].etapa === "noContesta");
   check("Plantilla de llamada correcta", /atender la llamada/.test(r.recordatorios[0]?.mensaje || ""));
 }
 
 {
-  const r = await ejecutarBuscar(escenario({ convs: { 271: filaSupabase({}, { estado: "Datos" }) } }));
+  const r = await ejecutarBuscar(escenario({ convs: [filaSupabase({}, { estado: "Datos" })] }));
   check("Si clientes.estado guarda el NOMBRE de la etapa también se resuelve", r.recordatorios.length === 1);
 }
 
@@ -244,55 +274,85 @@ grupo("1) Etapas por nombre (causa de que no llegaran los recordatorios)");
 // ---------------------------------------------------------------------------
 // 2) Qué chats entran (fuente meta_business, no clientes.grupo)
 // ---------------------------------------------------------------------------
-grupo("2) Qué chats entran");
+grupo("2) Qué chats entran (fuente meta_business, sin depender de Chatwoot)");
 
 {
-  const r = await ejecutarBuscar(escenario({ convs: { 271: filaSupabase({}, { grupo: "personal" }) } }));
+  const r = await ejecutarBuscar(escenario({ convs: [filaSupabase({}, { grupo: "personal" })] }));
   check("Cliente con grupo 'personal' en etapa Datos recibe recordatorio", r.recordatorios.length === 1);
 }
 {
-  const r = await ejecutarBuscar(escenario({ convs: { 271: filaSupabase({}, { grupo: "templo" }) } }));
+  const r = await ejecutarBuscar(escenario({ convs: [filaSupabase({}, { grupo: "templo" })] }));
   check("Cliente con grupo 'templo' también", r.recordatorios.length === 1);
 }
 {
-  const r = await ejecutarBuscar(escenario({ convs: {}, abiertos: [conversacion()] }));
-  check("Chat sin vínculo en Supabase (fuente meta_business) se omite", r.recordatorios.length === 0 && r.diagnostico.conteo.omitidas.sinVinculoApi === 1);
+  // Este era el fallo de «solo envió a uno»: la lista salía del endpoint de
+  // Chatwoot (por páginas y con una llamada por chat) y se cortaba.
+  const r = await ejecutarBuscar(escenario());
+  const listado = r.servidor.llamadas.filter((l) => l.method === "GET" && new URL(l.url).pathname.endsWith("/conversations"));
+  check("Ya NO se pide el listado de conversaciones a Chatwoot", listado.length === 0);
+  check("Los candidatos salen de una sola consulta a Supabase", r.servidor.llamadas.filter((l) => l.url.includes("/rest/v1/conversaciones")).length === 1);
+  check("El diagnóstico dice de dónde salen los candidatos", /Supabase/.test(r.diagnostico?.fuenteDeDatos || ""));
+  check("El diagnóstico trae un resumen legible de la pasada", /Revisé 1 chat/.test(r.diagnostico?.resumen || "") && /recordatorios listos: 1/.test(r.diagnostico?.resumen || ""));
 }
 {
-  // Luna pone "bot-pausado" justo al pasar el chat a Datos, así que esa etiqueta
-  // NO debe vetar el recordatorio (antes vetaba y por eso no salía casi nada).
-  const r = await ejecutarBuscar(escenario({ abiertos: [conversacion({ labels: ["etapa-datos", "bot-pausado", "lead-tibio"] })] }));
-  check("Etiqueta bot-pausado NO bloquea el recordatorio de Datos", r.recordatorios.length === 1 && r.diagnostico.conteo.omitidas.etiquetaSilencio === 0);
-  check("El diagnóstico muestra qué etiquetas apagan los recordatorios", Array.isArray(r.diagnostico.etiquetasQueApagan) && r.diagnostico.etiquetasQueApagan.indexOf("bot_pausado") === -1);
+  const r = await ejecutarBuscar(escenario({ convs: [] }));
+  check("Sin chats del API no se envía nada y el diagnóstico lo avisa", r.recordatorios.length === 0 && (r.diagnostico?.avisos || []).some((a) => /conversaciones/.test(a)));
 }
 {
-  const r = await ejecutarBuscar(escenario({ abiertos: [conversacion({ labels: ["recordatorios-pausados"] })] }));
-  check("Etiqueta recordatorios-pausados SÍ silencia el chat", r.recordatorios.length === 0 && r.diagnostico.conteo.omitidas.etiquetaSilencio === 1);
-  check("El desglose por etiqueta lo deja claro", r.diagnostico.conteo.omitidas.porEtiqueta.recordatorios_pausados === 1);
+  // «bot-pausado» ya no existe como veto: el silencio lo decide el CRM.
+  const r = await ejecutarBuscar(escenario());
+  check("El diagnóstico ya no depende de etiquetas de Chatwoot", Array.isArray(r.diagnostico?.pausasQueApagan) && JSON.stringify(r.diagnostico.pausasQueApagan).indexOf("bot") === -1);
 }
 {
-  const r = await ejecutarBuscar(escenario({ abiertos: [conversacion({ labels: ["lead-perdido"] })] }));
-  check("Etiqueta lead-perdido también silencia", r.recordatorios.length === 0 && r.diagnostico.conteo.omitidas.porEtiqueta.lead_perdido === 1);
+  const r = await ejecutarBuscar(escenario({ convs: [filaSupabase({ silenciado: true })] }));
+  check("Chat silenciado en el CRM se omite", r.recordatorios.length === 0 && r.diagnostico.conteo.omitidas.silenciado === 1);
+  check("Y el aviso lo explica", (r.diagnostico.avisos || []).some((a) => /silenciad/.test(a)));
 }
 {
-  const r = await ejecutarBuscar(escenario({ abiertos: [conversacion({ labels: ["Recordatorios Pausados"] })] }));
-  check("La etiqueta se reconoce con espacios y mayúsculas", r.recordatorios.length === 0 && r.diagnostico.conteo.omitidas.etiquetaSilencio === 1);
-}
-{
-  const r = await ejecutarBuscar(escenario({ convs: { 271: filaSupabase({ archivada: true }) } }));
+  const r = await ejecutarBuscar(escenario({ convs: [filaSupabase({ archivada: true })] }));
   check("Conversación archivada se omite", r.recordatorios.length === 0 && r.diagnostico.conteo.omitidas.archivada === 1);
 }
 {
-  const r = await ejecutarBuscar(escenario({ convs: { 271: filaSupabase({}, { es_spam: true }) } }));
+  const r = await ejecutarBuscar(escenario({ convs: [filaSupabase({}, { es_spam: true })] }));
   check("Cliente marcado como spam se omite", r.recordatorios.length === 0 && r.diagnostico.conteo.omitidas.spam === 1);
 }
 {
-  const r = await ejecutarBuscar(escenario({ convs: { 271: filaSupabase({}, { estado: "consulta_hecha" }) } }));
+  const r = await ejecutarBuscar(escenario({ convs: [filaSupabase({}, { estado: "consulta_hecha" })] }));
   check("Etapa sin recordatorio (Consulta Hecha) se omite", r.recordatorios.length === 0 && r.diagnostico.conteo.omitidas.etapaSinRecordatorio === 1);
 }
 {
-  const r = await ejecutarBuscar(escenario({ mensajes: { 271: [{ message_type: "outgoing", created_at: hace(2) }] } }));
+  // Nunca ha escrito: no hay hora de entrante en el CRM y Chatwoot tampoco
+  // devuelve ningún mensaje del cliente.
+  const r = await ejecutarBuscar(
+    escenario({
+      convs: [filaSupabase({ ultimo_entrante_api_en: null, ultimo_mensaje_en: null })],
+      mensajes: { 271: [{ message_type: "outgoing", created_at: hace(2) }] },
+    })
+  );
   check("Chat donde el cliente nunca ha escrito se omite", r.recordatorios.length === 0 && r.diagnostico.conteo.omitidas.sinMensajesEntrantes === 1);
+}
+{
+  // El CRM registró un mensaje NUEVO después del último entrante que tenía
+  // guardado (puede ser del cliente): se confirma la hora contra Chatwoot.
+  const r = await ejecutarBuscar(
+    escenario({
+      convs: [filaSupabase({ ultimo_entrante_api_en: iso(hace(5)), ultimo_mensaje_en: iso(hace(0.6)) })],
+      mensajes: { 271: [{ message_type: 0, created_at: hace(0.6) }] },
+    })
+  );
+  check("Verifica contra Chatwoot cuando hubo actividad posterior", r.diagnostico.conteo.verificadosEnChatwoot === 1 && r.recordatorios[0]?.fuenteTiempo === "chatwoot");
+  check("Con la hora real (36 min) manda la variante 1, no la 2", r.recordatorios[0]?.intento === 1, "intento: " + r.recordatorios[0]?.intento);
+}
+{
+  // Si esa verificación no se puede hacer, se usa la hora del CRM y se avisa.
+  const r = await ejecutarBuscar(
+    escenario({
+      errorChatwoot: true,
+      convs: [filaSupabase({ ultimo_entrante_api_en: iso(hace(5)), ultimo_mensaje_en: iso(hace(0.6)) })],
+    })
+  );
+  check("Sin Chatwoot igual se envía con la hora del CRM", r.recordatorios.length === 1 && r.recordatorios[0].fuenteTiempo === "crm");
+  check("Y el diagnóstico deja el error visible", (r.diagnostico.errores || []).some((e) => /Chatwoot/.test(e)));
 }
 
 // ---------------------------------------------------------------------------
@@ -325,7 +385,7 @@ const tiempos = [
 for (const t of tiempos) {
   const r = await ejecutarBuscar(
     escenario({
-      mensajes: { 271: [{ message_type: 0, created_at: hace(t.horas) }] },
+      convs: [filaConHoras(t.horas)],
       registros: { "cli-1|etapa_1787876104854": t.previos },
     })
   );
@@ -333,7 +393,7 @@ for (const t of tiempos) {
 }
 
 {
-  const r = await ejecutarBuscar(escenario({ mensajes: { 271: [{ message_type: 0, created_at: hace(25) }] } }));
+  const r = await ejecutarBuscar(escenario({ convs: [filaConHoras(25)] }));
   check("Pasadas 24 h no se intenta (Meta rechazaría el texto libre)", r.recordatorios.length === 0 && r.diagnostico.conteo.omitidas.ventanaCerrada === 1);
   check("Y el diagnóstico lo explica", (r.diagnostico.avisos || []).some((a) => /ventana de 24 h/.test(a)));
 }
@@ -341,8 +401,7 @@ for (const t of tiempos) {
   // Los envíos del tipo "noContesta" también cuentan para no repetir la variante.
   const r = await ejecutarBuscar(
     escenario({
-      convs: { 271: filaSupabase({}, { estado: "etapa_templo_1787618330816" }) },
-      mensajes: { 271: [{ message_type: 0, created_at: hace(5) }] },
+      convs: [filaConHoras(5, {}, { estado: "etapa_templo_1787618330816" })],
       registros: { "cli-1|etapa_templo_1787618330816": [{ tipo: "noContesta", plantilla: 2, enviado_en: hace24 }] },
     })
   );
@@ -354,8 +413,7 @@ for (const t of tiempos) {
 {
   const r = await ejecutarBuscar(
     escenario({
-      convs: { 271: filaSupabase({}, { estado: "etapa_templo_1787618330816" }) },
-      mensajes: { 271: [{ message_type: 0, created_at: hace(5) }] },
+      convs: [filaConHoras(5, {}, { estado: "etapa_templo_1787618330816" })],
       registros: { "cli-1|etapa_templo_1787618330816": [{ tipo: "sinRespuesta", plantilla: 2, enviado_en: hace24 }] },
     })
   );
@@ -396,8 +454,13 @@ grupo("4) Credenciales escritas en el nodo (n8n sin variables de entorno)");
   check("Si Supabase no responde, no revienta y avisa", r.items.length === 1 && (r.diagnostico.avisos || []).some((a) => /pipeline_etapas/.test(a)));
 }
 {
-  const r = await ejecutarBuscar(escenario({ errorChatwoot: true }));
-  check("Si el token de Chatwoot falla, el diagnóstico lo dice", (r.diagnostico?.errores || []).some((e) => /CHATWOOT/.test(e)));
+  const r = await ejecutarBuscar(escenario({ errorConversaciones: true }));
+  check("Si Supabase no devuelve conversaciones, no revienta y avisa", r.items.length === 1 && (r.diagnostico?.avisos || []).some((a) => /conversaciones/.test(a)));
+}
+{
+  // Sin la lista de envíos de 24 h no se puede saber qué se repite: no se envía.
+  const r = await ejecutarBuscar(escenario({ errorRegistros: true }));
+  check("Si no se pueden leer los envíos recientes NO se envía nada (evita repetir)", r.recordatorios.length === 0 && (r.diagnostico?.avisos || []).some((a) => /24 h/.test(a)));
 }
 {
   const r = await ejecutarBuscar(escenario());
@@ -459,39 +522,18 @@ grupo("7) Cadena en línea sin bucle: la tanda completa sale en la misma pasada"
     };
   }
 
-  const servidor = servidorFalso({
-    etapas: ETAPAS_REALES,
-    convs: {
-      271: filaSupabase(),
-      272: filaSupabase({ id: "conv-272", cliente_id: "cli-2" }, { id: "cli-2", estado: "etapa_1787876104854" }),
-    },
-    abiertos: [
-      conversacion(),
-      conversacion({ id: 272, meta: { sender: { name: "Luis Gomez", phone_number: "+595981111222" } } }),
-    ],
-    mensajes: {
-      271: [{ message_type: 0, created_at: hace(2), content: "hola" }],
-      272: [{ message_type: 0, created_at: hace(4), content: "buenas" }],
-    },
-    registros: {},
-  });
+  const dosClientes = () => [
+    filaConHoras(2),
+    filaConHoras(
+      4,
+      { id: "conv-272", cliente_id: "cli-2", chatwoot_conversation_id: 272, chatwoot_conversation_ids: ["272"], numero_whatsapp: "+595981111222" },
+      { id: "cli-2", nombre: "Luis Gomez", estado: "etapa_1787876104854" }
+    ),
+  ];
 
-  const preparados = await ejecutarBuscar({
-    etapas: ETAPAS_REALES,
-    convs: {
-      271: filaSupabase(),
-      272: filaSupabase({ id: "conv-272", cliente_id: "cli-2" }, { id: "cli-2", estado: "etapa_1787876104854" }),
-    },
-    abiertos: [
-      conversacion(),
-      conversacion({ id: 272, meta: { sender: { name: "Luis Gomez", phone_number: "+595981111222" } } }),
-    ],
-    mensajes: {
-      271: [{ message_type: 0, created_at: hace(2), content: "hola" }],
-      272: [{ message_type: 0, created_at: hace(4), content: "buenas" }],
-    },
-    registros: {},
-  });
+  const servidor = servidorFalso({ etapas: ETAPAS_REALES, convs: dosClientes(), registros: {} });
+
+  const preparados = await ejecutarBuscar({ etapas: ETAPAS_REALES, convs: dosClientes(), registros: {} });
   check("El primer nodo prepara un recordatorio por cada cliente elegible", preparados.recordatorios.length === 2);
 
   const servidorPasada = servidorFalso({});

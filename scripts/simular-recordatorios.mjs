@@ -1,0 +1,289 @@
+#!/usr/bin/env node
+/**
+ * Simulador de recordatorios (PRUEBA EN SECO: no envía nada).
+ *
+ * Muestra qué haría el workflow en el próximo ciclo con los datos reales de
+ * Supabase: a quién le toca recordatorio, cuál de los cuatro y a quién no y por qué.
+ *
+ * Uso:
+ *   node scripts/simular-recordatorios.mjs                      (lee Supabase)
+ *   node scripts/simular-recordatorios.mjs --json datos.json    (usa un respaldo)
+ *   node scripts/simular-recordatorios.mjs --ahora 2026-09-19T19:30:00Z
+ *
+ * Las reglas NO están escritas aquí: se extraen del código del workflow
+ * (n8n/03-recordatorios-whatsapp-por-etapa.json), así que el simulador y n8n
+ * nunca pueden desincronizarse.
+ */
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+const raiz = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const RUTA_WORKFLOW = path.join(raiz, "n8n", "03-recordatorios-whatsapp-por-etapa.json");
+
+// ---------------------------------------------------------------------------
+// 1) Reglas del workflow (extraídas del propio nodo)
+// ---------------------------------------------------------------------------
+export function extraerReglas() {
+  const wf = JSON.parse(fs.readFileSync(RUTA_WORKFLOW, "utf8"));
+  const nodo = (wf.nodes || []).find((n) => n.name === "Buscar clientes y preparar recordatorio");
+  if (!nodo) throw new Error("No está el nodo «Buscar clientes y preparar recordatorio» en el workflow");
+  const codigo = nodo.parameters.jsCode;
+
+  // Extrae un objeto literal `const NOMBRE = { ... };` del código del nodo,
+  // incluyendo las llaves y sin el punto y coma final.
+  const bloque = (nombre) => {
+    const marca = "const " + nombre + " = {";
+    const desde = codigo.indexOf(marca);
+    if (desde === -1) throw new Error("No se encontró en el nodo: " + marca);
+    const fin = codigo.indexOf("\n};", desde);
+    if (fin === -1) throw new Error("Bloque sin cerrar en el nodo: " + nombre);
+    return codigo.slice(desde + marca.length - 1, fin + 2);
+  };
+  // Extrae una constante simple `const NOMBRE = ...;`
+  const constante = (nombre) => {
+    const marca = "const " + nombre + " = ";
+    const desde = codigo.indexOf(marca);
+    if (desde === -1) throw new Error("No se encontró en el nodo: " + marca);
+    return codigo.slice(desde + marca.length, codigo.indexOf(";", desde + marca.length));
+  };
+  const valor = (expresion) => new Function("return (" + expresion + ")")();
+
+  return {
+    etapasRecordatorio: valor(bloque("ETAPAS_RECORDATORIO")),
+    umbralesHoras: valor(constante("UMBRALES_HORAS")),
+    ventanaApiHoras: valor(constante("VENTANA_API_HORAS")),
+    limiteEnviosPorEjecucion: valor(constante("LIMITE_ENVIOS_POR_EJECUCION")),
+    supabaseUrl: (codigo.match(/const SUPABASE_URL = '([^']+)'/) || [])[1],
+    supabaseKey: (codigo.match(/const SUPABASE_SERVICE_ROLE_KEY = '([^']+)'/) || [])[1],
+  };
+}
+
+const normalizar = (valor) =>
+  String(valor === null || valor === undefined ? "" : valor)
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+export function tipoDeEtapa(nombre, reglas) {
+  const n = normalizar(nombre);
+  if (!n) return null;
+  for (const tipo of Object.keys(reglas.etapasRecordatorio)) {
+    if (reglas.etapasRecordatorio[tipo].some((objetivo) => n === objetivo || n.startsWith(objetivo + " "))) return tipo;
+  }
+  return null;
+}
+
+/** Qué variante (1 a 4) le toca por el TIEMPO sin responder: la última franja cumplida. */
+export function variantePorTiempo(horas, reglas) {
+  let variante = 0;
+  for (let i = 0; i < reglas.umbralesHoras.length; i++) {
+    if (horas >= reglas.umbralesHoras[i]) variante = i + 1;
+  }
+  return variante || null;
+}
+
+/** Misma decisión que el nodo: horas sin responder + variantes ya enviadas → qué toca. */
+export function decidir({ horas, enviadas = [], canal = "api" }, reglas) {
+  // La ventana de 24 h es de Meta: solo aplica al WhatsApp API. El personal no la tiene.
+  if (canal === "api" && horas >= reglas.ventanaApiHoras) return { accion: "ventana" };
+  const variante = variantePorTiempo(horas, reglas);
+  if (!variante) {
+    return { accion: "espera", faltaHoras: reglas.umbralesHoras[0] - horas, intento: 1 };
+  }
+  if (enviadas.indexOf(variante) !== -1) return { accion: "repetida", intento: variante };
+  return { accion: "enviar", intento: variante, umbralHoras: reglas.umbralesHoras[variante - 1] };
+}
+
+// ---------------------------------------------------------------------------
+// 2) Datos: Supabase en vivo o un respaldo en JSON
+// ---------------------------------------------------------------------------
+async function traer(url, key) {
+  const pedir = async (ruta) => {
+    const r = await fetch(url + "/rest/v1/" + ruta, { headers: { apikey: key, Authorization: "Bearer " + key } });
+    if (!r.ok) throw new Error("Supabase respondió " + r.status + " en " + ruta);
+    return r.json();
+  };
+  const etapas = await pedir("pipeline_etapas?select=*&order=orden.asc");
+  const codigos = etapas.map((e) => tipoDeEtapa(e.nombre, REGLAS_GLOBALES)).filter(Boolean);
+  const claves = etapas.filter((e) => tipoDeEtapa(e.nombre, REGLAS_GLOBALES)).map((e) => e.clave);
+  const conversaciones = await pedir(
+    "conversaciones?fuente=eq.meta_business&select=cliente_id,chatwoot_conversation_id,numero_whatsapp,ultimo_entrante_api_en,ultimo_mensaje_en,archivada,silenciado,clientes!inner(id,nombre,nombre_manual,estado,estado_desde,es_spam)&archivada=eq.false&limit=1000"
+  );
+  const personales = await pedir(
+    "conversaciones?fuente=eq.evolution&select=cliente_id,chatwoot_conversation_id,chatwoot_conversation_ids,archivada,silenciado&limit=1000"
+  );
+  const registros = await pedir("recordatorios_whatsapp?select=cliente_id,etapa,tipo,plantilla,enviado_en&order=enviado_en.desc&limit=1000");
+  return { etapas, conversaciones, personales, registros, tiposDetectados: codigos };
+}
+
+let REGLAS_GLOBALES = null;
+
+export function preparar({ etapas, conversaciones, personales, registros }, reglas, ahora) {
+  // Chat de WhatsApp Personal por cliente (fuente = evolution): por ahí salen
+  // los recordatorios de «No contesta», sin la ventana de 24 h de Meta.
+  const personalPorCliente = new Map();
+  for (const f of personales || []) {
+    if (!f || !f.cliente_id || f.archivada === true || f.silenciado === true) continue;
+    if (personalPorCliente.has(f.cliente_id)) continue;
+    const ids = Array.isArray(f.chatwoot_conversation_ids) ? f.chatwoot_conversation_ids : [];
+    personalPorCliente.set(f.cliente_id, f.chatwoot_conversation_id || (ids.length ? ids[ids.length - 1] : null));
+  }
+  const tipoPorClave = new Map();
+  for (const e of etapas || []) {
+    const tipo = tipoDeEtapa(e.nombre, reglas);
+    if (tipo && e.clave) tipoPorClave.set(String(e.clave).trim(), tipo);
+  }
+
+  // Envíos por cliente + etapa: totales y, sobre todo, qué variante salió en las
+  // últimas 24 h (es la que NO se repite). Como el nodo, se cuenta la plantilla
+  // sin mirar el nombre histórico del tipo («sinRespuesta» = no contesta).
+  const intentos = new Map();
+  const enviadas = new Map();
+  for (const r of registros || []) {
+    const clave = r.cliente_id + "|" + r.etapa;
+    intentos.set(clave, (intentos.get(clave) || 0) + 1);
+    const cuando = new Date(r.enviado_en).getTime();
+    if (Number.isFinite(cuando) && ahora.getTime() - cuando < 24 * 3600 * 1000) {
+      const set = enviadas.get(clave) || new Set();
+      set.add(Number(r.plantilla));
+      enviadas.set(clave, set);
+    }
+  }
+
+  const filas = [];
+  for (const c of conversaciones || []) {
+    const cliente = c.clientes || {};
+    if (!cliente.id || cliente.es_spam === true) continue;
+    if (c.archivada === true || c.silenciado === true) continue;
+    const tipo = tipoPorClave.get(String(cliente.estado || "").trim());
+    if (!tipo) continue;
+    const marca = c.ultimo_entrante_api_en || null;
+    // «No contesta» cuenta desde que el chat entró a la etapa; si falta esa
+    // columna (migración pendiente), se usa el último mensaje del cliente.
+    const marcaEtapa = tipo === "noContesta" ? cliente.estado_desde || null : null;
+    const reloj = marcaEtapa ? "etapa" : "mensaje";
+    const base = marcaEtapa || marca;
+    const horas = base ? (ahora.getTime() - new Date(base).getTime()) / 3600000 : null;
+    const chatPersonal = tipo === "noContesta" ? personalPorCliente.get(cliente.id) || null : null;
+    filas.push({
+      cliente: cliente.nombre_manual || cliente.nombre || "(sin nombre)",
+      clienteId: cliente.id,
+      etapa: tipo,
+      nombreEtapa: (etapas.find((e) => String(e.clave) === String(cliente.estado)) || {}).nombre || cliente.estado,
+      conversacionId: c.chatwoot_conversation_id,
+      canal: chatPersonal ? "personal" : "api",
+      chatDestino: chatPersonal || c.chatwoot_conversation_id,
+      reloj,
+      marca: base,
+      horas,
+      intentos: intentos.get(cliente.id + "|" + cliente.estado) || 0,
+      enviadas: Array.from(enviadas.get(cliente.id + "|" + cliente.estado) || []).sort((a, b) => a - b),
+    });
+  }
+  return filas;
+}
+
+// ---------------------------------------------------------------------------
+// 3) Informe
+// ---------------------------------------------------------------------------
+export function informe(filas, reglas, ahora) {
+  const salen = [], esperan = [], ventana = [], repetidas = [], sinMarca = [];
+  for (const f of filas) {
+    if (f.horas === null) { sinMarca.push(f); continue; }
+    const d = decidir({ horas: f.horas, enviadas: f.enviadas, canal: f.canal }, reglas);
+    if (d.accion === "enviar") salen.push({ ...f, ...d });
+    else if (d.accion === "espera") esperan.push({ ...f, ...d });
+    else if (d.accion === "repetida") repetidas.push({ ...f, ...d });
+    else ventana.push(f);
+  }
+  const porHoras = (a, b) => b.horas - a.horas;
+  salen.sort(porHoras);
+  // Tope por ejecución, igual que el nodo: primero los que llevan más tiempo
+  // esperando; el resto sale en la pasada siguiente (15 minutos después).
+  const limite = reglas.limiteEnviosPorEjecucion || salen.length;
+  const porLimite = salen.slice(limite);
+  return {
+    salen: salen.slice(0, limite),
+    porLimite,
+    esperan: esperan.sort(porHoras),
+    repetidas: repetidas.sort(porHoras),
+    ventana: ventana.sort(porHoras),
+    sinMarca,
+  };
+}
+
+function linea(campos, anchos) {
+  return campos.map((c, i) => String(c ?? "").padEnd(anchos[i]).slice(0, anchos[i])).join("  ");
+}
+
+export function imprimir({ salen, porLimite = [], esperan, repetidas, ventana, sinMarca }, reglas, ahora) {
+  const h = (n) => (n >= 100 ? n.toFixed(0) : n.toFixed(1)) + " h";
+  const e = (t) => (t === "datos" ? "Datos" : "No contesta");
+  console.log("\nPrueba en seco (NO envía nada) · " + ahora.toISOString() + " · " + reglas.etapasRecordatorio.datos.join("/") +
+    " y " + reglas.etapasRecordatorio.noContesta.slice(0, 2).join("/") + " · variante a las " + reglas.umbralesHoras.join(" / ") + " h · ventana " + reglas.ventanaApiHoras + " h");
+
+  console.log("\n✅ SALDRÍA AHORA (" + salen.length + ")");
+  console.log("  " + linea(["ETAPA", "CLIENTE", "SIN RESPONDER", "ENVÍA", "CANAL", "CHAT", "HISTÓRICOS"], [13, 28, 14, 12, 12, 8, 11]));
+  for (const f of salen) {
+    console.log("  " + linea([e(f.etapa), f.cliente, h(f.horas), "plantilla " + f.intento, f.canal, f.chatDestino, f.intentos], [13, 28, 14, 12, 12, 8, 11]));
+  }
+
+  if (repetidas.length) {
+    console.log("\n🔁 YA SE ENVIÓ esa misma plantilla en las últimas 24 h (" + repetidas.length + ") — no se repite");
+    console.log("  " + linea(["ETAPA", "CLIENTE", "SIN RESPONDER", "PLANTILLA"], [13, 30, 14, 13]));
+    for (const f of repetidas) console.log("  " + linea([e(f.etapa), f.cliente, h(f.horas), "plantilla " + f.intento], [13, 30, 14, 13]));
+  }
+
+  console.log("\n⏳ ESPERAN TIEMPO (" + esperan.length + ")");
+  console.log("  " + linea(["ETAPA", "CLIENTE", "SIN RESPONDER", "FALTAN", "PARA"], [13, 30, 14, 10, 12]));
+  for (const f of esperan) console.log("  " + linea([e(f.etapa), f.cliente, h(f.horas), h(f.faltaHoras), "plantilla " + f.intento], [13, 30, 14, 10, 12]));
+
+  console.log("\n⏰ NO SE TOCAN — fuera de la ventana de 24 h del WhatsApp API (" + ventana.length + ")");
+  for (const f of ventana) console.log("  · " + f.cliente + " (" + h(f.horas) + ")");
+
+  if (porLimite.length) {
+    console.log("\n⏭️  QUEDAN PARA LA PASADA SIGUIENTE — tope de " + reglas.limiteEnviosPorEjecucion + " por ejecución (" + porLimite.length + ")");
+    for (const f of porLimite) console.log("  · " + f.cliente + " (" + h(f.horas) + ")");
+  }
+
+  if (sinMarca.length) {
+    console.log("\n❔ SIN MARCA de mensaje entrante por el API (" + sinMarca.length + "): " + sinMarca.map((f) => f.cliente).join(", "));
+  }
+  console.log("\nTotal a enviar ahora: " + salen.length + " · repetidas: " + repetidas.length + " · en espera: " + esperan.length +
+    " · fuera de ventana: " + ventana.length + " · para la siguiente pasada: " + porLimite.length + "\n");
+}
+
+// ---------------------------------------------------------------------------
+// 4) Ejecución
+// ---------------------------------------------------------------------------
+async function principal() {
+  const args = process.argv.slice(2);
+  const arg = (nombre) => {
+    const i = args.indexOf(nombre);
+    return i === -1 ? null : args[i + 1];
+  };
+  const ahora = arg("--ahora") ? new Date(arg("--ahora")) : new Date();
+  const reglas = extraerReglas();
+  REGLAS_GLOBALES = reglas;
+
+  let datos;
+  const archivo = arg("--json");
+  if (archivo) {
+    datos = JSON.parse(fs.readFileSync(archivo, "utf8"));
+  } else {
+    if (!reglas.supabaseUrl || !reglas.supabaseKey) throw new Error("El nodo no tiene SUPABASE_URL y SUPABASE_SERVICE_ROLE_KEY");
+    console.log("Leyendo Supabase (" + reglas.supabaseUrl + ")… no se envía nada.");
+    datos = await traer(reglas.supabaseUrl, reglas.supabaseKey);
+  }
+
+  const filas = preparar(datos, reglas, ahora);
+  const etapas = Object.fromEntries((datos.etapas || []).filter((x) => tipoDeEtapa(x.nombre, reglas)).map((x) => [x.nombre, x.clave]));
+  console.log("\nEtapas con recordatorio encontradas: " + (JSON.stringify(etapas) || "ninguna"));
+  imprimir(informe(filas, reglas, ahora), reglas, ahora);
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  principal().catch((error) => {
+    console.error("Error: " + (error && error.message ? error.message : error));
+    process.exit(1);
+  });
+}

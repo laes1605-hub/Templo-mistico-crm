@@ -27,6 +27,25 @@ function extraHeadersFor(target: URL): Record<string, string> {
   return headers;
 }
 
+/**
+ * Este endpoint adjunta el token de Chatwoot cuando el destino es ese mismo
+ * servidor, así que NO puede servir cualquier ruta: si aceptara /api/v1/...
+ * cualquiera podría leer las conversaciones del CRM desde fuera (se comprobó
+ * que respondía con el token de administrador). Solo se permiten los archivos
+ * que sirve Active Storage, que es de donde salen las fotos, audios y notas.
+ */
+function hostDeChatwoot(target: URL): boolean {
+  try {
+    return target.origin === new URL(process.env.CHATWOOT_URL || "https://crmesteban.duckdns.org").origin;
+  } catch {
+    return false;
+  }
+}
+
+function esRutaDeApiBloqueada(target: URL): boolean {
+  return hostDeChatwoot(target) && !target.pathname.startsWith("/rails/active_storage/");
+}
+
 function filenameFrom(url: URL, contentType: string, contentDisposition: string | null): string {
   const disp = contentDisposition || "";
   const quoted = disp.match(/filename\*?=(?:UTF-8''|")?([^\";]+)/i);
@@ -60,6 +79,11 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: "Solo se pueden descargar archivos http(s)." }, { status: 400 });
     }
     if (isPrivateHostname(target.hostname)) {
+      return NextResponse.json({ error: "URL no permitida." }, { status: 400 });
+    }
+    if (esRutaDeApiBloqueada(target)) {
+      // Del servidor de Chatwoot solo se sirven archivos, nunca su API: ese
+      // endpoint viaja con el token de administrador en la cabecera.
       return NextResponse.json({ error: "URL no permitida." }, { status: 400 });
     }
 

@@ -55,32 +55,29 @@ BEGIN
 END $$;
 
 -- ----------------------------------------------------------------------------
--- 2. TRIGGERS: los mismos nombres se crean en migraciones distintas.
---    DROP IF EXISTS antes que nada para que volver a correr no tire
---    "trigger already exists".
+-- 2. TRIGGERS: ⚠️ AQUÍ NO SE BORRA NADA (corregido el 20260922000001).
+--
+--    Antes esta sección hacía DROP TRIGGER de estos seis:
+--      trg_clientes_atendido, clientes_enrutar_por_numero,
+--      conversaciones_enrutar_cliente, trg_incrementar_no_leidos_entrante,
+--      respuestas_rapidas_calcular_huella, trg_actualizar_ultimo_entrante
+--
+--    …y NUNCA los volvía a crear (sólo se recreaban las policies). Como esta
+--    migración es la última por fecha, la base quedaba sin esos triggers y con
+--    varios fallos silenciosos: `respuestas_rapidas.huella` es NOT NULL y nadie
+--    la calculaba (error «null value in column "huella" ... violates not-null
+--    constraint» al sincronizar), las marcas de la ventana de 24 h se quedaban
+--    congeladas, los no leídos no subían y el enrutado por número no corría.
+--
+--    No hace falta borrarlos para poder re-aplicar las migraciones: todas usan
+--    DROP TRIGGER IF EXISTS + CREATE TRIGGER propios, así que ya son
+--    idempotentes. Si en tu base ya se habían borrado, los restaura
+--    `20260922000001_restaurar_triggers_perdidos.sql`.
 -- ----------------------------------------------------------------------------
 DO $$
-DECLARE
-  r record;
 BEGIN
-  FOR r IN
-    SELECT tgname, relname
-      FROM pg_trigger t
-      JOIN pg_class c ON c.oid = t.tgrelid
-      JOIN pg_namespace n ON n.oid = c.relnamespace
-     WHERE n.nspname = 'public'
-       AND NOT t.tgisinternal
-       AND tgname IN (
-         'trg_clientes_atendido',
-         'clientes_enrutar_por_numero',
-         'conversaciones_enrutar_cliente',
-         'trg_incrementar_no_leidos_entrante',
-         'respuestas_rapidas_calcular_huella',
-         'trg_actualizar_ultimo_entrante'
-       )
-  LOOP
-    EXECUTE format('DROP TRIGGER IF EXISTS %I ON public.%I;', r.tgname, r.relname);
-  END LOOP;
+  -- Sólo se avisa (sin tocar nada) para que quede claro en el log.
+  RAISE NOTICE 'Sección de triggers omitida a propósito: no se borra ningún trigger (ver 20260922000001).';
 END $$;
 
 -- ----------------------------------------------------------------------------

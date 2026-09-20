@@ -1,8 +1,183 @@
 # Build Info - Templo Místico CRM
 
-**Fecha:** 2026-09-16 (rama `arena/01a0ab64-templo-mistico-crm`)
+**Fecha:** 2026-09-19 (rama `arena/01a0ba5c-templo-mistico-crm`)
 **Commit:** (ver git log)
-**Branch:** arena/01a0ab64-templo-mistico-crm
+**Branch:** arena/01a0ba5c-templo-mistico-crm
+
+## Build 2026-09-22: «no me deja sincronizar» — la migración de «duplicados» borraba triggers
+
+**Síntoma:** al pulsar **Sincronizar** en respuestas rápidas:
+
+```text
+No se pudo subir una respuesta: "No contesta":
+null value in column "huella" of relation "respuestas_rapidas" violates not-null constraint
+```
+
+**Causa raíz (una sola, y explica más cosas):**
+`supabase/migrations/20260920000001_fix_migraciones_duplicadas_idempotentes.sql`
+hacía `DROP TRIGGER` de **seis** triggers para poder volver a aplicar migraciones
+viejas sin el error «trigger already exists»… y sólo recreaba las **policies**.
+
+```text
+trg_clientes_atendido · clientes_enrutar_por_numero · conversaciones_enrutar_cliente
+trg_incrementar_no_leidos_entrante · respuestas_rapidas_calcular_huella · trg_actualizar_ultimo_entrante
+```
+
+Como es la última migración por fecha, la base quedaba sin ellos: no había forma
+de volver a crearlos. Consecuencias, todas silenciosas menos la primera:
+
+| Trigger borrado | Lo que rompía |
+| --- | --- |
+| `respuestas_rapidas_calcular_huella` | `huella` es `NOT NULL` y nadie la calculaba → **toda** inserción fallaba (el error de arriba: sincronizar era imposible) |
+| `trg_actualizar_ultimo_entrante` | `conversaciones.ultimo_entrante_en` / `ultimo_entrante_api_en` se quedaban congeladas (comprobado en vivo: mensajes entrantes del 19/09 y marcas del 15/09) |
+| `trg_incrementar_no_leidos_entrante` | los no leídos dejaban de subir |
+| `clientes_enrutar_por_numero` | un lead nuevo no se enlazaba solo por número |
+| `conversaciones_enrutar_cliente` | una conversación nueva no arrastraba al cliente del número |
+| `trg_clientes_atendido` | `atendido` no se marcaba al pasar a «consulta hecha» |
+
+**Comprobado contra el Supabase real (sólo lectura):** las seis respuestas
+rápidas guardadas el 15/09 tienen `huella = md5(tipo || chr(31) || hash_bytes)`
+(el trigger funcionaba entonces) y las marcas `ultimo_entrante_en` no se mueven
+desde el **15/09 22:39** aunque hay mensajes entrantes del **19/09 23:18**.
+
+### Arreglo
+
+- **`supabase/migrations/20260922000001_restaurar_triggers_perdidos.sql`** (nuevo):
+  vuelve a crear los seis triggers, con `DROP IF EXISTS` previo e idempotente.
+  Antes de cada uno comprueba con `to_regprocedure` que la función exista (si
+  falta, avisa con un `NOTICE` en vez de reventar) y al final recalcula las
+  marcas viejas con `recalcular_ultimos_entrantes()` y `sincronizar_no_leidos()`.
+- **`20260920000001_fix_migraciones_duplicadas_idempotentes.sql`**: se quitó el
+  bloque que borraba los triggers (ya no hace falta: todas las migraciones usan
+  `DROP TRIGGER IF EXISTS` + `CREATE TRIGGER` propios).
+- **`MIGRAR-A-NUEVO-SUPABASE.sql`**: al final ahora incluye la restauración de
+  triggers y la fecha de entrada a la etapa, así el paquete también deja la base
+  sana si se vuelve a correr.
+- **`src/lib/respuestas-rapidas.ts`**: cuando falla una subida, el aviso ahora
+  explica el caso conocido («falta el trigger que calcula la huella: corre
+  20260922000001…») en vez de dejar el error crudo de Postgres.
+- **`scripts/prueba-migraciones-triggers.mjs`** (nuevo, `npm run test:sql-triggers`):
+  guardia de regresión — ningún `.sql` puede dejar uno de esos seis triggers
+  borrado sin recrearlo, y la migración de restauración tiene que reponerlos
+  todos. **22 pruebas OK**.
+- La página de importación (puerto 4173) ahora muestra **un solo SQL** para
+  pegar en Supabase (repara los triggers + agrega `clientes.estado_desde`) en
+  `/reparar.sql`.
+
+## Build 2026-09-19 (v5): «No contesta» cuenta desde la etapa y sale por WhatsApp Personal
+
+**Problema:** «No contesta» contaba desde el último mensaje del cliente, no desde
+que el chat entra a esa pestaña; y si la ventana de 24 h de Meta ya estaba cerrada,
+esos clientes no recibían nada.
+
+### Arreglo
+
+- **Reloj de la etapa**: `supabase/migrations/20260921000002_estado_desde_recordatorios.sql`
+  agrega `clientes.estado_desde` (fecha de entrada a la etapa) y un trigger que la
+  actualiza en cada cambio de etapa. Los clientes que ya existían toman como fecha
+  de entrada su último mensaje por el WhatsApp API. «Datos» sigue contando desde el
+  último mensaje del cliente.
+- **Canal por etapa**: los recordatorios de «No contesta» salen por el chat de
+  **WhatsApp Personal** del cliente (conversación `fuente = evolution`), donde la
+  ventana de 24 h de Meta no existe. Si el cliente no tiene chat personal, se usa el
+  del API con su ventana, y si tampoco hay, se cuenta en
+  `conteo.omitidas.sinChatPersonal` con su aviso.
+- **Compatibilidad**: si la migración aún no está corrida, el nodo pide las
+  conversaciones sin `estado_desde`, sigue funcionando con el reloj del último
+  mensaje y lo avisa (`avisos`, `estadoDesdeDisponible = false`).
+- El diagnóstico suma `canalPorEtapa`, `relojPorEtapa`, `estadoDesdeDisponible`,
+  `conteo.enviadosPorPersonal` y `conteo.errorChatPersonal`.
+- `scripts/simular-recordatorios.mjs` refleja lo mismo: columna de canal y chat,
+  reloj de la etapa y sin ventana de 24 h para el WhatsApp Personal.
+- Verificación: **116 pruebas OK** (12 nuevas para «No contesta»: 20 min en la
+  etapa no sale, 40 min sale por el personal, 48 h → plantilla 4, sin chat personal
+  se omite con aviso, sin migración se usa el último mensaje).
+
+## Build 2026-09-19: los recordatorios de WhatsApp API vuelven a salir (Supabase nuevo)
+
+**Problema:** los recordatorios automáticos de WhatsApp API no llegaban.
+
+### Diagnóstico (verificado contra el proyecto real, no supuesto)
+
+- **La etiqueta `bot-pausado` vetaba a los clientes correctos**: el workflow no
+  enviaba a los chats con esa etiqueta, pero Luna la pone justo cuando envía la
+  lista de requisitos y pasa el chat a **Datos**. En el CRM había **102 chats
+  abiertos** con `bot-pausado` frente a **129** en `etapa-datos`: casi todos los
+  candidatos quedaban silenciados por la propia etiqueta del flujo. Ahora
+  `bot-pausado` no veta (siguen vetando `recordatorios-pausados`, `perdido`,
+  `lead-perdido` y `spam`) y el diagnóstico informa `etiquetasQueApagan` y el
+  desglose `conteo.omitidas.porEtiqueta`.
+- **Salía un solo recordatorio por pasada (la causa que quedaba)**: los nodos Code
+  leían `$input.item` (un único ítem) en vez de `$input.all()` (la tanda completa),
+  así que el envío se cortaba en el primer chat de la lista. Comprobado contra el
+  Supabase real: el 19/09 a las 19:35 UTC se registró **un solo envío** cuando
+  había **10 clientes** en Datos/No contesta con su tiempo cumplido (4 h, 6 h,
+  18 h, 20 h, 22 h…). Ahora los tres nodos recorren la tanda completa y el
+  workflow **ya no lleva «Procesar uno a uno» ni bucle**: la cadena es
+  `Cada 15 minutos → Buscar → Enviar → Registrar`. El builder fuerza la cadena, el
+  modo «Run Once for All Items» y **falla** si vuelve a aparecer un bucle.
+- **La variante no correspondía al tiempo sin contestar**: antes se elegía por el
+  número de avisos previos. Ahora la plantilla se elige por tiempo sin contestar
+  (30 min → 1 · 3 h → 2 · 12 h → 3 · 23 h 30 → 4), no se repite la misma en 24 h y
+  la pasada tiene un tope de 60 envíos.
+- **El bucle estaba conectado al revés** (arreglo anterior, ya sin efecto porque el
+  bucle se eliminó): el nodo «Procesar uno a uno» tiene las salidas 0 = `done` y
+  1 = `loop`, los ítems viajan por `loop` y `done` entrega `[]` hasta terminar
+  (comprobado en `SplitInBatchesV3.node.ts`). Con el envío conectado a `done` no se
+  enviaba nada. Dejó de ser un riesgo al quitar el nodo del workflow.
+- Las credenciales del código apuntan al proyecto `zcljlddtcoyfyvshlyfk` y
+  responden: `recordatorios_whatsapp` existe y la service_role lee y escribe.
+  El proyecto **no** era el problema.
+- El último recordatorio registrado era del **10/09/2026**. Justo ahí dejó de
+  salir el intento de la etapa *Datos*.
+- Causa: el workflow pedía `pipeline_etapas?grupo=eq.templo` y después comparaba
+  por nombre. El CRM crea y edita las etapas con `grupo = 'general'`
+  (`agregarEtapaPipeline` en `src/app/page.tsx`), así que al unificar el pipeline
+  **Datos** quedó en `general`: el workflow no la reconocía y no enviaba nada.
+  También exigía `clientes.grupo = 'templo'`, lo que descartaba a los chats que
+  el operador había movido a la cartera Personal.
+
+### Arreglo (`n8n/03-recordatorios-whatsapp-por-etapa.json`)
+
+- Las etapas se reconocen **solo por NOMBRE, en todo el pipeline** (sin filtrar
+  por grupo), sin acentos ni mayúsculas y admitiendo sufijos («Datos (API)»).
+- El canal lo decide la **conversación** (`fuente = 'meta_business'`), no
+  `clientes.grupo`.
+- **Los candidatos salen de Supabase**, no del listado de Chatwoot. Antes la
+  búsqueda pedía `conversations?status=open` por páginas y luego una consulta por
+  chat: con 271 chats abiertos la pasada se quedaba a medias y solo atendía al
+  primero de la lista (el 19/09 salieron 2 mensajes en vez de 11). Ahora es **una
+  sola consulta** a `conversaciones` con `clientes!inner`, el tiempo sin contestar
+  sale de `ultimo_entrante_api_en` y Chatwoot solo se usa para enviar y para
+  verificar alguna hora. El diagnóstico se abre con `version` y un `resumen` de una
+  línea, más `omitidasPorChat` con el motivo de cada descarte.
+- Si falta una etapa, el workflow **no revienta**: lo informa en un ítem final
+  de diagnóstico (`_diagnostico: true`) con `etapasReconocidas`,
+  `etapasDelPipeline`, `conteo.omitidas.*` y `avisos`: en una sola mirada se ve
+  por qué no salió nada.
+- **Ventana de 24 h**: fuera de ella Meta rechaza el texto libre, así que no se
+  intenta el envío (antes fallaba en silencio).
+- El nodo de envío guarda el motivo exacto devuelto por Chatwoot/Meta en el
+  campo `error` (antes solo quedaba en los logs del servidor).
+- Las **credenciales van escritas dentro de cada nodo** (esta instancia de n8n
+  no permite variables de entorno). Cambiar de proyecto Supabase es editar solo
+  `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY` en los tres nodos.
+- `n8n/recordatorios/CODIGO-PARA-PEGAR.md` trae los tres nodos completos con las
+  llaves dentro para copiar y pegar a mano en n8n.
+- El código de los nodos ya no vive dentro del JSON: se edita en
+  `n8n/recordatorios/code/*.js` y se regenera con `npm run build:recordatorios`.
+- **Seguridad**: `/api/media/download` adjuntaba el token de Chatwoot a cualquier
+  URL del mismo servidor, así que servía también `/api/v1/...` (se comprobó que
+  devolvía las conversaciones con el token de administrador). Ahora de ese host
+  solo se permiten rutas de `/rails/active_storage/`, que es de donde salen los
+  archivos del chat.
+- `npm run simular:recordatorios`: prueba en seco con datos reales (qué saldría, qué
+  espera tiempo y qué queda fuera de la ventana de 24 h). Extrae las reglas del
+  propio workflow, así que no puede desincronizarse.
+- Verificación: `npm run test:recordatorios` — **116 pruebas OK** sobre el código
+  real de los nodos (Chatwoot y Supabase simulados), incluidas las consultas
+  exactas validadas contra el proyecto real. Detalle en
+  `n8n/03-README-recordatorios.md`.
 
 ## Build 2026-09-16: las notas de voz del chat vuelven a sonar (reproductor robusto)
 

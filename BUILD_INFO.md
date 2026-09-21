@@ -42,8 +42,11 @@ botón no hacía nada.
   en base64 y con qué credencial escribe el servidor; devuelve la lista de
   problemas y el `.sql` que hay que correr.
 - **Menú de respuestas rápidas** (`src/app/page.tsx`): botón **Comprobar
-  biblioteca** junto a «Sincronizar». Si algo falta, el panel dice exactamente
-  qué y qué archivo `.sql` pegar en Supabase → SQL Editor.
+  biblioteca** junto a «Sincronizar». Lo primero que hace es lo que de verdad
+  importa —leer la tabla con la conexión del PROPIO dispositivo— y después
+  pregunta al servidor por lo que sólo él ve (bucket, credencial) y por el `.sql`
+  a correr. Si el servidor no tiene salida a internet pero el dispositivo sí,
+  lo dice así en vez de asustar con un falso problema.
 - **`/api/admin/migrar-respuestas-rapidas-storage`**: al pasar un base64 a
   Storage ahora escribe también `huella` (la calcula el helper), así la
   deduplicación no depende del trigger.

@@ -22,6 +22,7 @@ import {
   prepararImagenRR,
   adjuntoParaEnviar,
 } from "../lib/respuestas-rapidas";
+import { listarFilasBiblioteca, pistaParaOperador } from "../lib/respuestas-rapidas-fila";
 import { estaContactoGuardadoEnTelefono, guardarContactoEnTelefono } from "../lib/contacts";
 import DivisorFecha from "../components/DivisorFecha";
 import VentanaWhatsApp from "../components/VentanaWhatsApp";
@@ -423,7 +424,7 @@ export default function CRMApp() {
   const [sincronizandoRR, setSincronizandoRR] = useState(false);
   // Diagnóstico de la biblioteca compartida: dice QUÉ falta en Supabase cuando
   // «Sincronizar» no puede subir nada.
-  const [rrDiag, setRrDiag] = useState<null | { ok: boolean; problemas: string[]; sql: string[]; pasos: { nombre: string; ok: boolean; detalle: string }[] }>(null);
+  const [rrDiag, setRrDiag] = useState<null | { ok: boolean; problemas: string[]; sql: string[]; nota?: string; pasos: { nombre: string; ok: boolean; detalle: string }[] }>(null);
   const [comprobandoRR, setComprobandoRR] = useState(false);
   const rrFileInputRef = useRef<HTMLInputElement>(null);
   const [guardandoContacto, setGuardandoContacto] = useState(false);
@@ -3581,27 +3582,53 @@ export default function CRMApp() {
   }
 
   /**
-   * Pregunta al servidor qué está fallando en la biblioteca compartida
-   * (tabla, columnas, bucket, credencial) y muestra el .sql a correr.
+   * Comprueba la biblioteca compartida. Lo primero es lo que este dispositivo
+   * puede hacer de verdad (leer la tabla con su propia conexión); después se
+   * pregunta al servidor por lo que sólo él ve (bucket, credencial) y por el
+   * .sql que habría que correr.
    */
   async function comprobarBibliotecaRR() {
     if (comprobandoRR) return;
     setComprobandoRR(true);
+    setRrDiag(null);
     try {
-      const res = await fetch("/api/respuestas-rapidas/diagnostico", { cache: "no-store" });
-      const json = await res.json().catch(() => null);
-      if (!json) {
-        setRrError("No se pudo comprobar la biblioteca compartida (el servidor no respondió).");
-        setRrDiag(null);
-        return;
+      const problemas: string[] = [];
+      const local = await listarFilasBiblioteca(supabase);
+      if (local.error) {
+        problemas.push(
+          `${local.error.message || "No se pudo leer la biblioteca desde este dispositivo."}${pistaParaOperador(local.error)}`
+        );
       }
-      setRrDiag({
-        ok: json.ok === true,
-        problemas: Array.isArray(json.problemas) ? json.problemas : [],
-        sql: Array.isArray(json.sql) ? json.sql : [],
-        pasos: Array.isArray(json.pasos) ? json.pasos : [],
-      });
-      if (json.ok === true) setRrError("");
+
+      let sql: string[] = [];
+      let pasos: { nombre: string; ok: boolean; detalle: string }[] = [];
+      let nota: string | undefined;
+
+      try {
+        const res = await fetch("/api/respuestas-rapidas/diagnostico", { cache: "no-store" });
+        const json = await res.json().catch(() => null);
+        if (json) {
+          sql = Array.isArray(json.sql) ? json.sql : [];
+          pasos = Array.isArray(json.pasos) ? json.pasos : [];
+          const problemasServidor: string[] = Array.isArray(json.problemas) ? json.problemas : [];
+          const servidorSinRed = problemasServidor.some((p) => p.includes("conectarse con Supabase"));
+          if (servidorSinRed && !local.error) {
+            // El servidor que atiende esta vista previa no tiene salida a
+            // internet, pero el teléfono sí sincroniza por su cuenta.
+            nota = "El servidor no tiene salida a internet, pero este dispositivo sí puede sincronizar.";
+          } else if (!servidorSinRed) {
+            for (const problema of problemasServidor) if (!problemas.includes(problema)) problemas.push(problema);
+          }
+          if (typeof json.pendientesBase64 === "number" && json.pendientesBase64 > 0) {
+            nota = `${json.pendientesBase64} audio(s)/imagen(es) todavía viajan en base64: usa «Migrar» en Ajustes para aligerar la biblioteca.`;
+          }
+        }
+      } catch {
+        /* sin servidor: vale lo que ya comprobó el dispositivo */
+      }
+
+      setRrDiag({ ok: problemas.length === 0, problemas, sql, pasos, nota });
+      if (problemas.length === 0) setRrError("");
     } catch (e: any) {
       setRrError(e?.message || "No se pudo comprobar la biblioteca compartida.");
     } finally {
@@ -3732,7 +3759,7 @@ export default function CRMApp() {
           {!rrBorrador && rrDiag && (
             <div className={`mx-1.5 mb-1.5 rounded-md px-2 py-1 text-[10px] ${rrDiag.ok ? "bg-emerald-950/40 text-emerald-300" : "bg-amber-950/40 text-amber-200"}`}>
               {rrDiag.ok ? (
-                <p>La biblioteca compartida está completa: se puede sincronizar.</p>
+                <p>{rrDiag.nota || "La biblioteca compartida está completa: se puede sincronizar."}</p>
               ) : (
                 <>
                   <p className="font-bold">Falta esto en Supabase:</p>

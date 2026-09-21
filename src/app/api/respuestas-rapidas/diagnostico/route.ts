@@ -57,49 +57,48 @@ export async function GET() {
     }
   }
 
-  // 2) Columna huella.
-  const pruebaHuella = tablaOk
-    ? await supabaseAdmin.from("respuestas_rapidas").select("huella").limit(1)
-    : { error: { message: "sin tabla" } as any };
-  const huellaOk = !pruebaHuella.error;
-  pasos.push({
-    nombre: "Columna huella",
-    ok: huellaOk,
-    detalle: huellaOk ? "presente" : String(pruebaHuella.error?.message || "ausente"),
-  });
-  if (!huellaOk && tablaOk) {
-    problemas.push(PROBLEMAS.huella);
-    sql.add(SQL_MIGRACIONES_RR.huella);
-  }
+  // 2) Columnas y bucket: sólo tienen sentido si la tabla se pudo leer.
+  if (!tablaOk) {
+    const motivo = sinRed ? "no comprobado (sin conexión con Supabase)" : "no comprobado (falta la tabla)";
+    for (const nombre of ["Columna huella", "Columna hash_bytes", "Bucket media-mensajes"]) {
+      pasos.push({ nombre, ok: false, detalle: motivo });
+    }
+  } else {
+    const pruebaHuella = await supabaseAdmin.from("respuestas_rapidas").select("huella").limit(1);
+    const huellaOk = !pruebaHuella.error;
+    pasos.push({
+      nombre: "Columna huella",
+      ok: huellaOk,
+      detalle: huellaOk ? "presente" : String(pruebaHuella.error?.message || "ausente"),
+    });
+    if (!huellaOk) {
+      problemas.push(PROBLEMAS.huella);
+      sql.add(SQL_MIGRACIONES_RR.huella);
+    }
 
-  // 3) Columna hash_bytes.
-  const pruebaHash = tablaOk
-    ? await supabaseAdmin.from("respuestas_rapidas").select("hash_bytes").limit(1)
-    : { error: { message: "sin tabla" } as any };
-  const hashOk = !pruebaHash.error;
-  pasos.push({
-    nombre: "Columna hash_bytes",
-    ok: hashOk,
-    detalle: hashOk ? "presente" : String(pruebaHash.error?.message || "ausente"),
-  });
-  if (!hashOk && tablaOk) {
-    problemas.push(PROBLEMAS.hashBytes);
-    sql.add(SQL_MIGRACIONES_RR.hashBytes);
-  }
+    const pruebaHash = await supabaseAdmin.from("respuestas_rapidas").select("hash_bytes").limit(1);
+    const hashOk = !pruebaHash.error;
+    pasos.push({
+      nombre: "Columna hash_bytes",
+      ok: hashOk,
+      detalle: hashOk ? "presente" : String(pruebaHash.error?.message || "ausente"),
+    });
+    if (!hashOk) {
+      problemas.push(PROBLEMAS.hashBytes);
+      sql.add(SQL_MIGRACIONES_RR.hashBytes);
+    }
 
-  // 4) Bucket de Storage.
-  const pruebaBucket = tablaOk
-    ? await supabaseAdmin.storage.from("media-mensajes").list("respuestas-rapidas", { limit: 1 })
-    : { error: { message: "sin tabla" } as any };
-  const bucketOk = !(pruebaBucket as any).error;
-  pasos.push({
-    nombre: "Bucket media-mensajes",
-    ok: bucketOk,
-    detalle: bucketOk ? "accesible" : String((pruebaBucket as any).error?.message || "no accesible"),
-  });
-  if (!bucketOk && tablaOk) {
-    problemas.push(PROBLEMAS.bucket);
-    sql.add("supabase/migrations/20260916000001_media_storage.sql");
+    const pruebaBucket = await supabaseAdmin.storage.from("media-mensajes").list("respuestas-rapidas", { limit: 1 });
+    const bucketOk = !(pruebaBucket as any).error;
+    pasos.push({
+      nombre: "Bucket media-mensajes",
+      ok: bucketOk,
+      detalle: bucketOk ? "accesible" : String((pruebaBucket as any).error?.message || "no accesible"),
+    });
+    if (!bucketOk) {
+      problemas.push(PROBLEMAS.bucket);
+      sql.add("supabase/migrations/20260916000001_media_storage.sql");
+    }
   }
 
   // 5) Binarios que todavía viajan en base64 dentro de la tabla.
@@ -125,8 +124,9 @@ export async function GET() {
   // La huella la calcula la app desde el 21/09/2026, así que un trigger ausente
   // ya no impide sincronizar; aun así se recuerda que hay que reponerlo por los
   // otros cinco triggers que borraba la misma migración.
+  const problemaDeEsquema = problemas.some((problema) => problema !== "Este servidor no pudo conectarse con Supabase (red, DNS o bloqueo de salida).");
   if (!problemas.length) sql.add(SQL_MIGRACIONES_RR.triggers);
-  if (problemas.length) sql.add(SQL_MIGRACIONES_RR.todo);
+  if (problemaDeEsquema) sql.add(SQL_MIGRACIONES_RR.todo);
 
   return NextResponse.json({
     ok: problemas.length === 0,

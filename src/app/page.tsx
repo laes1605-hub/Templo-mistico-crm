@@ -22,6 +22,7 @@ import {
   prepararImagenRR,
   adjuntoParaEnviar,
 } from "../lib/respuestas-rapidas";
+import { listarFilasBiblioteca, pistaParaOperador } from "../lib/respuestas-rapidas-fila";
 import { estaContactoGuardadoEnTelefono, guardarContactoEnTelefono } from "../lib/contacts";
 import DivisorFecha from "../components/DivisorFecha";
 import VentanaWhatsApp from "../components/VentanaWhatsApp";
@@ -52,7 +53,7 @@ import {
   ChevronsUp, ChevronsDown,
   Wallet, Target, TrendingDown, Award, Calendar, Shield, X,
   Mic, Paperclip, ArrowLeft, Info, ListTodo, CheckSquare, Square, MailOpen,
-  Sparkles, Play, Pause, RefreshCw, Image as ImageIcon, ChevronDown, ChevronRight, ChevronLeft, Download,
+  Sparkles, Play, Pause, RefreshCw, Stethoscope, Image as ImageIcon, ChevronDown, ChevronRight, ChevronLeft, Download,
   Archive, ArchiveRestore, Search, AlertTriangle, GitBranch, Check, Zap, Type,
   StickyNote, FileText, Coins, Globe, Percent, Save, Eye, EyeOff, Palette, Power, User, Landmark, UserPlus,
   PhoneCall, BellRing, Video
@@ -421,6 +422,10 @@ export default function CRMApp() {
   const [rrNotice, setRrNotice] = useState("");
   const [guardandoRR, setGuardandoRR] = useState(false);
   const [sincronizandoRR, setSincronizandoRR] = useState(false);
+  // Diagnóstico de la biblioteca compartida: dice QUÉ falta en Supabase cuando
+  // «Sincronizar» no puede subir nada.
+  const [rrDiag, setRrDiag] = useState<null | { ok: boolean; problemas: string[]; sql: string[]; nota?: string; pasos: { nombre: string; ok: boolean; detalle: string }[] }>(null);
+  const [comprobandoRR, setComprobandoRR] = useState(false);
   const rrFileInputRef = useRef<HTMLInputElement>(null);
   const [guardandoContacto, setGuardandoContacto] = useState(false);
   const [contactoGuardado, setContactoGuardado] = useState<"nativo" | "vcf" | null>(null);
@@ -3546,6 +3551,7 @@ export default function CRMApp() {
     setRespuestasRapidas(listarRespuestasRapidas());
     setRrError("");
     setRrNotice("");
+    setRrDiag(null);
     setShowRespuestasMenu(true);
     // Al abrir sólo se descargan cambios: nunca se suben copias antiguas de
     // forma automática, que era lo que podía duplicar audios entre teléfonos.
@@ -3557,6 +3563,7 @@ export default function CRMApp() {
     setSincronizandoRR(true);
     setRrError("");
     setRrNotice("");
+    setRrDiag(null);
     try {
       const resultado = await sincronizarRespuestasRapidas();
       setRespuestasRapidas(resultado.respuestas);
@@ -3571,6 +3578,61 @@ export default function CRMApp() {
       setRrError(error?.message || "No se pudo sincronizar la biblioteca.");
     } finally {
       setSincronizandoRR(false);
+    }
+  }
+
+  /**
+   * Comprueba la biblioteca compartida. Lo primero es lo que este dispositivo
+   * puede hacer de verdad (leer la tabla con su propia conexión); después se
+   * pregunta al servidor por lo que sólo él ve (bucket, credencial) y por el
+   * .sql que habría que correr.
+   */
+  async function comprobarBibliotecaRR() {
+    if (comprobandoRR) return;
+    setComprobandoRR(true);
+    setRrDiag(null);
+    try {
+      const problemas: string[] = [];
+      const local = await listarFilasBiblioteca(supabase);
+      if (local.error) {
+        problemas.push(
+          `${local.error.message || "No se pudo leer la biblioteca desde este dispositivo."}${pistaParaOperador(local.error)}`
+        );
+      }
+
+      let sql: string[] = [];
+      let pasos: { nombre: string; ok: boolean; detalle: string }[] = [];
+      let nota: string | undefined;
+
+      try {
+        const res = await fetch("/api/respuestas-rapidas/diagnostico", { cache: "no-store" });
+        const json = await res.json().catch(() => null);
+        if (json) {
+          sql = Array.isArray(json.sql) ? json.sql : [];
+          pasos = Array.isArray(json.pasos) ? json.pasos : [];
+          const problemasServidor: string[] = Array.isArray(json.problemas) ? json.problemas : [];
+          const servidorSinRed = problemasServidor.some((p) => p.includes("conectarse con Supabase"));
+          if (servidorSinRed && !local.error) {
+            // El servidor que atiende esta vista previa no tiene salida a
+            // internet, pero el teléfono sí sincroniza por su cuenta.
+            nota = "El servidor no tiene salida a internet, pero este dispositivo sí puede sincronizar.";
+          } else if (!servidorSinRed) {
+            for (const problema of problemasServidor) if (!problemas.includes(problema)) problemas.push(problema);
+          }
+          if (typeof json.pendientesBase64 === "number" && json.pendientesBase64 > 0) {
+            nota = `${json.pendientesBase64} audio(s)/imagen(es) todavía viajan en base64: usa «Migrar» en Ajustes para aligerar la biblioteca.`;
+          }
+        }
+      } catch {
+        /* sin servidor: vale lo que ya comprobó el dispositivo */
+      }
+
+      setRrDiag({ ok: problemas.length === 0, problemas, sql, pasos, nota });
+      if (problemas.length === 0) setRrError("");
+    } catch (e: any) {
+      setRrError(e?.message || "No se pudo comprobar la biblioteca compartida.");
+    } finally {
+      setComprobandoRR(false);
     }
   }
 
@@ -3680,8 +3742,49 @@ export default function CRMApp() {
               <span>{sincronizandoRR ? "Sincronizando..." : pendientesRR > 0 ? `Sincronizar (${pendientesRR})` : "Sincronizar"}</span>
             </button>
           </div>
+          <div className="flex justify-end px-1.5 pb-1.5">
+            <button
+              type="button"
+              onClick={comprobarBibliotecaRR}
+              disabled={comprobandoRR}
+              title="Comprobar la biblioteca compartida en Supabase (sólo lectura)"
+              className="flex items-center gap-1 rounded-md border border-border px-1.5 py-0.5 text-[9px] font-bold text-gray-400 hover:text-gray-200 disabled:cursor-wait disabled:opacity-60"
+            >
+              <Stethoscope className={`w-3 h-3 ${comprobandoRR ? "animate-pulse" : ""}`} />
+              <span>{comprobandoRR ? "Comprobando..." : rrDiag?.ok ? "Biblioteca OK ✓" : "Comprobar biblioteca"}</span>
+            </button>
+          </div>
           {rrNotice && <p className="mx-1.5 mb-1.5 rounded-md bg-emerald-950/40 px-2 py-1 text-[10px] text-emerald-300">{rrNotice}</p>}
           {!rrBorrador && rrError && <p className="mx-1.5 mb-1.5 rounded-md bg-red-950/40 px-2 py-1 text-[10px] text-red-300">{rrError}</p>}
+          {!rrBorrador && rrDiag && (
+            <div className={`mx-1.5 mb-1.5 rounded-md px-2 py-1 text-[10px] ${rrDiag.ok ? "bg-emerald-950/40 text-emerald-300" : "bg-amber-950/40 text-amber-200"}`}>
+              {rrDiag.ok ? (
+                <p>{rrDiag.nota || "La biblioteca compartida está completa: se puede sincronizar."}</p>
+              ) : (
+                <>
+                  <p className="font-bold">Falta esto en Supabase:</p>
+                  <ul className="mt-0.5 space-y-0.5">
+                    {rrDiag.problemas.map((problema) => (
+                      <li key={problema}>• {problema}</li>
+                    ))}
+                  </ul>
+                  {rrDiag.sql.length > 0 && (
+                    <p className="mt-1 text-gray-400">
+                      Corre en Supabase → SQL Editor: <span className="font-mono text-gray-300">{rrDiag.sql[0]}</span>
+                      {rrDiag.sql.length > 1 ? ` (o ${rrDiag.sql[rrDiag.sql.length - 1]})` : ""}
+                    </p>
+                  )}
+                </>
+              )}
+              <button
+                type="button"
+                onClick={() => setRrDiag(null)}
+                className="mt-1 text-[9px] text-gray-500 hover:text-gray-300"
+              >
+                Ocultar
+              </button>
+            </div>
+          )}
           {rrBorrador ? (
             <div className="bg-background border border-border rounded-lg p-2 space-y-2 mb-2">
               <div className="flex items-center justify-between">

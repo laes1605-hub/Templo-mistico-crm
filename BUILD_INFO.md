@@ -1,3 +1,77 @@
+## Build 2026-09-21 (v6): «Sincronizar» ya no depende del trigger de la huella
+
+**Síntoma que reportó el Templo:** «no me deja sincronizar las respuestas rápidas».
+El aviso era el de la migración de «duplicados»:
+
+```text
+No se pudo subir una respuesta: "No contesta":
+null value in column "huella" of relation "respuestas_rapidas" violates not-null constraint
+```
+
+La causa sigue siendo la documentada en el build del 22/09 (la migración
+`fix_migraciones_duplicadas_idempotentes` borraba seis triggers y sólo recreaba
+las policies). Lo nuevo es que **la app ya no necesita ese trigger para
+sincronizar**: antes había que correr el SQL en Supabase y, si no se corría, el
+botón no hacía nada.
+
+### Lo que cambió
+
+- **`src/lib/respuestas-rapidas-fila.ts` (nuevo, compartido cliente/servidor)**:
+  - `huellaDeRespuestaRapida()` calcula `md5(tipo || chr(31) || coalesce(hash_bytes, contenido))`
+    en la app, con codificación UTF-8 para que coincida byte a byte con el
+    `md5()` de Postgres (con tildes y emojis incluidos). La fila viaja con la
+    huella puesta: si el trigger existe, Postgres la recalcula con el MISMO
+    valor; si no existe, la respuesta se publica igual.
+  - `insertarFilaBiblioteca()` / `actualizarFilaBiblioteca()` reintentan sin las
+    columnas que la base todavía no tenga (`huella`, `hash_bytes`) y sin el id
+    cuando no es UUID, en vez de devolver el error crudo al operador.
+  - `pistaParaOperador()` traduce cada fallo a QUÉ hacer: trigger de la huella
+    (`20260922000001_restaurar_triggers_perdidos.sql`), tabla ausente
+    (`20260913000001_respuestas_rapidas.sql` o `MIGRAR-A-NUEVO-SUPABASE.sql`),
+    políticas RLS, columna `hash_bytes` y bucket, y distingue «sin conexión con
+    Supabase» de «esquema incompleto».
+- **`src/lib/respuestas-rapidas.ts`**: `obtenerRemotas()` e `insertarPendiente()`
+  usan ese módulo (adiós a las copias locales de los clasificadores de error) y
+  todos los avisos llevan la pista accionable.
+- **`/api/respuestas-rapidas/sincronizar`**: antes se tragaba en silencio los
+  errores de inserción que no eran duplicados; ahora publica cada pendiente con
+  la huella calculada y devuelve `errores: ["\"Título\": motivo", …]`, así que
+  la app puede decir QUÉ respuesta no subió y POR QUÉ.
+- **`/api/respuestas-rapidas/diagnostico` (nuevo, sólo lectura)**: comprueba
+  tabla, `huella`, `hash_bytes`, bucket `media-mensajes`, binarios que aún viajan
+  en base64 y con qué credencial escribe el servidor; devuelve la lista de
+  problemas y el `.sql` que hay que correr.
+- **Menú de respuestas rápidas** (`src/app/page.tsx`): botón **Comprobar
+  biblioteca** junto a «Sincronizar». Lo primero que hace es lo que de verdad
+  importa —leer la tabla con la conexión del PROPIO dispositivo— y después
+  pregunta al servidor por lo que sólo él ve (bucket, credencial) y por el `.sql`
+  a correr. Si el servidor no tiene salida a internet pero el dispositivo sí,
+  lo dice así en vez de asustar con un falso problema.
+- **`/api/admin/migrar-respuestas-rapidas-storage`**: al pasar un base64 a
+  Storage ahora escribe también `huella` (la calcula el helper), así la
+  deduplicación no depende del trigger.
+
+### Verificación
+
+- `npm run test:rr-sync` (**nuevo**, 40 pruebas): reproduce la base del bug
+  (trigger borrado + `huella` NOT NULL) y comprueba que la sincronización sube
+  igual; cubre esquema sin `huella`, sin `hash_bytes`, tabla ausente, dos
+  teléfonos con el mismo audio, el endpoint de sincronización (data-URI → bucket,
+  ids inválidos, errores por respuesta) y el diagnóstico (incluido el caso «sin
+  red»). **40 OK**
+- `npm run test:rr-storage` ✅ · `npm run test:sql-triggers` ✅ (22) ·
+  `npm run test:tiempo` ✅ (60) · `npm run test:audio` ✅ · `npm run test:remux` ✅
+- `tsc --noEmit` ✅ · `npm run build` ✅
+
+### Para el Templo
+
+- La biblioteca compartida vuelve a sincronizar **en cuanto se despliegue esta
+  rama** (la APK carga la web desplegada, no hace falta recompilar el APK).
+- Para dejar la base perfecta (y recuperar los otros cinco triggers: ventana de
+  24 h, no leídos, enrutado por número, `atendido`) sigue valiendo correr
+  `supabase/migrations/20260922000001_restaurar_triggers_perdidos.sql` en
+  Supabase → SQL Editor. Ya no es obligatorio para sincronizar.
+
 # Build Info - Templo Místico CRM
 
 **Fecha:** 2026-09-19 (rama `arena/01a0ba5c-templo-mistico-crm`)

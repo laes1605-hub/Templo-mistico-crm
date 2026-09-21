@@ -26,6 +26,7 @@
     "test:eliminar": "sucrase-node scripts/prueba-eliminar-cliente.ts",
     "test:eliminar:sql": "node scripts/prueba-eliminar-cliente-sql.mjs",
     "test:rr-storage": "node --conditions=import scripts/prueba-respuestas-rapidas-storage.mjs",
+    "test:rr-sync": "node --conditions=import scripts/prueba-respuestas-rapidas-sync.mjs",
     "test:audio": "node scripts/prueba-reproductor-audio.mjs",
     "test:remux": "node scripts/prueba-remux-ogg.mjs",
     "test:backups": "node scripts/prueba-limpiar-backups-gdrive.mjs"

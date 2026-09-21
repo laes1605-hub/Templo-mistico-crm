@@ -35,6 +35,13 @@ import {
   subirBytesAStorage,
 } from "./media-format";
 import { md5Hex } from "./md5";
+import {
+  esDuplicado,
+  FilaRespuestaRapida,
+  insertarFilaBiblioteca,
+  listarFilasBiblioteca,
+  pistaParaOperador,
+} from "./respuestas-rapidas-fila";
 
 export type TipoRespuestaRapida = "texto" | "audio" | "imagen";
 
@@ -246,26 +253,22 @@ async function sincronizarViaServidor(
     const remotas = Array.isArray(json.respuestas)
       ? deduplicarRespuestas((json.respuestas || []).map(filaARemota).filter(Boolean) as RespuestaRapida[])
       : [];
-    return { remotas, subidas: typeof json.subidas === "number" ? json.subidas : 0, error: json.error };
+    const erroresServidor: string[] = Array.isArray(json.errores) ? json.errores.filter((e: unknown) => typeof e === "string") : [];
+    return {
+      remotas,
+      subidas: typeof json.subidas === "number" ? json.subidas : 0,
+      error: json.error || erroresServidor[0],
+    };
   } catch {
     return null;
   }
 }
 
-const COLUMNAS_BASICAS = "id, tipo, titulo, contenido, creado_en";
-const COLUMNAS_REMOTAS = `${COLUMNAS_BASICAS}, hash_bytes`;
-
 async function obtenerRemotas(): Promise<RespuestaRapida[]> {
   try {
-    const { data, error } = await supabase.from("respuestas_rapidas").select(COLUMNAS_REMOTAS).order("creado_en", { ascending: true });
-    if (!error) return deduplicarRespuestas((data || []).map(filaARemota).filter(Boolean) as RespuestaRapida[]);
-    if (!esColumnaInexistente(error)) throw error;
-    const { data: sinHash, error: error2 } = await supabase
-      .from("respuestas_rapidas")
-      .select(COLUMNAS_BASICAS)
-      .order("creado_en", { ascending: true });
-    if (error2) throw error2;
-    return deduplicarRespuestas((sinHash || []).map(filaARemota).filter(Boolean) as RespuestaRapida[]);
+    const { filas, error } = await listarFilasBiblioteca(supabase);
+    if (error) throw error;
+    return deduplicarRespuestas(filas.map(filaARemota).filter(Boolean) as RespuestaRapida[]);
   } catch (e) {
     const viaServidor = await obtenerRemotasViaServidor();
     if (viaServidor) return viaServidor;
@@ -291,21 +294,6 @@ export async function actualizarRespuestasRapidas(): Promise<RespuestaRapida[]> 
   }
 }
 
-function esIdNoValido(error: any): boolean {
-  const mensaje = String(error?.message || "").toLowerCase();
-  return error?.code === "22P02" || (mensaje.includes("uuid") && mensaje.includes("invalid"));
-}
-
-function esDuplicado(error: any): boolean {
-  const mensaje = String(error?.message || "").toLowerCase();
-  return error?.code === "23505" || mensaje.includes("duplicate key") || mensaje.includes("duplicate");
-}
-
-function esColumnaInexistente(error: any): boolean {
-  const mensaje = String(error?.message || "").toLowerCase();
-  return error?.code === "42703" || error?.code === "PGRST204" || (mensaje.includes("column") && mensaje.includes("does not exist"));
-}
-
 async function contenidoPublicado(item: RespuestaRapida): Promise<{ contenido: string; hash: string | null }> {
   if (!esBinaria(item) || !esDataUri(item.contenido)) {
     return { contenido: item.contenido, hash: item.hash ?? null };
@@ -325,35 +313,21 @@ async function contenidoPublicado(item: RespuestaRapida): Promise<{ contenido: s
   return { contenido: url || item.contenido, hash };
 }
 
-async function insertarFila(payload: Record<string, unknown>): Promise<{ data: any; error: any }> {
-  const intento = await supabase
-    .from("respuestas_rapidas")
-    .insert(payload)
-    .select(COLUMNAS_REMOTAS)
-    .maybeSingle();
-  if (!intento.error || !esColumnaInexistente(intento.error)) return { data: intento.data, error: intento.error };
-  const { hash_bytes: _sinColumna, ...resto } = payload;
-  const reintento = await supabase
-    .from("respuestas_rapidas")
-    .insert(resto)
-    .select(COLUMNAS_BASICAS)
-    .maybeSingle();
-  return { data: reintento.data, error: reintento.error };
-}
-
 async function insertarPendiente(item: RespuestaRapida): Promise<RespuestaRapida | null> {
   const { contenido, hash } = await contenidoPublicado(item);
-  const base: Record<string, unknown> = {
+  const fila: FilaRespuestaRapida = {
+    id: item.id,
     tipo: item.tipo,
     titulo: item.titulo,
     contenido,
     creado_en: item.creado_en,
+    hash_bytes: hash ?? undefined,
   };
-  if (hash) base.hash_bytes = hash;
-  let { data, error } = await insertarFila({ ...base, id: item.id });
-  if (error && esIdNoValido(error)) {
-    ({ data, error } = await insertarFila(base));
-  }
+  // La huella viaja calculada desde aquí (md5(tipo + chr(31) + hash||contenido)),
+  // así la inserción no depende del trigger de la base: si el trigger existe,
+  // Postgres la recalcula con el MISMO valor; si la migración que lo crea quedó
+  // a medias (caso 19–21/09/2026), la respuesta se publica igual.
+  const { data, error } = await insertarFilaBiblioteca(supabase, fila);
   if (error) {
     if (esDuplicado(error)) return null;
     throw error;
@@ -385,7 +359,9 @@ export async function sincronizarRespuestasRapidas(): Promise<ResultadoSincroniz
       respuestas,
       subidas: 0,
       pendientes: respuestas.filter((respuesta) => respuesta.sincronizada !== true).length,
-      error: error?.message || "No se pudo conectar con la biblioteca compartida.",
+      error: `${
+        error?.message || "No se pudo conectar con la biblioteca compartida."
+      }${pistaParaOperador(error)}`,
     };
   }
 
@@ -452,18 +428,12 @@ export async function sincronizarRespuestasRapidas(): Promise<ResultadoSincroniz
 }
 
 /**
- * Traduce los fallos de Supabase que ya sabemos diagnosticar. El caso típico
- * (19–22/09/2026): la migración de «duplicados» borró el trigger que calcula
- * `respuestas_rapidas.huella`, que es NOT NULL, así que TODA inserción fallaba
- * con un error de Postgres que no le dice nada al operador.
+ * Traduce los fallos de Supabase que ya sabemos diagnosticar (ver
+ * `pistaParaOperador` en respuestas-rapidas-fila.ts): el caso típico fue el
+ * trigger de la huella borrado por la migración de «duplicados», que dejaba
+ * `respuestas_rapidas.huella` NOT NULL sin nadie que la calculara.
  */
-function pistaDeFallo(detalle: string): string {
-  const texto = detalle.toLowerCase();
-  if (texto.includes("huella") && texto.includes("not-null")) {
-    return " Falta el trigger que calcula la huella en Supabase: corre supabase/migrations/20260922000001_restaurar_triggers_perdidos.sql y vuelve a sincronizar.";
-  }
-  return " Intenta sincronizar de nuevo.";
-}
+const pistaDeFallo = pistaParaOperador;
 
 export async function guardarRespuestaRapida(
   nueva: { tipo: TipoRespuestaRapida; titulo: string; contenido: string; hash?: string }

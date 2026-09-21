@@ -13,9 +13,10 @@
 #   6. Docker: purga contenedores/redes/imágenes SIN USO de +48 h,
 #      vacía los logs de contenedores (*-json.log) e informa
 #      volúmenes huérfanos (sin tocarlos).
-#   7. Backups locales (/root/backups): borra los de +2 días,
-#      conservando SIEMPRE los 2 más recientes.
-#   8. Logs del monitor (/root/monitor*.log): tope de 10 MB.
+#   7. Backups locales (/root/backups): borra masters y por-servicio
+#      (chatwoot/evolution/n8n/configs/supabase) de +2 días,
+#      conservando SIEMPRE los 2 más recientes de cada set.
+#   8. Logs del monitor (/root/monitor*.log) + backup.log: tope de 10 MB.
 #   9. PM2: vacía sus logs (solo si PM2 está corriendo).
 #
 # Qué NUNCA toca: volúmenes de Docker (bases de datos, chats, adjuntos,
@@ -24,14 +25,16 @@
 # Uso:
 #   sudo /usr/local/bin/limpieza-servidor.sh            # limpieza real
 #   sudo /usr/local/bin/limpieza-servidor.sh --dry-run  # simulacro
-# Cron (diario 3:00 am, hora del servidor):
-#   0 3 * * * root /usr/local/bin/limpieza-servidor.sh >> /var/log/limpieza-servidor.log 2>&1
+# Cron (diario 5:00 am, hora del servidor — DESPUÉS del backup.sh de las
+# 3 am, que tarda hasta ~4:30):
+#   0 5 * * * root /usr/local/bin/limpieza-servidor.sh >> /var/log/limpieza-servidor.log 2>&1
 # =====================================================================
 
 set -u
 
 RETENCION_DIAS="${RETENCION_DIAS:-2}"
 BACKUP_DIRS="${BACKUP_DIRS:-/root/backups}"
+BACKUP_SUBDIRS="${BACKUP_SUBDIRS:-chatwoot evolution n8n configs supabase}"
 MANTENER_ULTIMOS="${MANTENER_ULTIMOS:-2}"
 DRY_RUN="${DRY_RUN:-0}"
 [ "${1:-}" = "--dry-run" ] && DRY_RUN=1
@@ -168,15 +171,14 @@ else
   msg "docker no existe, se omite."
 fi
 
-# --- 7. Backups locales: borra los de +2 días, conserva los 2 más recientes ---
-for dir in $BACKUP_DIRS; do
-  [ -d "$dir" ] || { msg "backups: $dir no existe, se omite."; continue; }
-  mapfile -t TODOS < <(find "$dir" -maxdepth 1 -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | cut -d' ' -f2-)
+podar_set_backups() { # $1 = carpeta, $2 = patrón; regla: +2 días fuera, 2 recientes a salvo
+  local dir="$1" patron="$2" borrados=0 liberado=0 i=0 f bytes
+  [ -d "$dir" ] || { msg "backups: $dir no existe, se omite."; return 0; }
+  mapfile -t TODOS < <(find "$dir" -maxdepth 1 -type f -name "$patron" -printf '%T@ %p\n' 2>/dev/null | sort -rn | cut -d' ' -f2-)
   if [ "${#TODOS[@]}" -le "$MANTENER_ULTIMOS" ]; then
-    msg "backups: $dir tiene ${#TODOS[@]} archivo(s), se conservan todos."
-    continue
+    msg "backups: $dir ($patron): ${#TODOS[@]} archivo(s), se conservan todos."
+    return 0
   fi
-  borrados=0; liberado=0; i=0
   for f in "${TODOS[@]}"; do
     i=$((i + 1))
     if [ "$i" -le "$MANTENER_ULTIMOS" ]; then
@@ -195,17 +197,32 @@ for dir in $BACKUP_DIRS; do
     fi
   done
   [ "$DRY_RUN" != "1" ] && msg "backups: $dir: $borrados borrados (~$((liberado / 1024 / 1024)) MB liberados)."
+}
+
+# --- 7. Backups locales: masters + subcarpetas por servicio ---
+for base in $BACKUP_DIRS; do
+  podar_set_backups "$base" 'backup_completo_*.tar.gz'
+  for sub in $BACKUP_SUBDIRS; do
+    podar_set_backups "$base/$sub" '*'
+  done
+  # Solo informe (lectura): rarezas que la poda no toca, por si hay que mirarlas
+  find "$base" -mindepth 2 -maxdepth 2 -type d 2>/dev/null | while read -r r; do
+    [ -n "$r" ] && msg "backups: (revisar) carpeta no podada: $r ($(du -sh "$r" 2>/dev/null | cut -f1))"
+  done
+  find "$base" -maxdepth 1 -type f -not -name 'backup_completo_*.tar.gz' -not -name 'backup.log' 2>/dev/null | while read -r r; do
+    [ -n "$r" ] && msg "backups: (revisar) archivo no podado: $r ($(du -sh "$r" 2>/dev/null | cut -f1))"
+  done
 done
 
-# --- 8. Logs del monitor: crecen cada 5 min, tope 10 MB (últimas 5000 líneas) ---
-for f in /root/monitor.log /root/monitor_fish.log; do
+# --- 8. Logs que crecen solos (monitor cada 5 min, backup a diario): tope 10 MB ---
+for f in /root/monitor.log /root/monitor_fish.log /root/backups/backup.log; do
   [ -f "$f" ] || continue
   kb=$(du -k "$f" 2>/dev/null | cut -f1)
   if [ "${kb:-0}" -gt 10240 ]; then
-    msg "monitor: $f pesa $(du -sh "$f" 2>/dev/null | cut -f1), recortando…"
+    msg "log: $f pesa $(du -sh "$f" 2>/dev/null | cut -f1), recortando a últimas 5000 líneas…"
     recortar_final "$f" 5000
   else
-    msg "monitor: $f OK ($(du -sh "$f" 2>/dev/null | cut -f1))."
+    msg "log: $f OK ($(du -sh "$f" 2>/dev/null | cut -f1))."
   fi
 done
 

@@ -52,7 +52,7 @@ import {
   ChevronsUp, ChevronsDown,
   Wallet, Target, TrendingDown, Award, Calendar, Shield, X,
   Mic, Paperclip, ArrowLeft, Info, ListTodo, CheckSquare, Square, MailOpen,
-  Sparkles, Play, Pause, RefreshCw, Image as ImageIcon, ChevronDown, ChevronRight, ChevronLeft, Download,
+  Sparkles, Play, Pause, RefreshCw, Stethoscope, Image as ImageIcon, ChevronDown, ChevronRight, ChevronLeft, Download,
   Archive, ArchiveRestore, Search, AlertTriangle, GitBranch, Check, Zap, Type,
   StickyNote, FileText, Coins, Globe, Percent, Save, Eye, EyeOff, Palette, Power, User, Landmark, UserPlus,
   PhoneCall, BellRing, Video
@@ -421,6 +421,10 @@ export default function CRMApp() {
   const [rrNotice, setRrNotice] = useState("");
   const [guardandoRR, setGuardandoRR] = useState(false);
   const [sincronizandoRR, setSincronizandoRR] = useState(false);
+  // Diagnóstico de la biblioteca compartida: dice QUÉ falta en Supabase cuando
+  // «Sincronizar» no puede subir nada.
+  const [rrDiag, setRrDiag] = useState<null | { ok: boolean; problemas: string[]; sql: string[]; pasos: { nombre: string; ok: boolean; detalle: string }[] }>(null);
+  const [comprobandoRR, setComprobandoRR] = useState(false);
   const rrFileInputRef = useRef<HTMLInputElement>(null);
   const [guardandoContacto, setGuardandoContacto] = useState(false);
   const [contactoGuardado, setContactoGuardado] = useState<"nativo" | "vcf" | null>(null);
@@ -3546,6 +3550,7 @@ export default function CRMApp() {
     setRespuestasRapidas(listarRespuestasRapidas());
     setRrError("");
     setRrNotice("");
+    setRrDiag(null);
     setShowRespuestasMenu(true);
     // Al abrir sólo se descargan cambios: nunca se suben copias antiguas de
     // forma automática, que era lo que podía duplicar audios entre teléfonos.
@@ -3557,6 +3562,7 @@ export default function CRMApp() {
     setSincronizandoRR(true);
     setRrError("");
     setRrNotice("");
+    setRrDiag(null);
     try {
       const resultado = await sincronizarRespuestasRapidas();
       setRespuestasRapidas(resultado.respuestas);
@@ -3571,6 +3577,35 @@ export default function CRMApp() {
       setRrError(error?.message || "No se pudo sincronizar la biblioteca.");
     } finally {
       setSincronizandoRR(false);
+    }
+  }
+
+  /**
+   * Pregunta al servidor qué está fallando en la biblioteca compartida
+   * (tabla, columnas, bucket, credencial) y muestra el .sql a correr.
+   */
+  async function comprobarBibliotecaRR() {
+    if (comprobandoRR) return;
+    setComprobandoRR(true);
+    try {
+      const res = await fetch("/api/respuestas-rapidas/diagnostico", { cache: "no-store" });
+      const json = await res.json().catch(() => null);
+      if (!json) {
+        setRrError("No se pudo comprobar la biblioteca compartida (el servidor no respondió).");
+        setRrDiag(null);
+        return;
+      }
+      setRrDiag({
+        ok: json.ok === true,
+        problemas: Array.isArray(json.problemas) ? json.problemas : [],
+        sql: Array.isArray(json.sql) ? json.sql : [],
+        pasos: Array.isArray(json.pasos) ? json.pasos : [],
+      });
+      if (json.ok === true) setRrError("");
+    } catch (e: any) {
+      setRrError(e?.message || "No se pudo comprobar la biblioteca compartida.");
+    } finally {
+      setComprobandoRR(false);
     }
   }
 
@@ -3680,8 +3715,49 @@ export default function CRMApp() {
               <span>{sincronizandoRR ? "Sincronizando..." : pendientesRR > 0 ? `Sincronizar (${pendientesRR})` : "Sincronizar"}</span>
             </button>
           </div>
+          <div className="flex justify-end px-1.5 pb-1.5">
+            <button
+              type="button"
+              onClick={comprobarBibliotecaRR}
+              disabled={comprobandoRR}
+              title="Comprobar la biblioteca compartida en Supabase (sólo lectura)"
+              className="flex items-center gap-1 rounded-md border border-border px-1.5 py-0.5 text-[9px] font-bold text-gray-400 hover:text-gray-200 disabled:cursor-wait disabled:opacity-60"
+            >
+              <Stethoscope className={`w-3 h-3 ${comprobandoRR ? "animate-pulse" : ""}`} />
+              <span>{comprobandoRR ? "Comprobando..." : rrDiag?.ok ? "Biblioteca OK ✓" : "Comprobar biblioteca"}</span>
+            </button>
+          </div>
           {rrNotice && <p className="mx-1.5 mb-1.5 rounded-md bg-emerald-950/40 px-2 py-1 text-[10px] text-emerald-300">{rrNotice}</p>}
           {!rrBorrador && rrError && <p className="mx-1.5 mb-1.5 rounded-md bg-red-950/40 px-2 py-1 text-[10px] text-red-300">{rrError}</p>}
+          {!rrBorrador && rrDiag && (
+            <div className={`mx-1.5 mb-1.5 rounded-md px-2 py-1 text-[10px] ${rrDiag.ok ? "bg-emerald-950/40 text-emerald-300" : "bg-amber-950/40 text-amber-200"}`}>
+              {rrDiag.ok ? (
+                <p>La biblioteca compartida está completa: se puede sincronizar.</p>
+              ) : (
+                <>
+                  <p className="font-bold">Falta esto en Supabase:</p>
+                  <ul className="mt-0.5 space-y-0.5">
+                    {rrDiag.problemas.map((problema) => (
+                      <li key={problema}>• {problema}</li>
+                    ))}
+                  </ul>
+                  {rrDiag.sql.length > 0 && (
+                    <p className="mt-1 text-gray-400">
+                      Corre en Supabase → SQL Editor: <span className="font-mono text-gray-300">{rrDiag.sql[0]}</span>
+                      {rrDiag.sql.length > 1 ? ` (o ${rrDiag.sql[rrDiag.sql.length - 1]})` : ""}
+                    </p>
+                  )}
+                </>
+              )}
+              <button
+                type="button"
+                onClick={() => setRrDiag(null)}
+                className="mt-1 text-[9px] text-gray-500 hover:text-gray-300"
+              >
+                Ocultar
+              </button>
+            </div>
+          )}
           {rrBorrador ? (
             <div className="bg-background border border-border rounded-lg p-2 space-y-2 mb-2">
               <div className="flex items-center justify-between">

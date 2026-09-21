@@ -37,7 +37,7 @@ try {
 }
 
 const TMP = join(process.cwd(), ".tmp-prueba-rr");
-const MODULOS = ["respuestas-rapidas", "webm-to-ogg", "audio-download", "download-media", "media-format", "md5"];
+const MODULOS = ["respuestas-rapidas", "respuestas-rapidas-fila", "webm-to-ogg", "audio-download", "download-media", "media-format", "md5"];
 
 rmSync(TMP, { recursive: true, force: true });
 mkdirSync(TMP, { recursive: true });

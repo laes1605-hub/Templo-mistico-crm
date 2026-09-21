@@ -6,6 +6,7 @@ import {
   parsearDataUri,
   subirMediaAStorage,
 } from "../../../../lib/media-storage";
+import { actualizarFilaBiblioteca, esColumnaInexistente } from "../../../../lib/respuestas-rapidas-fila";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -51,11 +52,6 @@ async function contarPendientes(): Promise<number | null> {
 
 function esDuplicadoDeIndice(error: any): boolean {
   return error?.code === "23505" || String(error?.message || "").toLowerCase().includes("duplicate key");
-}
-
-function esColumnaInexistente(error: any): boolean {
-  const mensaje = String(error?.message || "").toLowerCase();
-  return error?.code === "42703" || error?.code === "PGRST204" || (mensaje.includes("column") && mensaje.includes("does not exist"));
 }
 
 export async function GET() {
@@ -127,12 +123,14 @@ export async function POST() {
           continue;
         }
 
-        // Se escribe contenido (aunque no cambie) para que el trigger recalcule
-        // la huella con la nueva fórmula.
-        const { error: errorUpdate } = await supabaseAdmin
-          .from("respuestas_rapidas")
-          .update({ contenido: url, hash_bytes: hash })
-          .eq("id", fila.id);
+        // Se escribe contenido Y huella (aunque el contenido no cambie): la
+        // huella nueva sale de md5(tipo + chr(31) + hash_bytes) y se calcula
+        // aquí, sin depender del trigger de la base.
+        const { error: errorUpdate } = await actualizarFilaBiblioteca(supabaseAdmin, String(fila.id), {
+          tipo: String(fila.tipo),
+          contenido: url,
+          hash_bytes: hash,
+        });
 
         if (errorUpdate && esDuplicadoDeIndice(errorUpdate)) {
           // Otra fila ya tiene ese mismo archivo publicado: se elimina ésta para

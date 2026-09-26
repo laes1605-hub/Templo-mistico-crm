@@ -1505,8 +1505,8 @@ export default function CRMApp() {
         rapido: true,
       });
     };
-    const t1 = setInterval(ticBandeja, 15_000);
-    const t2 = setInterval(ticChatAbierto, 8_000);
+    const t1 = setInterval(ticBandeja, 5_000);
+    const t2 = setInterval(ticChatAbierto, 2_500);
     // Respaldo: una pasada completa ocasional (atrapa chats que bajaron de las
     // primeras páginas del listado y repara pies de foto/adjuntos).
     const t3 = setInterval(() => {

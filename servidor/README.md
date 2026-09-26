@@ -63,3 +63,13 @@ docker compose pull && docker compose up -d   # actualizar todo
 - Chatwoot moderno **exige pgvector**; Postgres plano falla en `db:chatwoot_prepare`.
 - Cambios de subdominio ⇒ reescribir URLs en las BDs (script `fixurls.sql` del proceso) y re-verificar webhooks de Meta.
 - El respaldo del 25-sep perdió solo los chats del 25→26 (el EC2 murió antes del segundo dump).
+- **Cambiar dominios ⇒ cazar URLs viejas en 4 capas**: (1) BDs Postgres (script `fixurls.sql`),
+  (2) **SQLite de n8n** (los workflows viven en `database.sqlite` del volumen — Postgres NO los toca;
+  parar n8n + `UPDATE workflow SET nodes = REPLACE(...)`), (3) variables de entorno en Vercel
+  (`EVOLUTION_API_URL`), (4) fallbacks hardcodeados en el repo (`src/` y JSON de `n8n/`).
+- **Hay DOS tokens de Meta en el sistema** (el del CRM en Vercel/Supabase `META_MARKETING_TOKEN` y
+  el de la **bandeja WhatsApp API dentro de Chatwoot** — Configuración → Bandejas → Editar).
+  Los tokens de Meta vencen solos. Diagnóstico por síntoma:
+  * No entran mensajes de la API → webhook de Meta desconfigurado (Verify and save).
+  * La app no envía por API ("regístrese o inicie sesión") → token de la bandeja de Chatwoot muerto → pegar token vivo en la bandeja o Reautenticar (Embedded Signup).
+  * Fallan solo las notas de voz directas → token del CRM (Vercel/Supabase).

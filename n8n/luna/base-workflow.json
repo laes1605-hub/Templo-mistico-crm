@@ -112,7 +112,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "https://evo.crmesteban.duckdns.org/chat/sendPresence/personal",
+        "url": "https://evo-crmesteban.duckdns.org/chat/sendPresence/personal",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -541,7 +541,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "https://evo.crmesteban.duckdns.org/message/sendText/personal",
+        "url": "https://evo-crmesteban.duckdns.org/message/sendText/personal",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -1047,7 +1047,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "https://evo.crmesteban.duckdns.org/message/sendText/personal",
+        "url": "https://evo-crmesteban.duckdns.org/message/sendText/personal",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [

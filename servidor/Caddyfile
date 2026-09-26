@@ -1,0 +1,7 @@
+{$N8N_DOMINIO} {
+	reverse_proxy n8n:5678
+}
+
+{$CHATWOOT_DOMINIO} {
+	reverse_proxy chatwoot:3000
+}

@@ -39,6 +39,29 @@ export function chatwootConfig(): ChatwootConfig {
   };
 }
 
+/**
+ * Cabeceras de autenticación para la API de Chatwoot.
+ *
+ * El servidor nuevo (Caddy 2.6.4+) descarta por defecto las cabeceras con
+ * guion bajo. `api_access_token` no llega a Rails y Chatwoot responde 401
+ * «Necesitas iniciar sesión o registrarte» — la app no puede enviar por
+ * WhatsApp API ni sincronizar. Rack mapea `api-access-token` al mismo
+ * `HTTP_API_ACCESS_TOKEN` que Chatwoot ya lee, así que esa forma sí atraviesa
+ * Caddy. Se mandan las dos: la de guiones para el proxy y la de guion bajo
+ * por si algún día se habla con Rails directo.
+ */
+export function chatwootAuthHeaders(
+  token: string,
+  extra: Record<string, string> = {},
+): Record<string, string> {
+  const limpio = String(token || "").trim();
+  return {
+    api_access_token: limpio,
+    "api-access-token": limpio,
+    ...extra,
+  };
+}
+
 type RespuestaCw = {
   status: number;
   ok: boolean;
@@ -59,7 +82,7 @@ async function cwFetch(
       ...init,
       headers: {
         "Content-Type": "application/json",
-        api_access_token: cfg.token,
+        ...chatwootAuthHeaders(cfg.token),
         ...(init.headers || {}),
       },
       signal: controlador.signal,

@@ -35,7 +35,7 @@ if (!reconocida && conversationId) {
     await this.helpers.httpRequest({
       method: "POST",
       url: CHATWOOT_URL + "/api/v1/accounts/" + ACCOUNT_ID + "/conversations/" + conversationId + "/messages",
-      headers: { "Content-Type": "application/json", api_access_token: CHATWOOT_TOKEN },
+      headers: { "Content-Type": "application/json", api_access_token: CHATWOOT_TOKEN, "api-access-token": CHATWOOT_TOKEN },
       body: { content: texto, message_type: "outgoing", private: true },
       json: true
     });

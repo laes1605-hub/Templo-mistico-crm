@@ -23,6 +23,7 @@
  * muestra en la app para que el fallo no quede oculto en los logs del servidor.
  */
 
+import { chatwootAuthHeaders } from "./chatwoot";
 import { supabaseAdmin } from "./supabase-admin";
 
 // v24.0 es la misma versión que usa Chatwoot para adjuntos y soporta `voice`.
@@ -98,7 +99,7 @@ export async function sendVoiceNoteViaMeta(opts: {
   metaCreds?: MetaVoiceCreds | null;
 }): Promise<MetaVoiceResult> {
   try {
-    const headers = { api_access_token: opts.chatwootToken };
+    const headers = chatwootAuthHeaders(opts.chatwootToken);
 
     // 1. Teléfono de destino: el de la conversación de Chatwoot si existe
     //    (es el que conoce WhatsApp); si no se pudo consultar, el del CRM.

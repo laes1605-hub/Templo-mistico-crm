@@ -22,7 +22,10 @@ function extraHeadersFor(target: URL): Record<string, string> {
       if (target.origin === new URL(rawBase).origin) headers[header] = value;
     } catch {}
   };
-  addIfSameOrigin(process.env.CHATWOOT_URL || "https://crmesteban.duckdns.org", "api_access_token", process.env.CHATWOOT_API_TOKEN || "");
+  const chatwootToken = process.env.CHATWOOT_API_TOKEN || "";
+  addIfSameOrigin(process.env.CHATWOOT_URL || "https://crmesteban.duckdns.org", "api_access_token", chatwootToken);
+  // Caddy descarta api_access_token (guion bajo). La forma con guiones sí llega.
+  addIfSameOrigin(process.env.CHATWOOT_URL || "https://crmesteban.duckdns.org", "api-access-token", chatwootToken);
   addIfSameOrigin(process.env.EVOLUTION_API_URL || "https://evo-crmesteban.duckdns.org", "apikey", process.env.EVOLUTION_API_KEY || "");
   return headers;
 }

@@ -187,7 +187,7 @@ if (botPuedeContestar && chatwootConversationId) {
     const chatwoot = await this.helpers.httpRequest({
       method: "GET",
       url: `${CHATWOOT_URL}/api/v1/accounts/${ACCOUNT_ID}/conversations/${chatwootConversationId}`,
-      headers: { api_access_token: CHATWOOT_TOKEN },
+      headers: { api_access_token: CHATWOOT_TOKEN, "api-access-token": CHATWOOT_TOKEN },
       json: true
     });
     attrsChatwoot = chatwoot.custom_attributes || attrsChatwoot || {};
@@ -295,7 +295,7 @@ if (botPuedeContestar && chatwootConversationId) {
           await this.helpers.httpRequest({
             method: "POST",
             url: `${CHATWOOT_URL}/api/v1/accounts/${ACCOUNT_ID}/conversations/${chatwootConversationId}/custom_attributes`,
-            headers: { "Content-Type": "application/json", api_access_token: CHATWOOT_TOKEN },
+            headers: { "Content-Type": "application/json", api_access_token: CHATWOOT_TOKEN, "api-access-token": CHATWOOT_TOKEN },
             body: { custom_attributes: { luna_pausada: false, lista_requisitos_enviada: false, luna_etapa: "lead_nuevo" } },
             json: true
           });

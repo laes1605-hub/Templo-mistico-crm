@@ -24,7 +24,7 @@
  *     sin crear mensajes repetidos.
  */
 
-import { chatwootConfig } from "./chatwoot";
+import { chatwootAuthHeaders, chatwootConfig } from "./chatwoot";
 
 // ---------------------------------------------------------------------------
 // Supabase por REST (mismo patrón que el workflow de n8n)
@@ -136,7 +136,7 @@ async function cwGet(ruta: string, timeoutMs = 20000): Promise<SbResp> {
   const temporizador = setTimeout(() => controlador.abort(), timeoutMs);
   try {
     const respuesta = await fetch(`${cfg.url}/api/v1/accounts/${cfg.accountId}${ruta}`, {
-      headers: { "Content-Type": "application/json", api_access_token: cfg.token },
+      headers: chatwootAuthHeaders(cfg.token, { "Content-Type": "application/json" }),
       signal: controlador.signal,
     });
     const texto = await respuesta.text();

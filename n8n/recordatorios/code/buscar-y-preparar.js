@@ -91,7 +91,8 @@ if (!TOKEN || !SUPABASE_KEY) {
   throw new Error('Faltan CHATWOOT_API_TOKEN o SUPABASE_SERVICE_ROLE_KEY');
 }
 
-const chatHeaders = { api_access_token: TOKEN, 'Content-Type': 'application/json' };
+// api-access-token atraviesa Caddy (descarta cabeceras con guion bajo).
+const chatHeaders = { api_access_token: TOKEN, 'api-access-token': TOKEN, 'Content-Type': 'application/json' };
 const sbHeaders = {
   apikey: SUPABASE_KEY,
   Authorization: 'Bearer ' + SUPABASE_KEY,

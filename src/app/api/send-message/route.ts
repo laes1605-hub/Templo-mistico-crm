@@ -3,7 +3,7 @@ import { supabase } from "../../../lib/supabase";
 import { remuxWebmToOgg } from "../../../lib/webm-to-ogg";
 import { sendVoiceNoteViaMeta, obtenerCredencialesMeta } from "../../../lib/meta-voice-note";
 import { sendEvolutionVoiceNote } from "../../../lib/evolution-audio";
-import { buscarOCrearConversacionChatwoot } from "../../../lib/chatwoot";
+import { buscarOCrearConversacionChatwoot, chatwootAuthHeaders, chatwootConfig } from "../../../lib/chatwoot";
 import { esDataUri, dataUriAStorage, descargarAdjuntoDeStorage } from "../../../lib/media-storage";
 
 const cleanBase64 = (value: unknown) => {
@@ -43,10 +43,13 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Faltan parámetros requeridos" }, { status: 400 });
     }
 
+    // DuckDNS no admite puntos en el subdominio: el host viejo
+    // evo.crmesteban ya no existe (es evo-crmesteban).
     const evoUrl = (process.env.EVOLUTION_API_URL || "https://evo-crmesteban.duckdns.org").replace(/\/$/, "");
     const evoKey = process.env.EVOLUTION_API_KEY || "";
-    const chatwootToken = process.env.CHATWOOT_API_TOKEN || "";
-    const chatwootUrl = (process.env.CHATWOOT_URL || "https://crmesteban.duckdns.org").replace(/\/$/, "");
+    const cw = chatwootConfig();
+    const chatwootToken = cw.token;
+    const chatwootUrl = cw.url;
     const cleanNumber = String(numeroWhatsApp).replace(/[^\d]/g, "");
 
     // ADJUNTO DESDE STORAGE: las respuestas rápidas (y cualquier archivo que ya
@@ -190,7 +193,7 @@ export async function POST(req: Request) {
         for (const id of chatwootIds) {
           try {
             const det = await fetch(`${chatwootUrl}/api/v1/accounts/1/conversations/${id}`, {
-              headers: { api_access_token: chatwootToken },
+              headers: chatwootAuthHeaders(chatwootToken),
             });
             if (!det.ok) continue;
             const json = await det.json();
@@ -287,14 +290,14 @@ export async function POST(req: Request) {
 
           response = await fetch(endpoint, {
             method: "POST",
-            headers: { api_access_token: chatwootToken },
+            headers: chatwootAuthHeaders(chatwootToken),
             body: form,
           });
         }
       } else {
         response = await fetch(endpoint, {
           method: "POST",
-          headers: { "Content-Type": "application/json", api_access_token: chatwootToken },
+          headers: chatwootAuthHeaders(chatwootToken, { "Content-Type": "application/json" }),
           body: JSON.stringify({ content: texto.trim(), message_type: "outgoing" }),
         });
       }
@@ -302,7 +305,11 @@ export async function POST(req: Request) {
       if (response && !response.ok) {
         const detail = (await response.text()).slice(0, 500);
         console.error("Chatwoot rejected outgoing message:", response.status, detail);
-        return NextResponse.json({ error: `WhatsApp API no aceptó el ${isAudio ? "audio" : "mensaje"} (${response.status}). ${detail}` }, { status: 502 });
+        const sesion = response.status === 401 || /iniciar sesi[oó]n|registrarte|sign in|sign up/i.test(detail);
+        const error = sesion
+          ? `WhatsApp API no dejó enviar el ${isAudio ? "audio" : "mensaje"}: Chatwoot no reconoció la sesión. Si acabas de cambiar de servidor, el proxy se está quedando el token (cabecera api_access_token).`
+          : `WhatsApp API no aceptó el ${isAudio ? "audio" : "mensaje"} (${response.status}). ${detail}`;
+        return NextResponse.json({ error }, { status: 502 });
       }
       if (!envioAudioVia && isAudio && pureBase64) envioAudioVia = "chatwoot";
     } else {

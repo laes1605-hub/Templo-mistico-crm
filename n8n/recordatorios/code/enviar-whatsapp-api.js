@@ -84,7 +84,9 @@ for (const item of lote) {
     await this.helpers.httpRequest({
       method: 'POST',
       url: `${CHATWOOT_URL}/api/v1/accounts/${ACCOUNT_ID}/conversations/${d.conversationId}/messages`,
-      headers: { api_access_token: TOKEN, 'Content-Type': 'application/json' },
+      // api-access-token: Caddy 2.6+ descarta api_access_token (guion bajo) y
+      // Chatwoot responde «inicia sesión». Rack lee las dos igual.
+      headers: { api_access_token: TOKEN, 'api-access-token': TOKEN, 'Content-Type': 'application/json' },
       body: { content: d.mensaje, message_type: 'outgoing', private: false },
       json: true
     });

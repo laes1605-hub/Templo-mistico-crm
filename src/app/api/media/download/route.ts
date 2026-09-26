@@ -23,7 +23,7 @@ function extraHeadersFor(target: URL): Record<string, string> {
     } catch {}
   };
   addIfSameOrigin(process.env.CHATWOOT_URL || "https://crmesteban.duckdns.org", "api_access_token", process.env.CHATWOOT_API_TOKEN || "");
-  addIfSameOrigin(process.env.EVOLUTION_API_URL || "https://evo.crmesteban.duckdns.org", "apikey", process.env.EVOLUTION_API_KEY || "");
+  addIfSameOrigin(process.env.EVOLUTION_API_URL || "https://evo-crmesteban.duckdns.org", "apikey", process.env.EVOLUTION_API_KEY || "");
   return headers;
 }
 

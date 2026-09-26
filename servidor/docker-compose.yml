@@ -1,0 +1,96 @@
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - N8N_DOMINIO=${N8N_DOMINIO}
+      - CHATWOOT_DOMINIO=${CHATWOOT_DOMINIO}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - n8n
+      - chatwoot
+
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    restart: unless-stopped
+    environment:
+      - N8N_HOST=${N8N_DOMINIO}
+      - N8N_PROTOCOL=https
+      - WEBHOOK_URL=https://${N8N_DOMINIO}/
+      - GENERIC_TIMEZONE=America/Bogota
+      - TZ=America/Bogota
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
+    volumes:
+      - n8n_data:/home/node/.n8n
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=chatwoot
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=chatwoot_production
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chatwoot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+
+  chatwoot:
+    image: chatwoot/chatwoot:latest
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    entrypoint: docker/entrypoints/rails.sh
+    command: ["bundle", "exec", "rails", "s", "-b", "0.0.0.0", "-p", "3000"]
+    environment: &chatwoot_env
+      - RAILS_ENV=production
+      - NODE_ENV=production
+      - INSTALLATION_ENV=docker
+      - FRONTEND_URL=https://${CHATWOOT_DOMINIO}
+      - DATABASE_URL=postgres://chatwoot:${POSTGRES_PASSWORD}@postgres:5432/chatwoot_production
+      - REDIS_URL=redis://redis:6379/0
+      - SECRET_KEY_BASE=${CHATWOOT_SECRET_KEY_BASE}
+      - TZ=America/Bogota
+      - ACTIVE_STORAGE_SERVICE=local
+    volumes:
+      - chatwoot_storage:/app/storage
+
+  sidekiq:
+    image: chatwoot/chatwoot:latest
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    command: ["bundle", "exec", "sidekiq", "-C", "config/sidekiq.yml"]
+    environment: *chatwoot_env
+    volumes:
+      - chatwoot_storage:/app/storage
+
+volumes:
+  caddy_data:
+  caddy_config:
+  n8n_data:
+  pg_data:
+  redis_data:
+  chatwoot_storage:

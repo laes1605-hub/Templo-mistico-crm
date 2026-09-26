@@ -43,7 +43,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Faltan parámetros requeridos" }, { status: 400 });
     }
 
-    const evoUrl = (process.env.EVOLUTION_API_URL || "https://evo.crmesteban.duckdns.org").replace(/\/$/, "");
+    const evoUrl = (process.env.EVOLUTION_API_URL || "https://evo-crmesteban.duckdns.org").replace(/\/$/, "");
     const evoKey = process.env.EVOLUTION_API_KEY || "";
     const chatwootToken = process.env.CHATWOOT_API_TOKEN || "";
     const chatwootUrl = (process.env.CHATWOOT_URL || "https://crmesteban.duckdns.org").replace(/\/$/, "");

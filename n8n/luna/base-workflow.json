@@ -89,6 +89,10 @@
               "value": "KKaF2gF4bJZvnSkqKnR42zD8"
             },
             {
+              "name": "api-access-token",
+              "value": "KKaF2gF4bJZvnSkqKnR42zD8"
+            },
+            {
               "name": "Content-Type",
               "value": "application/json"
             }
@@ -112,7 +116,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "https://evo.crmesteban.duckdns.org/chat/sendPresence/personal",
+        "url": "https://evo-crmesteban.duckdns.org/chat/sendPresence/personal",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -162,6 +166,10 @@
             {
               "name": "api_access_token",
               "value": "KKaF2gF4bJZvnSkqKnR42zD8"
+            },
+            {
+              "name": "api-access-token",
+              "value": "KKaF2gF4bJZvnSkqKnR42zD8"
             }
           ]
         },
@@ -184,6 +192,10 @@
           "parameters": [
             {
               "name": "api_access_token",
+              "value": "KKaF2gF4bJZvnSkqKnR42zD8"
+            },
+            {
+              "name": "api-access-token",
               "value": "KKaF2gF4bJZvnSkqKnR42zD8"
             }
           ]
@@ -388,6 +400,10 @@
             {
               "name": "api_access_token",
               "value": "KKaF2gF4bJZvnSkqKnR42zD8"
+            },
+            {
+              "name": "api-access-token",
+              "value": "KKaF2gF4bJZvnSkqKnR42zD8"
             }
           ]
         },
@@ -524,6 +540,10 @@
             {
               "name": "api_access_token",
               "value": "KKaF2gF4bJZvnSkqKnR42zD8"
+            },
+            {
+              "name": "api-access-token",
+              "value": "KKaF2gF4bJZvnSkqKnR42zD8"
             }
           ]
         },
@@ -541,7 +561,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "https://evo.crmesteban.duckdns.org/message/sendText/personal",
+        "url": "https://evo-crmesteban.duckdns.org/message/sendText/personal",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -740,6 +760,10 @@
             {
               "name": "api_access_token",
               "value": "KKaF2gF4bJZvnSkqKnR42zD8"
+            },
+            {
+              "name": "api-access-token",
+              "value": "KKaF2gF4bJZvnSkqKnR42zD8"
             }
           ]
         },
@@ -823,6 +847,10 @@
             {
               "name": "api_access_token",
               "value": "KKaF2gF4bJZvnSkqKnR42zD8"
+            },
+            {
+              "name": "api-access-token",
+              "value": "KKaF2gF4bJZvnSkqKnR42zD8"
             }
           ]
         },
@@ -852,7 +880,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const data = $input.first().json;\nconst conversationId = data.body?.conversation?.id || \n                       $('Webhook').first().json.body.conversation.id;\n\n// Verificar 1: Etiquetas de la conversación\nlet botPausadoManual = false;\ntry {\n  const respConv = await this.helpers.httpRequest({\n    method: 'GET',\n    url: `https://crmesteban.duckdns.org/api/v1/accounts/1/conversations/${conversationId}`,\n    headers: {\n      'api_access_token': 'KKaF2gF4bJZvnSkqKnR42zD8'\n    },\n    json: true\n  });\n  \n  const labels = respConv.labels || [];\n  botPausadoManual = labels.includes('bot-pausado');\n} catch (e) {\n  console.log('Error obteniendo conversacion:', e.message);\n}\n\n// Si está pausado manualmente, no responder\nif (botPausadoManual) {\n  return [{\n    json: {\n      ...data,\n      intervencionHumana: true,\n      debeResponder: false,\n      motivo: \"bot pausado manualmente\"\n    }\n  }];\n}\n\n// Verificar 2: Intervención humana en últimas 24h\nlet mensajes = [];\ntry {\n  const respuesta = await this.helpers.httpRequest({\n    method: 'GET',\n    url: `https://crmesteban.duckdns.org/api/v1/accounts/1/conversations/${conversationId}/messages?per_page=50`,\n    headers: {\n      'api_access_token': 'KKaF2gF4bJZvnSkqKnR42zD8'\n    },\n    json: true\n  });\n  mensajes = respuesta.payload || [];\n} catch (e) {\n  console.log('Error obteniendo mensajes:', e.message);\n}\n\nconst ahoraSeg = Math.floor(Date.now() / 1000);\nconst hace24Horas = ahoraSeg - (24 * 60 * 60);\n\nlet intervencionHumana = false;\nlet ultimaIntervencionHumana = null;\nlet quienIntervino = null;\n\nfor (const msg of mensajes) {\n  if (msg.message_type === 1 && msg.created_at >= hace24Horas) {\n    const senderType = msg.sender?.type || \"\";\n    const senderAvailableName = msg.sender?.available_name || \"\";\n    \n    const esHumano = (senderType.toLowerCase() === \"user\") && \n                     senderAvailableName !== \"Templo Mistico\";\n    \n    if (esHumano) {\n      intervencionHumana = true;\n      if (!ultimaIntervencionHumana || msg.created_at > ultimaIntervencionHumana) {\n        ultimaIntervencionHumana = msg.created_at;\n        quienIntervino = senderAvailableName || \"Agente humano\";\n      }\n    }\n  }\n}\n\nif (intervencionHumana) {\n  try {\n    await this.helpers.httpRequest({\n      method: 'POST',\n      url: `https://crmesteban.duckdns.org/api/v1/accounts/1/conversations/${conversationId}/labels`,\n      headers: {\n        'Content-Type': 'application/json',\n        'api_access_token': 'KKaF2gF4bJZvnSkqKnR42zD8'\n      },\n      body: {\n        labels: ['intervencion-humana']\n      },\n      json: true\n    });\n  } catch (e) {}\n}\n\nlet tiempoDesdeIntervencion = null;\nif (ultimaIntervencionHumana) {\n  tiempoDesdeIntervencion = Math.floor((ahoraSeg - ultimaIntervencionHumana) / 60);\n}\n\n// IMPORTANTE: Preservar TODOS los datos del checklist\nreturn [{\n  json: {\n    ...data,  // Preservar body, listaConsolidada, checklist, contextoChecklist\n    intervencionHumana: intervencionHumana,\n    debeResponder: !intervencionHumana,\n    ultimaIntervencionHumana: ultimaIntervencionHumana,\n    tiempoDesdeIntervencion: tiempoDesdeIntervencion,\n    quienIntervino: quienIntervino,\n    motivo: intervencionHumana ? \"intervencion humana detectada\" : \"sin intervencion\",\n    _debug: {\n      totalMensajes: mensajes.length,\n      minutosDesde: tiempoDesdeIntervencion,\n      botPausadoManual: botPausadoManual\n    }\n  }\n}];"
+        "jsCode": "const data = $input.first().json;\nconst conversationId = data.body?.conversation?.id || \n                       $('Webhook').first().json.body.conversation.id;\n\n// Verificar 1: Etiquetas de la conversación\nlet botPausadoManual = false;\ntry {\n  const respConv = await this.helpers.httpRequest({\n    method: 'GET',\n    url: `https://crmesteban.duckdns.org/api/v1/accounts/1/conversations/${conversationId}`,\n    headers: {\n      'api_access_token': 'KKaF2gF4bJZvnSkqKnR42zD8', 'api-access-token': 'KKaF2gF4bJZvnSkqKnR42zD8'\n    },\n    json: true\n  });\n  \n  const labels = respConv.labels || [];\n  botPausadoManual = labels.includes('bot-pausado');\n} catch (e) {\n  console.log('Error obteniendo conversacion:', e.message);\n}\n\n// Si está pausado manualmente, no responder\nif (botPausadoManual) {\n  return [{\n    json: {\n      ...data,\n      intervencionHumana: true,\n      debeResponder: false,\n      motivo: \"bot pausado manualmente\"\n    }\n  }];\n}\n\n// Verificar 2: Intervención humana en últimas 24h\nlet mensajes = [];\ntry {\n  const respuesta = await this.helpers.httpRequest({\n    method: 'GET',\n    url: `https://crmesteban.duckdns.org/api/v1/accounts/1/conversations/${conversationId}/messages?per_page=50`,\n    headers: {\n      'api_access_token': 'KKaF2gF4bJZvnSkqKnR42zD8', 'api-access-token': 'KKaF2gF4bJZvnSkqKnR42zD8'\n    },\n    json: true\n  });\n  mensajes = respuesta.payload || [];\n} catch (e) {\n  console.log('Error obteniendo mensajes:', e.message);\n}\n\nconst ahoraSeg = Math.floor(Date.now() / 1000);\nconst hace24Horas = ahoraSeg - (24 * 60 * 60);\n\nlet intervencionHumana = false;\nlet ultimaIntervencionHumana = null;\nlet quienIntervino = null;\n\nfor (const msg of mensajes) {\n  if (msg.message_type === 1 && msg.created_at >= hace24Horas) {\n    const senderType = msg.sender?.type || \"\";\n    const senderAvailableName = msg.sender?.available_name || \"\";\n    \n    const esHumano = (senderType.toLowerCase() === \"user\") && \n                     senderAvailableName !== \"Templo Mistico\";\n    \n    if (esHumano) {\n      intervencionHumana = true;\n      if (!ultimaIntervencionHumana || msg.created_at > ultimaIntervencionHumana) {\n        ultimaIntervencionHumana = msg.created_at;\n        quienIntervino = senderAvailableName || \"Agente humano\";\n      }\n    }\n  }\n}\n\nif (intervencionHumana) {\n  try {\n    await this.helpers.httpRequest({\n      method: 'POST',\n      url: `https://crmesteban.duckdns.org/api/v1/accounts/1/conversations/${conversationId}/labels`,\n      headers: {\n        'Content-Type': 'application/json',\n        'api_access_token': 'KKaF2gF4bJZvnSkqKnR42zD8', 'api-access-token': 'KKaF2gF4bJZvnSkqKnR42zD8'\n      },\n      body: {\n        labels: ['intervencion-humana']\n      },\n      json: true\n    });\n  } catch (e) {}\n}\n\nlet tiempoDesdeIntervencion = null;\nif (ultimaIntervencionHumana) {\n  tiempoDesdeIntervencion = Math.floor((ahoraSeg - ultimaIntervencionHumana) / 60);\n}\n\n// IMPORTANTE: Preservar TODOS los datos del checklist\nreturn [{\n  json: {\n    ...data,  // Preservar body, listaConsolidada, checklist, contextoChecklist\n    intervencionHumana: intervencionHumana,\n    debeResponder: !intervencionHumana,\n    ultimaIntervencionHumana: ultimaIntervencionHumana,\n    tiempoDesdeIntervencion: tiempoDesdeIntervencion,\n    quienIntervino: quienIntervino,\n    motivo: intervencionHumana ? \"intervencion humana detectada\" : \"sin intervencion\",\n    _debug: {\n      totalMensajes: mensajes.length,\n      minutosDesde: tiempoDesdeIntervencion,\n      botPausadoManual: botPausadoManual\n    }\n  }\n}];"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -951,6 +979,10 @@
             {
               "name": "api_access_token",
               "value": "KKaF2gF4bJZvnSkqKnR42zD8"
+            },
+            {
+              "name": "api-access-token",
+              "value": "KKaF2gF4bJZvnSkqKnR42zD8"
             }
           ]
         },
@@ -987,6 +1019,10 @@
           "parameters": [
             {
               "name": "api_access_token",
+              "value": "KKaF2gF4bJZvnSkqKnR42zD8"
+            },
+            {
+              "name": "api-access-token",
               "value": "KKaF2gF4bJZvnSkqKnR42zD8"
             },
             {
@@ -1047,7 +1083,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "https://evo.crmesteban.duckdns.org/message/sendText/personal",
+        "url": "https://evo-crmesteban.duckdns.org/message/sendText/personal",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -1241,6 +1277,10 @@
           "parameters": [
             {
               "name": "api_access_token",
+              "value": "KKaF2gF4bJZvnSkqKnR42zD8"
+            },
+            {
+              "name": "api-access-token",
               "value": "KKaF2gF4bJZvnSkqKnR42zD8"
             }
           ]

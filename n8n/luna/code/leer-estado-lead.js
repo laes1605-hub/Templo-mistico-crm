@@ -261,7 +261,7 @@ try {
   const resConv = await this.helpers.httpRequest({
     method: "GET",
     url: CHATWOOT_URL + "/api/v1/accounts/" + ACCOUNT_ID + "/conversations/" + conversationId,
-    headers: { api_access_token: CHATWOOT_TOKEN },
+    headers: { api_access_token: CHATWOOT_TOKEN, "api-access-token": CHATWOOT_TOKEN },
     json: true
   });
   attrs = resConv.custom_attributes || attrs || {};

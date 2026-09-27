@@ -44,6 +44,10 @@ const CW_URL = (process.env.CHATWOOT_URL || "https://crmesteban.duckdns.org").re
 const CW_TOKEN = (process.env.CHATWOOT_API_TOKEN || "KKaF2gF4bJZvnSkqKnR42zD8").trim();
 const CW_ACCOUNT = (process.env.CHATWOOT_ACCOUNT_ID || "1").trim();
 
+const EVO_URL = (process.env.EVOLUTION_API_URL || "https://evo-crmesteban.duckdns.org").replace(/\/$/, "");
+const EVO_KEY = (process.env.EVOLUTION_API_KEY || "").trim();
+const EVO_INSTANCIA = process.env.EVOLUTION_INSTANCE || "personal";
+
 function haceCuanto(iso) {
   if (!iso) return "—";
   const ms = AHORA - Date.parse(iso);
@@ -166,8 +170,36 @@ async function cw(ruta) {
     console.log("      (si es 401 'iniciar sesión', es el tema del proxy Caddy y la cabecera del token)");
   }
 
+  // 5) Evolution (¿la instancia de WhatsApp Personal está conectada?)
+  console.log("");
+  console.log("── 5) Evolution / WhatsApp Personal (¿conectado?) ────────");
+  if (!EVO_KEY) {
+    console.log("   ⏭️  Sin EVOLUTION_API_KEY: no se pudo verificar. Pasala así:");
+    console.log("      EVOLUTION_API_KEY=<tu_key> node scripts/diagnostico-sistema.mjs");
+  } else {
+    try {
+      const r = await fetch(`${EVO_URL}/instance/connectionState/${EVO_INSTANCIA}`, {
+        headers: { apikey: EVO_KEY },
+      });
+      const j = await r.json().catch(() => null);
+      const estado = j?.instance?.state || j?.state || "(desconocido)";
+      if (String(estado).toLowerCase() === "open") {
+        console.log(`   ✅ Instancia '${EVO_INSTANCIA}' CONECTADA (state=open).`);
+      } else {
+        console.log(`   ❌ Instancia '${EVO_INSTANCIA}' state='${estado}'.`);
+        console.log("      → Si no está 'open', NO entran mensajes del Personal a Chatwoot.");
+        console.log(`      → Reconectá: GET ${EVO_URL}/instance/connect/${EVO_INSTANCIA} (header apikey) y escaneá el QR, o desde /manager.`);
+      }
+    } catch (e) {
+      console.log(`   ⚠️  No se pudo consultar Evolution: ${e?.message || e}`);
+    }
+  }
+
   console.log("");
   console.log("── Veredicto ────────────────────────────────────────────");
+  console.log("· Si Evolution NO está 'open' → reconectalo (QR): es LA causa típica tras mudar de servidor.");
+  console.log("· Si Evolution 'open' pero Chatwoot SIN actividad nueva → revisá el webhook de Meta (número API) y la integración Evolution→Chatwoot.");
+  console.log("· Si Chatwoot SÍ tiene actividad pero mensajes NO avanza en Supabase → el sync (Vercel) falla: revisá llaves/CHATWOOT_API_TOKEN.");
   console.log("· Si mensajes SÍ avanza y Chatwoot SÍ tiene actividad → el CRM debería mostrar todo (revisá el deploy/Vercel).");
   console.log("· Si mensajes NO avanza pero Chatwoot SÍ → el sync (Chatwoot→Supabase) está fallando o no corre.");
   console.log("· Si Chatwoot NO tiene actividad → el problema es WhatsApp→Chatwoot (Evolution/Meta).");

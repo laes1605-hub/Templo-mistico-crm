@@ -1490,7 +1490,7 @@ export default function CRMApp() {
       if (!visible() || !enLinea()) return;
       // Si el usuario no ha interactuado en más de 2 minutos, reducimos la frecuencia
       const inactivo = Date.now() - ultimaActividad > 120_000;
-      if (inactivo && Math.random() > 0.3) return;
+      if (inactivo && Math.random() > 0.2) return;
       void sincronizarConChatwoot({ silencioso: true, rapido: true });
     };
     const ticChatAbierto = () => {
@@ -1498,20 +1498,25 @@ export default function CRMApp() {
       const conv = selectedConvRef.current;
       if (!conv?.chatwoot_conversation_id) return;
       const inactivo = Date.now() - ultimaActividad > 120_000;
-      if (inactivo && Math.random() > 0.3) return;
+      if (inactivo && Math.random() > 0.2) return;
       void sincronizarConChatwoot({
         conversacionId: conv.chatwoot_conversation_id,
         silencioso: true,
         rapido: true,
       });
     };
-    const t1 = setInterval(ticBandeja, 5_000);
-    const t2 = setInterval(ticChatAbierto, 2_500);
+    // Frecuencias ajustadas para controlar Egress y Log Ingestion de Supabase
+    // (plan gratis): cada sondeo = 1 función en Vercel + varias consultas a
+    // Supabase. El realtime (+ el webhook de Chatwoot, si está configurado)
+    // already empuja los cambios en <1 s, así que estos sondeos son sólo red
+    // de seguridad. Si subís el webhook, se pueden espaciar aún más.
+    const t1 = setInterval(ticBandeja, 12_000);
+    const t2 = setInterval(ticChatAbierto, 6_000);
     // Respaldo: una pasada completa ocasional (atrapa chats que bajaron de las
     // primeras páginas del listado y repara pies de foto/adjuntos).
     const t3 = setInterval(() => {
       if (visible() && enLinea()) void sincronizarConChatwoot({ silencioso: true });
-    }, 300_000);
+    }, 600_000);
     const onVis = () => {
       if (!visible()) return;
       ultimaActividad = Date.now();

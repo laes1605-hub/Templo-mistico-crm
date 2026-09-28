@@ -165,6 +165,241 @@ export function isFileMessage(msg: any): boolean {
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// Prioridad de descargas: lo que mirás/tocás va primero
+// ---------------------------------------------------------------------------
+
+/**
+ * Antes cada reproductor de nota de voz pedía su turno en una fila FIFO de 2
+ * descargas simultáneas: al abrir un chat con 8 audios, el último de la fila
+ * (justo el más nuevo, el que querés oír) esperaba a que bajaran los 7
+ * anteriores — de ahí los 15-20 s. Ahora el turno tiene prioridad:
+ *
+ *   · USUARIO  → acaba de tocar play: entra casi de inmediato,
+ *   · VISIBLE  → la burbuja está en pantalla (o a punto de estarlo),
+ *   · PRECARGA → solo para la onda de audio y adelantos, usa el tiempo libre.
+ */
+export const PRIORIDAD_DESCARGA = { PRECARGA: 0, VISIBLE: 1, USUARIO: 2 } as const;
+export type PrioridadDescarga = (typeof PRIORIDAD_DESCARGA)[keyof typeof PRIORIDAD_DESCARGA];
+
+const MAX_DESCARGAS_PARALELAS = 4;
+
+let descargasActivas = 0;
+let turnosEmitidos = 0;
+const colaTurnos: Array<{ prioridad: number; orden: number; ejecutar: () => void }> = [];
+
+function bombearTurnos() {
+  while (descargasActivas < MAX_DESCARGAS_PARALELAS && colaTurnos.length > 0) {
+    const siguiente = colaTurnos.shift()!;
+    siguiente.ejecutar();
+  }
+}
+
+/** Reserva un hueco de descarga (prioridad manda). Devuelve la función que lo libera. */
+export function pedirTurnoDeDescarga(prioridad: PrioridadDescarga = PRIORIDAD_DESCARGA.PRECARGA): Promise<() => void> {
+  return new Promise((resolver) => {
+    const ejecutar = () => {
+      descargasActivas += 1;
+      let liberado = false;
+      resolver(() => {
+        if (liberado) return;
+        liberado = true;
+        descargasActivas -= 1;
+        bombearTurnos();
+      });
+    };
+
+    colaTurnos.push({ prioridad, orden: turnosEmitidos++, ejecutar });
+    colaTurnos.sort((a, b) => b.prioridad - a.prioridad || a.orden - b.orden);
+    bombearTurnos();
+  });
+}
+
+/** Cuántos turnos hay en curso o esperando (para saber si conviene precargar). */
+export function turnosEnEspera(): number {
+  return descargasActivas + colaTurnos.length;
+}
+
+/**
+ * ¿Hay trabajo "importante" en la cola? La precarga de ondas de audio lo usa
+ * para no robarle ancho de banda a lo que el usuario está viendo.
+ */
+export function hayTrabajoPrioritario(): boolean {
+  return colaTurnos.some((t) => t.prioridad >= PRIORIDAD_DESCARGA.VISIBLE) || descargasActivas >= MAX_DESCARGAS_PARALELAS;
+}
+
+// ---------------------------------------------------------------------------
+// Caché de adjuntos ya bajados (para no repetir descargas)
+// ---------------------------------------------------------------------------
+
+/**
+ * Al cambiar de chat y volver, o al re-montar una burbuja, el archivo se volvía
+ * a pedir. Con esta caché (por URL, con cuenta de usos) el blob se reutiliza y
+ * solo se suelta cuando nadie lo está mostrando. Sin esto, el beneficio de la
+ * caché HTTP del proxy no se notaba en la APK/WebView.
+ */
+interface EntradaCache {
+  blob: Blob;
+  objectUrl: string;
+  bytes: number;
+  refs: number;
+  usado: number;
+}
+
+const cacheAdjuntos = new Map<string, EntradaCache>();
+const CACHE_MAX_ENTRADAS = 8;
+const CACHE_MAX_BYTES = 64 * 1024 * 1024;
+
+function recortarCache() {
+  const entradas = Array.from(cacheAdjuntos.entries());
+  let total = entradas.reduce((suma, [, e]) => suma + e.bytes, 0);
+  if (entradas.length <= CACHE_MAX_ENTRADAS && total <= CACHE_MAX_BYTES) return;
+
+  // Se sueltan primero los que nadie usa y hace más tiempo que no se tocan.
+  const liberables = entradas
+    .filter(([, e]) => e.refs === 0)
+    .sort((a, b) => a[1].usado - b[1].usado);
+  for (const [clave, entrada] of liberables) {
+    if (cacheAdjuntos.size <= CACHE_MAX_ENTRADAS && total <= CACHE_MAX_BYTES) break;
+    cacheAdjuntos.delete(clave);
+    total -= entrada.bytes;
+    try {
+      URL.revokeObjectURL(entrada.objectUrl);
+    } catch {}
+  }
+}
+
+function prestamoDeEntrada(clave: string, entrada: EntradaCache): PrestamoAdjunto {
+  entrada.refs += 1;
+  entrada.usado = Date.now();
+  let liberado = false;
+  return {
+    blob: entrada.blob,
+    objectUrl: entrada.objectUrl,
+    bytes: entrada.bytes,
+    deCache: true,
+    liberar: () => {
+      if (liberado) return;
+      liberado = true;
+      const actual = cacheAdjuntos.get(clave);
+      if (actual === entrada) actual.refs = Math.max(0, actual.refs - 1);
+    },
+  };
+}
+
+export interface PrestamoAdjunto {
+  blob: Blob;
+  /** URL `blob:` lista para el <audio>/<img> (null si no se pudo crear). */
+  objectUrl: string | null;
+  bytes: number;
+  /** true cuando el archivo venía de la caché en memoria (no hubo red). */
+  deCache: boolean;
+  liberar: () => void;
+}
+
+/** Si el adjunto ya está en memoria, se devuelve al instante. */
+export function adjuntoEnMemoria(url: string): PrestamoAdjunto | null {
+  const entrada = cacheAdjuntos.get(url);
+  return entrada ? prestamoDeEntrada(url, entrada) : null;
+}
+
+/** Descarga deduplicada: dos burbujas con el mismo archivo comparten la descarga. */
+const enVuelo = new Map<string, Promise<Blob>>();
+
+function descargarUnaVez(url: string): Promise<Blob> {
+  const existente = enVuelo.get(url);
+  if (existente) return existente;
+  const promesa = resolveMediaBlob(url).finally(() => {
+    enVuelo.delete(url);
+  });
+  enVuelo.set(url, promesa);
+  return promesa;
+}
+
+/**
+ * Baja un adjunto (con turno y caché) y devuelve un préstamo listo para usar.
+ * Quien lo pide DEBE llamar a `liberar()` al desmontar.
+ */
+export async function obtenerAdjunto(
+  url: string,
+  prioridad: PrioridadDescarga = PRIORIDAD_DESCARGA.PRECARGA
+): Promise<PrestamoAdjunto> {
+  if (!url) throw new Error("No hay archivo para descargar.");
+
+  const cacheado = adjuntoEnMemoria(url);
+  if (cacheado) return cacheado;
+
+  const liberarTurno = await pedirTurnoDeDescarga(prioridad);
+  let blob: Blob;
+  try {
+    blob = await descargarUnaVez(url);
+  } finally {
+    liberarTurno();
+  }
+
+  // Otra burbuja pudo guardarlo mientras esperábamos turno.
+  const guardadoMientrasEsperaba = cacheAdjuntos.get(url);
+  if (guardadoMientrasEsperaba) return prestamoDeEntrada(url, guardadoMientrasEsperaba);
+
+  let objectUrl: string | null = null;
+  try {
+    objectUrl = URL.createObjectURL(blob);
+  } catch {
+    objectUrl = null;
+  }
+
+  if (objectUrl) {
+    const entrada: EntradaCache = { blob, objectUrl, bytes: blob.size, refs: 1, usado: Date.now() };
+    cacheAdjuntos.set(url, entrada);
+    recortarCache();
+    let liberado = false;
+    return {
+      blob,
+      objectUrl,
+      bytes: blob.size,
+      deCache: false,
+      liberar: () => {
+        if (liberado) return;
+        liberado = true;
+        const actual = cacheAdjuntos.get(url);
+        if (actual === entrada) actual.refs = Math.max(0, actual.refs - 1);
+      },
+    };
+  }
+
+  return { blob, objectUrl: null, bytes: blob.size, deCache: false, liberar: () => {} };
+}
+
+/** ¿La URL se puede usar directo en un <audio>/<img> (streaming del navegador)? */
+export function esUrlDirecta(url: string): boolean {
+  const valor = String(url || "");
+  return /^https?:\/\//i.test(valor) && !valor.includes("/api/media/download");
+}
+
+/**
+ * ¿Hay que pasar por el proxy del CRM?
+ *
+ * Chatwoot (Active Storage) no manda cabeceras CORS, así que el `fetch` directo
+ * del navegador SIEMPRE falla: intentarlo cuesta un viaje de red completo antes
+ * de caer al proxy. Con esta pista se va derecho al proxy (antes se perdían
+ * cientos de ms, y en audios grandes bastante más).
+ */
+export function necesitaProxyDeCrm(url: string): boolean {
+  const valor = String(url || "");
+  if (!/^https?:/i.test(valor)) return false;
+  if (valor.includes("/api/media/download")) return false;
+  if (/\/rails\/active_storage\//i.test(valor)) return true;
+  const base = process.env.NEXT_PUBLIC_CHATWOOT_URL;
+  if (base) {
+    try {
+      return new URL(valor).origin === new URL(base).origin;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
 async function blobFromDataUri(url: string): Promise<Blob> {
   const res = await fetch(url);
   const blob = await res.blob();
@@ -187,19 +422,25 @@ async function blobFromProxy(url: string): Promise<Blob> {
 /**
  * Resuelve un archivo multimedia del chat (data URI o URL remota) a Blob.
  * Exportado también para audios, videos y documentos.
+ *
+ * El servidor del CRM ahora manda caché fuerte (CDN + navegador), así que
+ * repetir esta llamada suele ser instantáneo; aun así los reproductores usan
+ * `obtenerAdjunto` para no volver a pedirlo dentro de la misma sesión.
  */
 export async function resolveMediaBlob(url: string): Promise<Blob> {
   if (!url) throw new Error("No hay archivo para descargar.");
   if (url.startsWith("data:")) return blobFromDataUri(url);
 
-  try {
-    const res = await fetch(url, { mode: "cors" });
-    if (res.ok) {
-      const blob = await res.blob();
-      if (blob.size > 0 && !(blob.type || "").includes("text/html")) return blob;
+  if (!necesitaProxyDeCrm(url)) {
+    try {
+      const res = await fetch(url, { mode: "cors" });
+      if (res.ok) {
+        const blob = await res.blob();
+        if (blob.size > 0 && !(blob.type || "").includes("text/html")) return blob;
+      }
+    } catch {
+      // CORS o red: se reintenta por el proxy del CRM.
     }
-  } catch {
-    // CORS o red: se reintenta por el proxy del CRM.
   }
   return blobFromProxy(url);
 }

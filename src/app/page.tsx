@@ -467,6 +467,13 @@ export default function CRMApp() {
     // de n8n (mensajes nuevos, chats nuevos, contactos nuevos).
     sincronizarConChatwoot({ silencioso: true });
 
+    // Y aprovechar el rato libre para copiar a Storage los adjuntos recientes
+    // que todavía viven en Chatwoot (unas pocas copias por sesión; el resto se
+    // copia al abrir cada chat o cuando entra un mensaje nuevo).
+    const ingestaTimer = setTimeout(() => {
+      void optimizarAdjuntosEnBucle();
+    }, 6000);
+
     // Refrescos de lista con mini-debounce: una ráfaga de eventos (mensaje +
     // resumen de conversación + cliente) produce UN solo refetch ~1500 ms
     // después, no tres seguidos. El mensaje en sí no espera: lo pinta el
@@ -503,6 +510,7 @@ export default function CRMApp() {
     return () => {
       if (refrescoTimer) clearTimeout(refrescoTimer);
       if (clientesTimer) clearTimeout(clientesTimer);
+      if (ingestaTimer) clearTimeout(ingestaTimer);
       supabase.removeChannel(convSub);
       supabase.removeChannel(cliSub);
       supabase.removeChannel(pagSub);
@@ -738,6 +746,12 @@ export default function CRMApp() {
           `msg-${msg.conversacion_id}`,
           NOTIFICATION_CHANNELS.MESSAGES,
         );
+        // El adjunto acaba de entrar en Chatwoot: se copia a Storage YA, en
+        // segundo plano, para que cuando el operador abra el chat el audio ya
+        // esté en el CDN y suene al instante (antes esperaba 15-20 s al proxy).
+        if (msg.id && msg.url_archivo) {
+          void optimizarAdjuntos({ ids: [String(msg.id)], limite: 1 });
+        }
       })
       .subscribe();
     return () => { supabase.removeChannel(notifSub); };
@@ -1396,6 +1410,78 @@ export default function CRMApp() {
   async function sincronizarNoLeidos() {
     try { await supabase.rpc("sincronizar_no_leidos"); } catch {}
     fetchConversaciones(false);
+  }
+
+  // ===================== OPTIMIZACIÓN DE ADJUNTOS (Storage) =====================
+  // Los audios y las fotos que entran por WhatsApp viven en Chatwoot, no en el
+  // CRM: reproducir una nota obligaba a bajarla por el proxy (dos saltos de red,
+  // sin caché de CDN y en cola detrás del resto del historial). Aquí se pide al
+  // servidor que las copie a Supabase Storage en segundo plano —una sola vez—
+  // para que el teléfono las baje directo del CDN. Nada de esto bloquea la UI:
+  // el mensaje se sigue pintando al instante y el archivo se optimiza detrás.
+  const ingestaRef = useRef({ enCurso: false, ultimaGeneral: 0, pendientes: -1, colaIds: [] as string[] });
+
+  async function optimizarAdjuntos(
+    opciones: { ids?: string[]; conversacionIds?: string[]; limite?: number; dias?: number } = {},
+    forzarGeneral = false
+  ) {
+    const estado = ingestaRef.current;
+    if (estado.enCurso) {
+      // Si justo hay una pasada en curso, el mensaje que acaba de llegar no se
+      // pierde: se apunta para copiarlo apenas termine.
+      if (opciones.ids?.length) estado.colaIds = [...estado.colaIds, ...opciones.ids].slice(-20);
+      return null;
+    }
+    const puntual = Boolean(opciones.ids?.length || opciones.conversacionIds?.length);
+    // La pasada general (vaciar lo viejo) va espaciada: no tiene sentido
+    // repetirla cada pocos segundos, y el servidor tiene su propio presupuesto.
+    if (!puntual) {
+      if (!forzarGeneral && Date.now() - estado.ultimaGeneral < 90_000) return null;
+      estado.ultimaGeneral = Date.now();
+    }
+    estado.enCurso = true;
+    try {
+      const res = await fetch("/api/media/persistir", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(opciones),
+      });
+      const data = await res.json().catch(() => null);
+      if (data && typeof data.pendientes === "number") estado.pendientes = data.pendientes;
+      if (data?.migrados > 0) {
+        // El mensaje ahora apunta a Storage: se refresca el chat abierto para
+        // que el reproductor use la URL rápida (el realtime también lo hace).
+        const abierta = selectedConvRef.current;
+        const tocaAlAbierto =
+          abierta &&
+          (!opciones.conversacionIds?.length ||
+            opciones.conversacionIds.some((id) => abierta.id === id || (abierta.all_conv_ids || []).includes(id)));
+        if (tocaAlAbierto) fetchMensajes(abierta);
+      }
+      return data;
+    } catch {
+      return null;
+    } finally {
+      estado.enCurso = false;
+      const pendientesDeLaCola = estado.colaIds.splice(0, 6);
+      if (pendientesDeLaCola.length > 0) {
+        void optimizarAdjuntos({ ids: pendientesDeLaCola, limite: pendientesDeLaCola.length });
+      }
+    }
+  }
+
+  /**
+   * Vacía la lista de adjuntos pendientes sin bloquear: unas pocas copias por
+   * llamada (el servidor tiene presupuesto de tiempo) y se detiene si la app
+   * pasa a segundo plano o si ya no queda nada.
+   */
+  async function optimizarAdjuntosEnBucle(maxPasadas = 6) {
+    for (let i = 0; i < maxPasadas; i++) {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      const data = await optimizarAdjuntos({ limite: 4, dias: 7 }, true);
+      if (!data || !data.ok || !data.pendientes || data.pendientes <= 0) return;
+      await new Promise((r) => setTimeout(r, 1500));
+    }
   }
 
   // ===================== SINCRONIZACIÓN DIRECTA CON CHATWOOT =====================
@@ -3077,6 +3163,12 @@ export default function CRMApp() {
     fetchMensajes(conv);
     fetchPagos(conv.cliente_id);
     fetchTareasCliente(conv.cliente_id);
+    // Los adjuntos recientes de este chat se copian a Storage ya mismo: son los
+    // que el operador está a punto de reproducir.
+    void optimizarAdjuntos({
+      conversacionIds: conv.all_conv_ids && conv.all_conv_ids.length ? conv.all_conv_ids : [conv.id],
+      limite: 4,
+    });
     // Traer el historial fresco directo de Chatwoot para ESTE chat
     if (conv.chatwoot_conversation_id) {
       void sincronizarConChatwoot({ conversacionId: conv.chatwoot_conversation_id, silencioso: true });
@@ -3127,6 +3219,35 @@ export default function CRMApp() {
             });
             if (dup) return prev;
             return [...prev, nuevo];
+          });
+        }
+      )
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "mensajes" },
+        (payload) => {
+          const fila = payload.new as any;
+          if (!fila || !ids.includes(fila.conversacion_id)) return;
+          setMensajes((prev) => {
+            const indice = prev.findIndex((m: any) => m.id === fila.id);
+            if (indice < 0) return prev;
+            const previo = prev[indice];
+            // Solo se adopta cuando cambió algo que se ve: la optimización de
+            // adjuntos reescribe `url_archivo` (Chatwoot → CDN de Supabase) y
+            // así la burbuja pasa a la URL rápida sin repintar el chat entero.
+            if (
+              previo.url_archivo === fila.url_archivo &&
+              previo.contenido === fila.contenido &&
+              previo.tipo_contenido === fila.tipo_contenido
+            ) {
+              return prev;
+            }
+            const copia = prev.slice();
+            copia[indice] = {
+              ...previo,
+              url_archivo: fila.url_archivo,
+              contenido: fila.contenido,
+              tipo_contenido: fila.tipo_contenido,
+            };
+            return copia;
           });
         }
       ).subscribe();

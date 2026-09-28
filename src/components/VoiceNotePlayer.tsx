@@ -1,8 +1,15 @@
 "use client";
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Mic, Pause, Play, AlertCircle, RotateCw } from "lucide-react";
-import { resolveMediaBlob } from "../lib/download-media";
+import { Mic, Pause, Play, AlertCircle, RotateCw, Loader2 } from "lucide-react";
+import {
+  adjuntoEnMemoria,
+  esUrlDirecta,
+  obtenerAdjunto,
+  PRIORIDAD_DESCARGA,
+  type PrestamoAdjunto,
+  type PrioridadDescarga,
+} from "../lib/download-media";
 
 /**
  * Reproductor de nota de voz estilo WhatsApp para el dashboard.
@@ -11,54 +18,56 @@ import { resolveMediaBlob } from "../lib/download-media";
  * muestra una burbuja de nota de voz: botón circular de play/pausa, onda de
  * amplitud, tiempos y el micrófono con velocidad de reproducción (1x/1.5x/2x).
  *
- * CÓMO SE CARGA EL AUDIO (clave para que siempre suene):
- *  1. Se resuelven los bytes UNA sola vez con `resolveMediaBlob`: primero un
- *     `fetch` directo y, si el navegador no puede (CORS, o un host que exige
- *     cabeceras como el `api_access_token` de Chatwoot), por el proxy del CRM
- *     `/api/media/download`, que sí las pone.
- *  2. Con esos bytes se crea un `blob:` URL y se le pasa al `<audio>`. Así la
- *     reproducción ya no depende del CORS, de las cabeceras del host ni del
- *     `Content-Type` que devuelva, y la duración sale exacta (con OGG/Opus el
- *     `preload="metadata"` de una URL remota a menudo no la trae y la burbuja
- *     se quedaba en "…", como si la nota estuviera vacía).
- *  3. Si ni directo ni por proxy se consigue el archivo, la burbuja lo DICE
- *     (icono + mensaje + botón de reintentar) en vez de quedarse muda.
- *  4. Si el navegador no sabe decodificar el códec (OGG en Safari), queda el
+ * CÓMO SE CARGA EL AUDIO (esto es lo que hacía esperar 15-20 s):
+ *  1. SOLO se baja el archivo cuando la burbuja está por aparecer en pantalla
+ *     (IntersectionObserver) o cuando el operador toca play. Antes cada burbuja
+ *     del historial arrancaba su descarga al montarse, en una fila FIFO de 2: la
+ *     nota nueva —la que importa— quedaba última detrás de todo el historial.
+ *  2. Al tocar play, si el audio vive en una URL http(s) (Chatwoot), se le pasa
+ *     la URL DIRECTA al `<audio>`: el navegador pide solo los primeros rangos y
+ *     suena en ~1 s, sin esperar la descarga completa. En paralelo se bajan los
+ *     bytes (prioridad máxima) para la onda real y para el plan B si el formato
+ *     no se puede reproducir directo (o si el host exige cabeceras).
+ *  3. Los bytes se resuelven con `obtenerAdjunto`: con turnos por prioridad
+ *     (play > visible > precarga), deduplicación y caché en memoria por URL, así
+ *     cambiar de chat y volver ya no vuelve a bajar nada.
+ *  4. Si el navegador no puede decodificar el formato (OGG en Safari), queda el
  *     respaldo WebAudio (`AudioBufferSourceNode`) con los mismos bytes.
+ *  5. Si no se consigue el archivo, la burbuja lo DICE (icono + mensaje + botón
+ *     de reintentar) en vez de quedarse muda.
  */
 
 const BAR_COUNT = 30;
 const SPEED_STEPS = [1, 1.5, 2];
+/** Por encima de esto no se decodifica el audio para la onda (CPU del teléfono). */
+const MAX_BYTES_DECODIFICAR = 8 * 1024 * 1024;
 
 /** Evento global para que solo suene una nota de voz a la vez (como WhatsApp). */
 const PLAY_EVENT = "templo:voicenote-play";
 
 /**
- * Un chat puede tener cientos de notas de voz. Descargarlas todas a la vez
- * satura el navegador (y el Egress, que es justo lo que se quería ahorrar al
- * pasar los adjuntos a Storage): se permiten pocas descargas simultáneas y el
- * resto espera su turno.
+ * La decodificación (para la onda real) es CPU pura: si hay 20 burbujas a la
+ * vista, no pueden decodificar todas a la vez.
  */
-const MAX_DESCARGAS_PARALELAS = 2;
-let descargasActivas = 0;
-const colaDescargas: Array<() => void> = [];
+const MAX_DECODES_PARALELOS = 2;
+let decodesActivos = 0;
+const colaDecodes: Array<() => void> = [];
 
-/** Reserva un hueco de descarga. Devuelve la función que lo libera. */
-export function pedirTurnoDeDescarga(): Promise<() => void> {
+function turnoDeDecodificacion(): Promise<() => void> {
   return new Promise((resolver) => {
     const ejecutar = () => {
-      descargasActivas += 1;
+      decodesActivos += 1;
       let liberado = false;
       resolver(() => {
         if (liberado) return;
         liberado = true;
-        descargasActivas -= 1;
-        const siguiente = colaDescargas.shift();
+        decodesActivos -= 1;
+        const siguiente = colaDecodes.shift();
         if (siguiente) siguiente();
       });
     };
-    if (descargasActivas < MAX_DESCARGAS_PARALELAS) ejecutar();
-    else colaDescargas.push(ejecutar);
+    if (decodesActivos < MAX_DECODES_PARALELOS) ejecutar();
+    else colaDecodes.push(ejecutar);
   });
 }
 
@@ -125,13 +134,16 @@ async function decodificarAudio(bytes: ArrayBuffer): Promise<AudioBuffer | null>
 
 export default function VoiceNotePlayer({ src, isMe }: { src: string; isMe: boolean }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const contenedorRef = useRef<HTMLDivElement | null>(null);
   const playerIdRef = useRef<string>(`vn-${Math.random().toString(36).slice(2)}`);
   const [bars, setBars] = useState<number[]>(() => syntheticBars(""));
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [speed, setSpeed] = useState(1);
-  const [cargando, setCargando] = useState(true);
+  // Si la URL se puede reproducir directo, el play está disponible de entrada
+  // (suena con los primeros rangos); si no, se espera a tener los bytes.
+  const [cargando, setCargando] = useState(() => !esUrlDirecta(src));
   const [error, setError] = useState<string | null>(null);
   const [intento, setIntento] = useState(0);
 
@@ -143,6 +155,15 @@ export default function VoiceNotePlayer({ src, isMe }: { src: string; isMe: bool
   const webAudioStartTimeRef = useRef<number>(0);
   const webAudioTimerRef = useRef<any>(null);
   const isUsingWebAudioRef = useRef<boolean>(false);
+
+  // Estado de carga (todo en refs para no re-renderizar de más)
+  const prestamoRef = useRef<PrestamoAdjunto | null>(null);
+  const listoRef = useRef(false);              // los bytes ya están en memoria
+  const descargaEnCursoRef = useRef(false);    // hay una descarga pedida
+  const reproduciendoDirectoRef = useRef(false); // suena desde la URL directa
+  const pidePlayRef = useRef(false);           // tocó play y todavía no suena
+  const falloDirectoRef = useRef(false);       // el intento directo no sirvió
+  const canceladoRef = useRef(false);
 
   // Detener WebAudio fallback
   const stopWebAudio = () => {
@@ -216,19 +237,114 @@ export default function VoiceNotePlayer({ src, isMe }: { src: string; isMe: bool
     }
   };
 
-  // ---- Carga del audio: bytes una sola vez -> blob: URL para el <audio> ----
+  /**
+   * Baja los bytes del audio (con prioridad) y los deja listos para el <audio>.
+   * Idempotente: si ya hay bytes o hay una descarga en curso, no hace nada.
+   */
+  const cargarBytes = useCallback(
+    async (prioridad: PrioridadDescarga) => {
+      if (!src || listoRef.current || canceladoRef.current) return;
+      // Una precarga no arranca si el usuario ya está esperando otra cosa.
+      if (descargaEnCursoRef.current && prioridad < PRIORIDAD_DESCARGA.USUARIO) return;
+      descargaEnCursoRef.current = true;
+      if (!esUrlDirecta(src)) setCargando(true);
+
+      try {
+        const prestamo = await obtenerAdjunto(src, prioridad);
+        if (canceladoRef.current) {
+          prestamo.liberar();
+          return;
+        }
+        prestamoRef.current?.liberar();
+        prestamoRef.current = prestamo;
+        listoRef.current = true;
+        setCargando(false);
+
+        const audio = audioRef.current;
+        // Si el audio ya está sonando desde la URL directa, NO se le cambia el
+        // src a mitad de la reproducción (se cortaría): los bytes quedan para la
+        // onda, la duración exacta y el plan B.
+        if (audio && !reproduciendoDirectoRef.current) {
+          if (prestamo.objectUrl) audio.src = prestamo.objectUrl;
+          else audio.src = src;
+          if (pidePlayRef.current) {
+            audio.play().then(() => setIsPlaying(true)).catch(() => {});
+          }
+        }
+
+        // Onda real + duración exacta (en segundo plano, sin bloquear el play).
+        if (prestamo.blob.size > 0 && prestamo.blob.size <= MAX_BYTES_DECODIFICAR) {
+          const bytes = await prestamo.blob.arrayBuffer().catch(() => null);
+          if (!bytes || canceladoRef.current) return;
+          const liberarTurno = await turnoDeDecodificacion();
+          let audioBuffer: AudioBuffer | null = null;
+          try {
+            audioBuffer = await decodificarAudio(bytes);
+          } finally {
+            liberarTurno();
+          }
+          if (canceladoRef.current || !audioBuffer) return;
+          decodedBufferRef.current = audioBuffer;
+          setBars(pcmToBars(audioBuffer.getChannelData(0)));
+          if (isFinite(audioBuffer.duration) && audioBuffer.duration > 0) {
+            setDuration((prev) => (prev > 0 ? prev : audioBuffer.duration));
+          }
+        }
+      } catch (e: any) {
+        // Si el audio ya está sonando desde la URL directa, que falle el copia
+        // de bytes (onda/duración) no debe pintar un error en la burbuja.
+        if (!canceladoRef.current && !reproduciendoDirectoRef.current) {
+          setError(e?.message || "No se pudo descargar el audio.");
+          setCargando(false);
+        }
+      } finally {
+        descargaEnCursoRef.current = false;
+      }
+    },
+    [src]
+  );
+
+  // ---- Carga del audio: perezosa + priorizada --------------------------------
   useEffect(() => {
-    let cancelado = false;
-    let objectUrl = "";
+    canceladoRef.current = false;
+    descargaEnCursoRef.current = false;
+    listoRef.current = false;
+    reproduciendoDirectoRef.current = false;
+    pidePlayRef.current = false;
+    falloDirectoRef.current = false;
+    decodedBufferRef.current = null; // el PCM de un intento anterior ya no vale
+    prestamoRef.current?.liberar();
+    prestamoRef.current = null;
+
     const audio = audioRef.current ?? new Audio();
     audioRef.current = audio;
-    audio.preload = "auto";
-    decodedBufferRef.current = null; // el PCM de un intento anterior ya no vale
-    setCargando(true);
+    audio.preload = "metadata";
+    setCargando(!esUrlDirecta(src));
     setError(null);
     setCurrentTime(0);
     setDuration(0);
     setIsPlaying(false);
+    setBars(syntheticBars(src.slice(-64)));
+
+    // ¿Ya está en la caché de la sesión? Entonces no hay nada que esperar.
+    const enMemoria = adjuntoEnMemoria(src);
+    if (enMemoria) {
+      prestamoRef.current = enMemoria;
+      listoRef.current = true;
+      setCargando(false);
+      if (enMemoria.objectUrl) audio.src = enMemoria.objectUrl;
+      void (async () => {
+        const bytes = await enMemoria.blob.arrayBuffer().catch(() => null);
+        if (!bytes || canceladoRef.current) return;
+        const audioBuffer = await decodificarAudio(bytes);
+        if (canceladoRef.current || !audioBuffer) return;
+        decodedBufferRef.current = audioBuffer;
+        setBars(pcmToBars(audioBuffer.getChannelData(0)));
+        if (isFinite(audioBuffer.duration) && audioBuffer.duration > 0) {
+          setDuration((prev) => (prev > 0 ? prev : audioBuffer.duration));
+        }
+      })();
+    }
 
     const onTime = () => {
       if (!isUsingWebAudioRef.current) setCurrentTime(audio.currentTime);
@@ -237,13 +353,16 @@ export default function VoiceNotePlayer({ src, isMe }: { src: string; isMe: bool
       if (isFinite(audio.duration) && audio.duration > 0) {
         setDuration((prev) => (prev > 0 ? prev : audio.duration));
       }
+      // Si la reproducción directa funciona, hay duración: no hace falta esperar nada.
+      if (reproduciendoDirectoRef.current) setCargando(false);
     };
     const onPlay = () => {
       setIsPlaying(true);
       window.dispatchEvent(new CustomEvent(PLAY_EVENT, { detail: playerIdRef.current }));
     };
     const onPause = () => {
-      if (!isUsingWebAudioRef.current) setIsPlaying(false);
+      if (isUsingWebAudioRef.current) return;
+      setIsPlaying(false);
     };
     const onEnd = () => {
       setIsPlaying(false);
@@ -251,10 +370,22 @@ export default function VoiceNotePlayer({ src, isMe }: { src: string; isMe: bool
       try { audio.currentTime = 0; } catch {}
     };
     const onElementError = () => {
-      // El <audio> no pudo con el archivo (p. ej. códec no soportado). Si hay
-      // PCM decodificado todavía se puede reproducir por WebAudio al pulsar.
-      if (!decodedBufferRef.current && !cancelado) {
+      if (canceladoRef.current) return;
+      // El <audio> no pudo con el archivo: puede ser que el host exija
+      // cabeceras (se resuelve con los bytes del proxy) o un códec que el
+      // navegador no soporta (queda el respaldo WebAudio).
+      if (reproduciendoDirectoRef.current) {
+        reproduciendoDirectoRef.current = false;
+        falloDirectoRef.current = true;
+        try { audio.removeAttribute("src"); } catch {}
+        // La descarga por el proxy ya está en marcha con prioridad de usuario:
+        // cuando lleguen los bytes, el <audio> reintenta con el blob.
+        if (!descargaEnCursoRef.current && !listoRef.current) void cargarBytes(PRIORIDAD_DESCARGA.USUARIO);
+        return;
+      }
+      if (!decodedBufferRef.current && listoRef.current) {
         setError("Tu navegador no puede reproducir este formato de audio.");
+        setCargando(false);
       }
     };
     const stopOthers = (e: Event) => {
@@ -276,60 +407,27 @@ export default function VoiceNotePlayer({ src, isMe }: { src: string; isMe: bool
     audio.addEventListener("error", onElementError);
     window.addEventListener(PLAY_EVENT, stopOthers);
 
-    const cargar = async () => {
-      const liberar = await pedirTurnoDeDescarga();
-      let blob: Blob | null = null;
-      try {
-        blob = await resolveMediaBlob(src);
-      } catch (e: any) {
-        if (!cancelado) {
-          setError(e?.message || "No se pudo descargar el audio.");
-          setCargando(false);
-        }
-        return;
-      } finally {
-        liberar();
-      }
-      if (cancelado || !blob) return;
-
-      try {
-        objectUrl = URL.createObjectURL(blob);
-      } catch {
-        objectUrl = "";
-      }
-      if (cancelado) {
-        if (objectUrl) URL.revokeObjectURL(objectUrl);
-        return;
-      }
-
-      // Con los bytes ya en memoria el <audio> reproduce sin depender del CORS,
-      // de las cabeceras del host ni de un segundo viaje a la red.
-      if (objectUrl) audio.src = objectUrl;
-      else audio.src = src;
-      // Ya se puede pulsar play aunque la onda/duración tarden un poco más.
-      setCargando(false);
-
-      const bytes = await blob.arrayBuffer().catch(() => null);
-      if (cancelado || !bytes || !bytes.byteLength) return;
-      const audioBuffer = await decodificarAudio(bytes);
-      if (cancelado || !audioBuffer) return;
-      decodedBufferRef.current = audioBuffer;
-      setBars(pcmToBars(audioBuffer.getChannelData(0)));
-      if (isFinite(audioBuffer.duration) && audioBuffer.duration > 0) {
-        setDuration((prev) => (prev > 0 ? prev : audioBuffer.duration));
-      }
-      setCargando(false);
-    };
-
-    void cargar().catch((e: any) => {
-      if (!cancelado) {
-        setError(e?.message || "No se pudo cargar el audio.");
-        setCargando(false);
-      }
-    });
+    // Descarga perezosa: nada se baja hasta que la burbuja está por verse.
+    let observador: IntersectionObserver | null = null;
+    if (typeof IntersectionObserver !== "undefined" && contenedorRef.current) {
+      observador = new IntersectionObserver(
+        (entradas) => {
+          for (const entrada of entradas) {
+            if (!entrada.isIntersecting) continue;
+            void cargarBytes(PRIORIDAD_DESCARGA.VISIBLE);
+          }
+        },
+        { rootMargin: "320px 0px" }
+      );
+      observador.observe(contenedorRef.current);
+    } else if (!enMemoria) {
+      // Sin IntersectionObserver (WebView viejo): se comporta como antes.
+      void cargarBytes(PRIORIDAD_DESCARGA.VISIBLE);
+    }
 
     return () => {
-      cancelado = true;
+      canceladoRef.current = true;
+      observador?.disconnect();
       audio.pause();
       stopWebAudio();
       audio.removeEventListener("timeupdate", onTime);
@@ -341,9 +439,10 @@ export default function VoiceNotePlayer({ src, isMe }: { src: string; isMe: bool
       audio.removeEventListener("error", onElementError);
       window.removeEventListener(PLAY_EVENT, stopOthers);
       try { audio.removeAttribute("src"); audio.load(); } catch {}
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      prestamoRef.current?.liberar();
+      prestamoRef.current = null;
     };
-  }, [src, intento]);
+  }, [src, intento, cargarBytes]);
 
   useEffect(() => {
     if (audioRef.current) audioRef.current.playbackRate = speed;
@@ -365,6 +464,30 @@ export default function VoiceNotePlayer({ src, isMe }: { src: string; isMe: bool
     }
 
     const audio = audioRef.current;
+
+    // Sin bytes todavía: suena YA desde la URL directa (streaming por rangos) y
+    // en paralelo se bajan los bytes con la máxima prioridad.
+    if (!listoRef.current) {
+      pidePlayRef.current = true;
+      void cargarBytes(PRIORIDAD_DESCARGA.USUARIO);
+      if (esUrlDirecta(src) && audio && !falloDirectoRef.current) {
+        reproduciendoDirectoRef.current = true;
+        audio.preload = "auto";
+        audio.src = src;
+        audio
+          .play()
+          .then(() => {
+            setIsPlaying(true);
+            setCargando(false);
+          })
+          .catch(() => {
+            // El navegador no dejó reproducir el stream: esperará los bytes.
+          });
+        return;
+      }
+      return;
+    }
+
     if (!audio || !audio.src) {
       if (!playWebAudio()) setError("El audio todavía no está disponible. Pulsa reintentar.");
       return;
@@ -381,7 +504,7 @@ export default function VoiceNotePlayer({ src, isMe }: { src: string; isMe: bool
       }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isPlaying, speed, duration, currentTime]);
+  }, [isPlaying, speed, duration, currentTime, src, cargarBytes]);
 
   const cycleSpeed = () => {
     setSpeed((prev) => SPEED_STEPS[(SPEED_STEPS.indexOf(prev) + 1) % SPEED_STEPS.length]);
@@ -391,7 +514,11 @@ export default function VoiceNotePlayer({ src, isMe }: { src: string; isMe: bool
   const playedBars = hasDuration ? Math.round((currentTime / duration) * BAR_COUNT) : 0;
 
   return (
-    <div className="flex flex-col gap-1 w-[232px] max-w-full select-none" onClick={(e) => e.stopPropagation()}>
+    <div
+      ref={contenedorRef}
+      className="flex flex-col gap-1 w-[232px] max-w-full select-none"
+      onClick={(e) => e.stopPropagation()}
+    >
       <div className="flex items-center gap-2.5 py-0.5">
         {/* Botón play / pausa */}
         <button
@@ -403,7 +530,13 @@ export default function VoiceNotePlayer({ src, isMe }: { src: string; isMe: bool
             isMe ? "bg-white/25 hover:bg-white/35 text-white" : "bg-purple-600 hover:bg-purple-500 text-white"
           }`}
         >
-          {isPlaying ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current ml-0.5" />}
+          {isPlaying ? (
+            <Pause className="w-4 h-4 fill-current" />
+          ) : cargando ? (
+            <Loader2 className="w-4 h-4 animate-spin" />
+          ) : (
+            <Play className="w-4 h-4 fill-current ml-0.5" />
+          )}
         </button>
 
         {/* Onda + tiempos */}

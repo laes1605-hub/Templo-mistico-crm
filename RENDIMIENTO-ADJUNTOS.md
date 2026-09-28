@@ -81,7 +81,8 @@ Imprime, para los últimos adjuntos:
     storage (CDN SB)   : 260 ms
 ```
 
-Y al final el contador de pendientes (`GET /api/media/persistir`).
+Y al final el contador de pendientes (`GET /api/media/persistir`), que mira las
+últimas filas de la ventana reciente.
 
 Si querés forzar la copia de un chat concreto:
 

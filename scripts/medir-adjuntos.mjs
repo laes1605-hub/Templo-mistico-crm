@@ -110,7 +110,8 @@ async function pendientes() {
     const res = await fetch(`${CRM_URL}/api/media/persistir?dias=30`);
     if (!res.ok) return null;
     const data = await res.json();
-    return typeof data?.pendientes === "number" ? data.pendientes : null;
+    if (typeof data?.pendientes !== "number") return null;
+    return { pendientes: data.pendientes, quedanMas: data.quedanMas === true };
   } catch {
     return null;
   }
@@ -202,16 +203,26 @@ async function main() {
   const porCopiar = await pendientes();
   if (porCopiar !== null) {
     console.log(
-      `\nAdjuntos que todavía viven fuera del CDN (últimos 30 días): ${porCopiar}.\n` +
-        (porCopiar > 0
+      `\nAdjuntos que todavía viven fuera del CDN (últimos 30 días): ${porCopiar.pendientes}.\n` +
+        (porCopiar.pendientes > 0
           ? "Se van copiando solos en segundo plano; también podés forzarlos desde Ajustes → Migrar adjuntos."
           : "Todo listo: los adjuntos ya salen del CDN de Supabase.")
     );
+    if (porCopiar.pendientes === 0 && porCopiar.quedanMas) {
+      console.log("(El contador solo mira las últimas filas: puede haber más atrás.)");
+    }
     console.log(`Contador en vivo: ${CRM_URL}/api/media/persistir`);
   }
 }
 
 main().catch((e) => {
-  console.error("\n✗ No se pudo medir:", e?.message || e);
+  const motivo = e?.message || String(e);
+  console.error(`\n✗ No se pudo medir: ${motivo}`);
+  if (/fetch failed|ENOTFOUND|ECONNREFUSED|EAI_AGAIN/i.test(motivo)) {
+    console.error(
+      "   No hubo conexión con Supabase. Revisá internet/red, y que SUPABASE_URL y\n" +
+        "   SUPABASE_SERVICE_ROLE_KEY sean las llaves del proyecto actual."
+    );
+  }
   process.exitCode = 1;
 });

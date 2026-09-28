@@ -55,22 +55,32 @@ function limitar(valor: unknown, maximo: number, porDefecto: number): number {
   return Math.min(Math.round(n), maximo);
 }
 
-/** Cuenta los adjuntos pendientes en la ventana reciente (dos consultas baratas). */
-async function contarPendientes(desde: string): Promise<number> {
-  const [incrustados, externos] = await Promise.all([
-    supabaseAdmin
-      .from("mensajes")
-      .select("id", { count: "exact", head: true })
-      .gte("creado_en", desde)
-      .like("url_archivo", "data:%"),
-    supabaseAdmin
-      .from("mensajes")
-      .select("id", { count: "exact", head: true })
-      .gte("creado_en", desde)
-      .like("url_archivo", "http%")
-      .not("url_archivo", "like", "%/storage/v1/object/public/%"),
-  ]);
-  return (incrustados.count || 0) + (externos.count || 0);
+/** Filas que de verdad se pueden copiar (mismo criterio que la migración). */
+function filasPendientes(filas: FilaMensaje[]): FilaMensaje[] {
+  return filas.filter(
+    (f) => necesitaIngesta(f.url_archivo) && !TIPOS_EXCLUIDOS.has(String(f.tipo_contenido || "").toLowerCase())
+  );
+}
+
+/**
+ * Cuántos adjuntos quedan por copiar en la ventana reciente.
+ *
+ * Se cuenta sobre las últimas `tope` filas (una sola consulta) y con el mismo
+ * filtro que la migración: si contáramos los videos o los documentos —que se
+ * copian a propósito— el contador nunca llegaría a 0 y el navegador insistiría
+ * para siempre. `mas: true` avisa de que hay más allá de lo escaneado.
+ */
+async function contarPendientes(desde: string, tope = 200): Promise<{ pendientes: number; mas: boolean }> {
+  const { data, error } = await supabaseAdmin
+    .from("mensajes")
+    .select("id, url_archivo, tipo_contenido")
+    .gte("creado_en", desde)
+    .not("url_archivo", "is", null)
+    .order("creado_en", { ascending: false })
+    .limit(tope);
+  if (error) throw new Error(error.message);
+  const filas = (data || []) as FilaMensaje[];
+  return { pendientes: filasPendientes(filas).length, mas: filas.length >= tope };
 }
 
 async function candidatas(opciones: {
@@ -172,22 +182,28 @@ export async function POST(req: Request) {
     const filas = await candidatas({ ids, conversacionIds, limite, dias });
     // Solo se copia lo que de verdad lo necesita; si el cliente pidió IDs
     // concretos (mensaje recién llegado) se respeta ese orden.
-    const pendientes = filas.filter(
-      (f) => necesitaIngesta(f.url_archivo) && !TIPOS_EXCLUIDOS.has(String(f.tipo_contenido || "").toLowerCase())
-    );
+    const pendientes = filasPendientes(filas);
     const aMigrar = ids.length > 0 ? pendientes.slice(0, ids.length) : pendientes.slice(0, limite);
 
     const resultado = await migrarFilas(aMigrar, inicio);
 
-    const desde = new Date(Date.now() - dias * 24 * 60 * 60 * 1000).toISOString();
-    const restantes = ids.length > 0 ? null : await contarPendientes(desde);
+    // Con ids concretos (mensaje recién llegado) no se cuenta nada: el cliente
+    // ya sabe que era uno. En las pasadas generales, el contador es lo que le
+    // dice si sigue insistiendo.
+    // Se cuenta DESPUÉS de copiar: las filas ya migradas salen solas del conteo.
+    let restantes: { pendientes: number; mas: boolean } | null = null;
+    if (ids.length === 0) {
+      const desde = new Date(Date.now() - dias * 24 * 60 * 60 * 1000).toISOString();
+      restantes = await contarPendientes(desde);
+    }
 
     return NextResponse.json({
       ok: true,
       revisados: resultado.revisados,
       migrados: resultado.migrados,
       fallidos: resultado.fallidos,
-      pendientes: restantes,
+      pendientes: restantes ? restantes.pendientes : null,
+      quedanMas: restantes ? restantes.mas : null,
       motivos: resultado.motivos,
       ms: Date.now() - inicio,
     });
@@ -205,8 +221,8 @@ export async function GET(req: Request) {
   const dias = limitar(url.searchParams.get("dias"), 3650, DIAS_POR_DEFECTO);
   const desde = new Date(Date.now() - dias * 24 * 60 * 60 * 1000).toISOString();
   try {
-    const pendientes = await contarPendientes(desde);
-    return NextResponse.json({ ok: true, pendientes, desde });
+    const conteo = await contarPendientes(desde);
+    return NextResponse.json({ ok: true, ...conteo, desde });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message || "Error contando adjuntos." }, { status: 500 });
   }

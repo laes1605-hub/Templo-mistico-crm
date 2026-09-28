@@ -96,7 +96,24 @@ En la app: al abrir un chat, las notas visibles suenan al toque y el resto de lo
 adjuntos se optimiza detrás. En Ajustes sigue estando **Migrar adjuntos** para
 vaciar el historial viejo de una vez.
 
-## 4. Qué NO cambia (y por qué)
+## 4. ¿Y si lo que tarda es en APARECER el mensaje?
+
+Son dos demoras distintas y conviene separarlas:
+
+- **Que el mensaje no aparezca** en el CRM: depende de cómo entra. Con el webhook
+  de Chatwoot configurado (`/api/chatwoot/webhook`, Ajustes → Integraciones →
+  Webhooks → `message_created`) aparece en menos de 1 s. Sin webhook, el
+  dashboard pregunta solo: **cada 6 s** el chat abierto y **cada 12 s** la bandeja
+  (y se pausa si la app está en segundo plano). Para saber si Supabase y Chatwoot
+  están sanos: `node scripts/diagnostico-sistema.mjs`.
+- **Que el audio no cargue** una vez visible: eso es lo que arregla este cambio.
+
+Si el historial del chat tarda en pintarse, casi siempre son los adjuntos viejos
+guardados en base64 dentro de la fila: `npm run medir:adjuntos` lo dice de
+inmediato (columna "base64") y se arregla copiándolos a Storage (automático en
+segundo plano, o a mano desde Ajustes → Migrar adjuntos).
+
+## 5. Qué NO cambia (y por qué)
 
 - **Videos y documentos grandes** no se copian a Storage (límite de 12 MB por
   archivo): siguen por el proxy, que ahora cachea mejor.

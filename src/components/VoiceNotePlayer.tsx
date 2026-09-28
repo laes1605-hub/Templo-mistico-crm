@@ -3,13 +3,17 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Mic, Pause, Play, AlertCircle, RotateCw, Loader2 } from "lucide-react";
 import {
-  adjuntoEnMemoria,
   esUrlDirecta,
   obtenerAdjunto,
+  pedirTurnoDeDescarga,
   PRIORIDAD_DESCARGA,
   type PrestamoAdjunto,
   type PrioridadDescarga,
 } from "../lib/download-media";
+
+// La cola de descargas (con prioridad) se expone también desde aquí: varios
+// scripts de prueba la importan de este módulo desde antes del cambio.
+export { pedirTurnoDeDescarga };
 
 /**
  * Reproductor de nota de voz estilo WhatsApp para el dashboard.
@@ -28,9 +32,10 @@ import {
  *     suena en ~1 s, sin esperar la descarga completa. En paralelo se bajan los
  *     bytes (prioridad máxima) para la onda real y para el plan B si el formato
  *     no se puede reproducir directo (o si el host exige cabeceras).
- *  3. Los bytes se resuelven con `obtenerAdjunto`: con turnos por prioridad
- *     (play > visible > precarga), deduplicación y caché en memoria por URL, así
- *     cambiar de chat y volver ya no vuelve a bajar nada.
+ *  3. Los bytes se resuelven con `obtenerAdjunto`: turnos por prioridad
+ *     (play > visible > precarga) y deduplicación (dos burbujas del mismo
+ *     archivo comparten descarga). El blob: URL se libera al desmontar, así que
+ *     no queda memoria colgada.
  *  4. Si el navegador no puede decodificar el formato (OGG en Safari), queda el
  *     respaldo WebAudio (`AudioBufferSourceNode`) con los mismos bytes.
  *  5. Si no se consigue el archivo, la burbuja lo DICE (icono + mensaje + botón
@@ -326,26 +331,6 @@ export default function VoiceNotePlayer({ src, isMe }: { src: string; isMe: bool
     setIsPlaying(false);
     setBars(syntheticBars(src.slice(-64)));
 
-    // ¿Ya está en la caché de la sesión? Entonces no hay nada que esperar.
-    const enMemoria = adjuntoEnMemoria(src);
-    if (enMemoria) {
-      prestamoRef.current = enMemoria;
-      listoRef.current = true;
-      setCargando(false);
-      if (enMemoria.objectUrl) audio.src = enMemoria.objectUrl;
-      void (async () => {
-        const bytes = await enMemoria.blob.arrayBuffer().catch(() => null);
-        if (!bytes || canceladoRef.current) return;
-        const audioBuffer = await decodificarAudio(bytes);
-        if (canceladoRef.current || !audioBuffer) return;
-        decodedBufferRef.current = audioBuffer;
-        setBars(pcmToBars(audioBuffer.getChannelData(0)));
-        if (isFinite(audioBuffer.duration) && audioBuffer.duration > 0) {
-          setDuration((prev) => (prev > 0 ? prev : audioBuffer.duration));
-        }
-      })();
-    }
-
     const onTime = () => {
       if (!isUsingWebAudioRef.current) setCurrentTime(audio.currentTime);
     };
@@ -420,8 +405,9 @@ export default function VoiceNotePlayer({ src, isMe }: { src: string; isMe: bool
         { rootMargin: "320px 0px" }
       );
       observador.observe(contenedorRef.current);
-    } else if (!enMemoria) {
-      // Sin IntersectionObserver (WebView viejo): se comporta como antes.
+    } else {
+      // Sin IntersectionObserver (WebView viejo o pruebas en jsdom): se comporta
+      // como antes: carga al montar.
       void cargarBytes(PRIORIDAD_DESCARGA.VISIBLE);
     }
 

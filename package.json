@@ -28,6 +28,8 @@
     "test:rr-storage": "node --conditions=import scripts/prueba-respuestas-rapidas-storage.mjs",
     "test:rr-sync": "node --conditions=import scripts/prueba-respuestas-rapidas-sync.mjs",
     "test:audio": "node scripts/prueba-reproductor-audio.mjs",
+    "test:media": "node scripts/prueba-media-fuente.mjs",
+    "medir:adjuntos": "node scripts/medir-adjuntos.mjs",
     "test:remux": "node scripts/prueba-remux-ogg.mjs",
     "test:backups": "node scripts/prueba-limpiar-backups-gdrive.mjs"
   },

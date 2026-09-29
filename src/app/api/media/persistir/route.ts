@@ -21,7 +21,8 @@ export const maxDuration = 60;
  *   · al abrir un chat (los adjuntos más recientes de ese chat).
  *
  * POST { ids?, conversacionIds?, limite?, dias? }
- * GET  → cuántos adjuntos quedan por copiar (para saber si insistir).
+ * GET  → { ok, pendientes, quedanMas, desde }: cuántos adjuntos quedan por
+ *        copiar y si el conteo se quedó corto por la ventana escaneada.
  *
  * Seguridad: el cliente solo manda IDs de mensajes; las URLs salen SIEMPRE de
  * la base de datos, nunca del cuerpo de la petición. Los hosts privados y la
@@ -221,8 +222,10 @@ export async function GET(req: Request) {
   const dias = limitar(url.searchParams.get("dias"), 3650, DIAS_POR_DEFECTO);
   const desde = new Date(Date.now() - dias * 24 * 60 * 60 * 1000).toISOString();
   try {
-    const conteo = await contarPendientes(desde);
-    return NextResponse.json({ ok: true, ...conteo, desde });
+    const { pendientes, mas } = await contarPendientes(desde);
+    // Mismo nombre que devuelve el POST (`quedanMas`): un solo vocabulario para
+    // quien consulta el contador, incluido scripts/medir-adjuntos.mjs.
+    return NextResponse.json({ ok: true, pendientes, quedanMas: mas, desde });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message || "Error contando adjuntos." }, { status: 500 });
   }

@@ -165,6 +165,135 @@ export function isFileMessage(msg: any): boolean {
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// Prioridad de descargas: lo que mirás/tocás va primero
+// ---------------------------------------------------------------------------
+
+/**
+ * Antes cada reproductor de nota de voz pedía su turno en una fila FIFO de 2
+ * descargas simultáneas: al abrir un chat con 8 audios, el último de la fila
+ * (justo el más nuevo, el que querés oír) esperaba a que bajaran los 7
+ * anteriores — de ahí los 15-20 s. Ahora el turno tiene prioridad:
+ *
+ *   · USUARIO  → acaba de tocar play: entra casi de inmediato,
+ *   · VISIBLE  → la burbuja está en pantalla (o a punto de estarlo),
+ *   · PRECARGA → solo para la onda de audio y adelantos, usa el tiempo libre.
+ */
+export const PRIORIDAD_DESCARGA = { PRECARGA: 0, VISIBLE: 1, USUARIO: 2 } as const;
+export type PrioridadDescarga = (typeof PRIORIDAD_DESCARGA)[keyof typeof PRIORIDAD_DESCARGA];
+
+const MAX_DESCARGAS_PARALELAS = 2;
+
+let descargasActivas = 0;
+let turnosEmitidos = 0;
+const colaTurnos: Array<{ prioridad: number; orden: number; ejecutar: () => void }> = [];
+
+function bombearTurnos() {
+  while (descargasActivas < MAX_DESCARGAS_PARALELAS && colaTurnos.length > 0) {
+    const siguiente = colaTurnos.shift()!;
+    siguiente.ejecutar();
+  }
+}
+
+/** Reserva un hueco de descarga (prioridad manda). Devuelve la función que lo libera. */
+export function pedirTurnoDeDescarga(prioridad: PrioridadDescarga = PRIORIDAD_DESCARGA.PRECARGA): Promise<() => void> {
+  return new Promise((resolver) => {
+    const ejecutar = () => {
+      descargasActivas += 1;
+      let liberado = false;
+      resolver(() => {
+        if (liberado) return;
+        liberado = true;
+        descargasActivas -= 1;
+        bombearTurnos();
+      });
+    };
+
+    colaTurnos.push({ prioridad, orden: turnosEmitidos++, ejecutar });
+    colaTurnos.sort((a, b) => b.prioridad - a.prioridad || a.orden - b.orden);
+    bombearTurnos();
+  });
+}
+
+/** Cuántos turnos hay en curso o esperando (para saber si conviene precargar). */
+export function turnosEnEspera(): number {
+  return descargasActivas + colaTurnos.length;
+}
+
+/**
+ * Descarga con deduplicación: si dos burbujas piden el MISMO archivo a la vez,
+ * comparten una sola descarga (antes eran dos peticiones idénticas en paralelo).
+ */
+const enVuelo = new Map<string, Promise<Blob>>();
+
+function descargarUnaVez(url: string): Promise<Blob> {
+  const existente = enVuelo.get(url);
+  if (existente) return existente;
+  const promesa = resolveMediaBlob(url).finally(() => {
+    enVuelo.delete(url);
+  });
+  enVuelo.set(url, promesa);
+  return promesa;
+}
+
+export interface PrestamoAdjunto {
+  blob: Blob;
+  /** URL `blob:` lista para el <audio>/<img> (null si no se pudo crear). */
+  objectUrl: string | null;
+  bytes: number;
+  /** Libera los recursos de ESTA burbuja (revoca el blob: URL). */
+  liberar: () => void;
+}
+
+/**
+ * Baja un adjunto con turno y prioridad, y devuelve el blob con su `blob:` URL.
+ * Quien lo pide DEBE llamar a `liberar()` al desmontar: el objeto se revoca y no
+ * queda memoria colgada (igual que antes de este cambio).
+ */
+export async function obtenerAdjunto(
+  url: string,
+  prioridad: PrioridadDescarga = PRIORIDAD_DESCARGA.PRECARGA
+): Promise<PrestamoAdjunto> {
+  if (!url) throw new Error("No hay archivo para descargar.");
+
+  const liberarTurno = await pedirTurnoDeDescarga(prioridad);
+  let blob: Blob;
+  try {
+    blob = await descargarUnaVez(url);
+  } finally {
+    liberarTurno();
+  }
+
+  let objectUrl: string | null = null;
+  try {
+    objectUrl = URL.createObjectURL(blob);
+  } catch {
+    objectUrl = null;
+  }
+
+  let liberado = false;
+  return {
+    blob,
+    objectUrl,
+    bytes: blob.size,
+    liberar: () => {
+      if (liberado) return;
+      liberado = true;
+      if (objectUrl) {
+        try {
+          URL.revokeObjectURL(objectUrl);
+        } catch {}
+      }
+    },
+  };
+}
+
+/** ¿La URL se puede usar directo en un <audio>/<img> (streaming del navegador)? */
+export function esUrlDirecta(url: string): boolean {
+  const valor = String(url || "");
+  return /^https?:\/\//i.test(valor) && !valor.includes("/api/media/download");
+}
+
 async function blobFromDataUri(url: string): Promise<Blob> {
   const res = await fetch(url);
   const blob = await res.blob();
@@ -187,6 +316,10 @@ async function blobFromProxy(url: string): Promise<Blob> {
 /**
  * Resuelve un archivo multimedia del chat (data URI o URL remota) a Blob.
  * Exportado también para audios, videos y documentos.
+ *
+ * El servidor del CRM ahora manda caché fuerte (CDN + navegador), así que
+ * repetir esta llamada suele ser instantáneo; aun así los reproductores usan
+ * `obtenerAdjunto` para no volver a pedirlo dentro de la misma sesión.
  */
 export async function resolveMediaBlob(url: string): Promise<Blob> {
   if (!url) throw new Error("No hay archivo para descargar.");

@@ -10,7 +10,12 @@
  *     descargar el archivo dos veces.
  *  2. Audio que tampoco se consigue por el proxy: la burbuja debe DECIRLO
  *     (mensaje + botón Reintentar) en vez de quedarse en silencio.
- *  3. Un chat con muchas notas no abre cientos de descargas a la vez.
+ *  3. Un chat con muchas notas no abre cientos de descargas a la vez, y las
+ *     descargas se ordenan por prioridad (lo que el usuario toca va primero).
+ *  4. CARGA PEREZOSA: una burbuja fuera de pantalla no baja nada; cuando entra
+ *     en pantalla (IntersectionObserver) arranca la descarga.
+ *  5. Al tocar play, el <audio> usa la URL directa para empezar a sonar sin
+ *     esperar la descarga completa (los bytes llegan en paralelo).
  *
  * Uso: npm run test:audio   (node scripts/prueba-reproductor-audio.mjs)
  */
@@ -225,6 +230,70 @@ async function main() {
   assert(contadorObjectUrls > objectUrlsAntes, "Reintentar vuelve a descargar el audio");
   assert(!b.alerta(), "tras reintentar con red, desaparece el aviso");
   await b.desmontar();
+
+  // --- Caso 4: carga perezosa (solo lo que está por verse) ----------------
+  console.log("\n— Carga perezosa: fuera de pantalla no se baja nada —");
+  const observadores = [];
+  class ObservadorFalso {
+    constructor(cb, opciones) {
+      this.cb = cb;
+      this.opciones = opciones;
+      this.observados = [];
+      observadores.push(this);
+    }
+    observe(el) { this.observados.push(el); }
+    unobserve() {}
+    disconnect() {}
+  }
+  window.IntersectionObserver = ObservadorFalso;
+  global.IntersectionObserver = ObservadorFalso;
+
+  instalarFetch({ directo: "cors", proxy: "ok" });
+  const c = await montar({ src: URL_CHATWOOT, isMe: false });
+  await asentar(60);
+  assert(peticiones.length === 0, "no baja nada mientras la burbuja está fuera de pantalla");
+  assert(observadores.length === 1, "monta el observador de visibilidad (rootMargin cercano)");
+  assert(
+    /px/.test(observadores[0]?.opciones?.rootMargin || ""),
+    `observa con margen de anticipación (${observadores[0]?.opciones?.rootMargin})`
+  );
+
+  await act(async () => {
+    observadores[0].cb([{ isIntersecting: true, target: observadores[0].observados[0] }]);
+  });
+  await asentar(80);
+  assert(peticiones.length > 0, "al entrar en pantalla arranca la descarga");
+  assert(
+    String(elementosAudio[elementosAudio.length - 1]?.getAttribute("src") || "").startsWith("blob:"),
+    "y termina reproducible (blob: URL)"
+  );
+  await c.desmontar();
+
+  // --- Caso 5: tocar play suena ya (streaming directo) --------------------
+  console.log("\n— Tocar play: arranca con la URL directa, sin esperar los bytes —");
+  instalarFetch({ directo: "ok", proxy: "ok" });
+  const d = await montar({ src: URL_CHATWOOT, isMe: false });
+  await asentar(30);
+  const elementoDirecto = elementosAudio[elementosAudio.length - 1];
+  const botonDirecto = d.botonPlay();
+  assert(!botonDirecto.disabled, "el play está disponible de entrada (no espera la descarga)");
+  assert(String(elementoDirecto.getAttribute("src") || "") === "", "todavía no asignó ningún src");
+
+  llamadasPlay.length = 0;
+  await act(async () => {
+    botonDirecto.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+  });
+  await asentar(40);
+  assert(llamadasPlay.length >= 1, "reproduce al tocar (una llamada a play())");
+  assert(
+    String(elementoDirecto.getAttribute("src") || "").includes("crmesteban.duckdns.org"),
+    `usa la URL del archivo para arrancar al instante — src="${elementoDirecto.getAttribute("src")}"`
+  );
+  assert(
+    peticiones.some((p) => p.tipo === "proxy") || peticiones.some((p) => p.tipo === "directo"),
+    "y en paralelo baja los bytes (onda real y plan B si el códec no va)"
+  );
+  await d.desmontar();
 
   // --- Caso 3: cola de descargas ------------------------------------------
   console.log("\n— Descargas simultáneas limitadas (chat con muchas notas) —");

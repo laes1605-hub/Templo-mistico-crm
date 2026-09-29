@@ -92,6 +92,7 @@ export default function ChatImage({
           onError={handleImageError}
           className={imgClass}
           loading="lazy"
+          decoding="async"
         />
         {label && variant === "thumb" && (
           <span className="absolute inset-x-0 bottom-0 bg-black/70 text-[10px] text-white font-semibold py-1 text-center">
@@ -139,6 +140,7 @@ export default function ChatImage({
               src={imgSrc}
               alt={alt || label || "Imagen del cliente"}
               onError={handleImageError}
+              decoding="async"
               className="max-w-full max-h-[80vh] object-contain rounded-lg shadow-2xl"
               onClick={(e) => e.stopPropagation()}
             />

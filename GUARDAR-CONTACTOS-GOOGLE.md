@@ -4,8 +4,27 @@ La ficha de cada cliente tiene ahora **dos botones**:
 
 | Botón | Qué hace | Dónde queda el contacto |
 | --- | --- | --- |
-| 👤 **Guardar en teléfono** | La APK 1.3.3 crea el contacto con el plugin nativo del CRM (sólo nombre y teléfono). Si Android no permite la inserción, abre el menú de Contactos para importar un `.vcf`. En web/PWA descarga el archivo. | Agenda del teléfono (cuenta general o la que elija al importar). |
+| 👤 **Guardar en teléfono** | La APK 1.3.4 crea el contacto con el plugin nativo del CRM (sólo nombre y teléfono). Si Android no permite la inserción, abre el menú de Contactos para importar un `.vcf`. En web/PWA descarga el archivo. | Agenda del teléfono (cuenta general o la que elija al importar). |
 | 🌐 **Guardar en cuenta Google** | Genera la ficha `.vcf` y abre el **menú de compartir** del sistema con el archivo listo. | Al elegir **Contactos / Google Contacts** y la cuenta Google, el contacto se importa en la nube y baja al teléfono. |
+
+## Reglas del nombre al guardar en el teléfono
+
+La APK mira la agenda **antes** de crear el contacto:
+
+- **Nombre nuevo** → se guarda tal cual (`Marta López`).
+- **Nombre repetido con otro número** → consecutivo automático:
+  `Marta López 2`, y si ya hay un 2 entonces `Marta López 3`, y así sucesivamente.
+  Nunca reutiliza un consecutivo borrado (si hubo un 2, el siguiente es 3 aunque
+  borren la «Marta López 2»).
+- **Mismo nombre y mismo teléfono** → es la misma persona: avisa
+  «ya estaba guardado» y **no crea duplicado**, aunque se toque el botón dos veces.
+- Mayúsculas y tildes no engañan al consecutivo: `MARTA LOPEZ` y `Marta López`
+  cuentan como el mismo nombre.
+
+> Si el aviso de «se abrió el menú para guardar» aparece cada vez, casi siempre
+> es el **permiso de Contactos denegado**: la app lo avisa y explica cómo
+> activarlo (Ajustes › Aplicaciones › Templo Místico CRM › Permisos › Contactos).
+> Con el permiso activo el guardado es directo, sin menús.
 
 ## Cómo se usa el botón de Google (paso a paso)
 

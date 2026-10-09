@@ -28,6 +28,10 @@ export interface GuardarContactoResult {
   verificadoEnAgenda: boolean;
   /** Método de respaldo cuando la agenda Android no acepta la inserción directa. */
   metodo?: ViaGuardadoGoogle;
+  /** Ya había un contacto con ese nombre y ese teléfono: no se creó nada nuevo. */
+  yaExistia?: boolean;
+  /** Android denegó el permiso de Contactos: el guardado directo necesita activarlo. */
+  sinPermiso?: boolean;
 }
 
 /** Cómo terminó el envío del contacto hacia la cuenta de Google. */
@@ -145,11 +149,13 @@ function nombreVisibleContacto(contacto: ContactPayload): string {
  *
  * No reutilizamos un número que ya existió: si hay 2 y 4, el siguiente será 5.
  * Así el nombre sigue siendo inequívoco aunque alguien borre un contacto luego.
+ *
+ * Exportada para las pruebas (scripts/prueba-contacto-telefono.ts).
  */
-function crearNombreUnico(nombreBase: string, nombresExistentes: string[]): {
-  nombre: string;
-  ajustado: boolean;
-} {
+export function crearNombreUnico(
+  nombreBase: string,
+  nombresExistentes: string[]
+): { nombre: string; ajustado: boolean } {
   const baseVisible = nombreBase.trim().replace(/\s+/g, " ") || "Cliente";
   const base = normalizarNombre(baseVisible);
   const consecutivo = new RegExp(`^${escaparRegex(base)}\\s+(\\d+)$`);
@@ -172,6 +178,15 @@ function crearNombreUnico(nombreBase: string, nombresExistentes: string[]): {
 
   if (!existeBase) return { nombre: baseVisible, ajustado: false };
   return { nombre: `${baseVisible} ${mayorConsecutivo + 1}`, ajustado: true };
+}
+
+/** ¿Ese nombre visible es la base o una de sus variantes numeradas («X», «X 2», «X 3»…)? */
+function nombrePerteneceALaBase(nombreVisible: string, nombreBase: string): boolean {
+  const base = normalizarNombre(nombreBase);
+  const candidata = normalizarNombre(nombreVisible);
+  if (!candidata) return false;
+  if (candidata === base) return true;
+  return new RegExp(`^${escaparRegex(base)}\\s+\\d+$`).test(candidata);
 }
 
 function normalizarTelefono(telefono: string): string {
@@ -197,12 +212,19 @@ async function permisosContactos(solicitar: boolean): Promise<boolean> {
   return nuevos.contacts === "granted" || nuevos.contacts === "limited";
 }
 
-async function listarContactosNativos(solicitarPermiso: boolean): Promise<ContactPayload[] | null> {
-  if (!esPlataformaNativa()) return null;
-  const concedido = await permisosContactos(solicitarPermiso);
-  if (!concedido) return null;
-  const { contacts } = await Contacts.getContacts({ projection: { name: true, phones: true } });
-  return contacts || [];
+async function listarContactosNativos(
+  solicitarPermiso: boolean
+): Promise<{ contactos: ContactPayload[] | null; sinPermiso: boolean }> {
+  if (!esPlataformaNativa()) return { contactos: null, sinPermiso: false };
+  const concedido = await permisosContactos(solicitarPermiso).catch(() => false);
+  if (!concedido) return { contactos: null, sinPermiso: true };
+  try {
+    const { contacts } = await Contacts.getContacts({ projection: { name: true, phones: true } });
+    return { contactos: contacts || [], sinPermiso: false };
+  } catch (error) {
+    console.warn("La agenda Android no respondió a la consulta:", error);
+    return { contactos: null, sinPermiso: false };
+  }
 }
 
 function leerNombresWeb(): string[] {
@@ -231,7 +253,7 @@ function recordarNombreWeb(nombre: string) {
  * estado sin abrir un diálogo; Guardar en teléfono sí lo solicita.
  */
 export async function estaContactoGuardadoEnTelefono(telefono: string): Promise<boolean> {
-  const contactos = await listarContactosNativos(false);
+  const { contactos } = await listarContactosNativos(false);
   if (!contactos) return false;
   return contactos.some((contacto) =>
     (contacto.phones || []).some((p) => mismoTelefono(String(p.number || ""), telefono))
@@ -241,7 +263,8 @@ export async function estaContactoGuardadoEnTelefono(telefono: string): Promise<
 async function guardarComoVCardDesdeAgenda(
   nombre: string,
   telefono: string,
-  nombreAjustado: boolean
+  nombreAjustado: boolean,
+  sinPermiso = false
 ): Promise<GuardarContactoResult> {
   const respaldo = await guardarContactoEnGoogle(nombre, telefono);
   return {
@@ -251,15 +274,23 @@ async function guardarComoVCardDesdeAgenda(
     nombreAjustado,
     verificadoEnAgenda: false,
     metodo: respaldo.metodo,
+    sinPermiso,
   };
 }
 
 /**
  * Guarda el contacto directamente en la agenda cuando se ejecuta dentro de la
  * APK Capacitor. Antes de crear el registro compara todos los nombres de la
- * agenda para no repetirlos. En navegador/PWA genera un vCard descargable como
- * respaldo; por privacidad la web no puede consultar la agenda real, por lo que
- * ahí solo evita nombres que el propio CRM haya exportado en este navegador.
+ * agenda para no repetirlos:
+ *
+ *   · nombre nuevo → se guarda tal cual («Marta López»).
+ *   · nombre repetido con otro número → consecutivo («Marta López 2»,
+ *     «Marta López 3»… según el más alto que ya exista).
+ *   · mismo nombre Y mismo teléfono → ya estaba guardado: no se duplica.
+ *
+ * En navegador/PWA genera un vCard descargable como respaldo; por privacidad
+ * la web no puede consultar la agenda real, por lo que ahí solo evita nombres
+ * que el propio CRM haya exportado en este navegador.
  */
 export async function guardarContactoEnTelefono(nombre: string, telefono: string): Promise<GuardarContactoResult> {
   const nombreLimpio = nombre.trim() || telefono.trim() || "Cliente";
@@ -267,17 +298,28 @@ export async function guardarContactoEnTelefono(nombre: string, telefono: string
   if (!telefonoLimpio) throw new Error("El cliente no tiene un número de teléfono válido.");
 
   if (esPlataformaNativa()) {
-    let contactos: ContactPayload[] | null = null;
-    try {
-      contactos = await listarContactosNativos(true);
-    } catch (error) {
-      // Si el proveedor de contactos no responde, todavía podemos entregar un
-      // vCard al sistema para que Contactos lo importe manualmente.
-      console.warn("No se pudo consultar la agenda; se usará el contacto .vcf:", error);
-    }
+    const { contactos, sinPermiso } = await listarContactosNativos(true);
 
     if (!contactos) {
-      return guardarComoVCardDesdeAgenda(nombreLimpio, telefonoLimpio, false);
+      return guardarComoVCardDesdeAgenda(nombreLimpio, telefonoLimpio, false, sinPermiso);
+    }
+
+    // ¿Misma persona ya guardada? (nombre —o su variante numerada— con el
+    // mismo teléfono). Pulsar el botón dos veces no debe crear «Marta 2»
+    // repetida con el mismo número.
+    const yaGuardado = contactos.some(
+      (contacto) =>
+        nombrePerteneceALaBase(nombreVisibleContacto(contacto), nombreLimpio) &&
+        (contacto.phones || []).some((p) => mismoTelefono(String(p.number || ""), telefonoLimpio))
+    );
+    if (yaGuardado) {
+      return {
+        native: true,
+        nombreGuardado: nombreLimpio,
+        nombreAjustado: false,
+        verificadoEnAgenda: true,
+        yaExistia: true,
+      };
     }
 
     const nombreUnico = crearNombreUnico(nombreLimpio, contactos.map(nombreVisibleContacto));

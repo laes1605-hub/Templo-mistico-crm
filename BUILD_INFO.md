@@ -1,3 +1,39 @@
+## Build 2026-10-09 (v1.3.4 / APK code 8): consecutivo de nombres y cero duplicados al guardar en el teléfono
+
+**Qué se pidió:** que el contacto se guarde **directo en la agenda del teléfono**
+y que, si ya hay un contacto con el mismo nombre, la app le añada un consecutivo
+(`Marta López 2`, y si ya hay un 2 entonces `Marta López 3`, y así sucesivamente).
+
+**Estado anterior:** el consecutivo ya existía, pero había dos huecos:
+
+1. Si el mismo cliente ya estaba guardado (mismo nombre **y** mismo teléfono),
+   tocar «Guardar en teléfono» otra vez creaba igualmente `Marta López 2`
+   repetida con el mismo número.
+2. Con el **permiso de Contactos denegado**, la app abría en silencio el menú
+   del `.vcf` en vez de explicar por qué no podía guardar directo; si se marcó
+   «no volver a preguntar», Android ni siquiera mostraba el diálogo de permiso
+   y parecía que «no guarda directo».
+
+### Arreglo
+
+- Antes de crear el contacto la APK compara nombre **y** teléfono:
+  - nombre nuevo → se guarda tal cual;
+  - nombre repetido con otro número → consecutivo automático (2, 3, 4…,
+    tomando siempre el más alto que exista, sin reutilizar borrados);
+  - mismo nombre y mismo teléfono → avisa «ya estaba guardado» y no duplica.
+  - mayúsculas y tildes no afectan la comparación (`MARTA LOPEZ` = `Marta López`).
+- Si el permiso de Contactos está denegado, el aviso ahora dice cómo activarlo
+  (Ajustes › Aplicaciones › Templo Místico CRM › Permisos › Contactos) en vez
+  de abrir el menú de importación sin explicación.
+- La APK pasa a **1.3.4 (versionCode 8)** para que Android acepte la actualización.
+- Nueva prueba automática `npm run test:contactos`: simula la agenda Android y
+  verifica los seis casos anteriores con el código real de la app.
+
+### Verificación
+
+- `npm run test:contactos` ✅ (8 escenarios contra una agenda simulada)
+- `npx tsc --noEmit` ✅ · `npm run build` ✅ · `npm run test:tiempo` ✅ (60/60)
+
 ## Build 2026-10-09 (v1.3.3 / APK code 7): reparar «Something went wrong» al guardar contactos
 
 **Síntoma:** al pulsar **Guardar en teléfono**, Android mostraba «Something went wrong».

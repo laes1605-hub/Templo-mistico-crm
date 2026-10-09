@@ -260,24 +260,6 @@ export async function estaContactoGuardadoEnTelefono(telefono: string): Promise<
   );
 }
 
-async function guardarComoVCardDesdeAgenda(
-  nombre: string,
-  telefono: string,
-  nombreAjustado: boolean,
-  sinPermiso = false
-): Promise<GuardarContactoResult> {
-  const respaldo = await guardarContactoEnGoogle(nombre, telefono);
-  return {
-    native: false,
-    fileName: respaldo.fileName,
-    nombreGuardado: respaldo.nombreGuardado,
-    nombreAjustado,
-    verificadoEnAgenda: false,
-    metodo: respaldo.metodo,
-    sinPermiso,
-  };
-}
-
 /**
  * Guarda el contacto directamente en la agenda cuando se ejecuta dentro de la
  * APK Capacitor. Antes de crear el registro compara todos los nombres de la
@@ -301,7 +283,12 @@ export async function guardarContactoEnTelefono(nombre: string, telefono: string
     const { contactos, sinPermiso } = await listarContactosNativos(true);
 
     if (!contactos) {
-      return guardarComoVCardDesdeAgenda(nombreLimpio, telefonoLimpio, false, sinPermiso);
+      if (sinPermiso) {
+        throw new Error(
+          "Para guardar el contacto directo en el teléfono, activa el permiso de Contactos: Ajustes › Aplicaciones › Templo Místico CRM › Permisos › Contactos."
+        );
+      }
+      throw new Error("No se pudo leer la agenda del teléfono. Inténtalo de nuevo.");
     }
 
     // ¿Misma persona ya guardada? (nombre —o su variante numerada— con el
@@ -356,11 +343,10 @@ export async function guardarContactoEnTelefono(nombre: string, telefono: string
       // El plugin anterior oculta la excepción de Android y la muestra como
       // "Something went wrong". En vez de dejar al usuario bloqueado, abrimos
       // el flujo del sistema para importar el vCard.
-      console.warn("No se pudo crear el contacto directamente; se abrirá el respaldo .vcf:", error);
-      return guardarComoVCardDesdeAgenda(
-        nombreUnico.nombre,
-        telefonoLimpio,
-        nombreUnico.ajustado
+      console.warn("No se pudo crear el contacto en la agenda:", error);
+      const detalle = String((error as any)?.message || "").trim();
+      throw new Error(
+        `No se pudo guardar ${nombreUnico.nombre} en la agenda del teléfono${detalle ? ` (${detalle})` : ""}. Revisa que la app tenga el permiso de Contactos y vuelve a intentarlo.`
       );
     }
   }
@@ -369,35 +355,11 @@ export async function guardarContactoEnTelefono(nombre: string, telefono: string
     throw new Error("No se puede crear un contacto desde esta plataforma.");
   }
 
-  const nombreUnico = crearNombreUnico(nombreLimpio, leerNombresWeb());
-  const { vcard, nombreArchivo: fileName } = construirVCard(nombreUnico.nombre, telefonoLimpio);
-  recordarNombreWeb(nombreUnico.nombre);
-
-  // Web/PWA: primero la hoja de compartir (en Android permite elegir Contactos
-  // y el contacto queda guardado en el teléfono). Solo si no existe, se descarga.
-  // Importante: no hay ningún await antes de esta llamada para conservar el gesto
-  // del usuario que navigator.share necesita.
-  const compartido = await compartirVCardWeb(vcard, fileName, `Contacto: ${nombreUnico.nombre}`);
-  if (compartido !== "no_disponible") {
-    return {
-      native: false,
-      fileName,
-      nombreGuardado: nombreUnico.nombre,
-      nombreAjustado: nombreUnico.ajustado,
-      verificadoEnAgenda: false,
-      metodo: "compartir_web",
-    };
-  }
-
-  descargarVCard(vcard, fileName);
-  return {
-    native: false,
-    fileName,
-    nombreGuardado: nombreUnico.nombre,
-    nombreAjustado: nombreUnico.ajustado,
-    verificadoEnAgenda: false,
-    metodo: "descarga",
-  };
+  // El navegador no puede escribir en la agenda del teléfono: no se descarga
+  // ningún archivo. Para guardado directo hace falta la APK Android.
+  throw new Error(
+    "Este navegador no puede guardar contactos directamente en el teléfono. Abre Templo Místico CRM desde la APK instalada en el Android para guardarlo en Contactos."
+  );
 }
 
 /**

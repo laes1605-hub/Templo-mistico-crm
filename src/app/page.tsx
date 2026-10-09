@@ -1065,6 +1065,11 @@ export default function CRMApp() {
       );
       if (resultado.native) {
         setContactoEnTelefono(true);
+        if (resultado.yaExistia) {
+          // Misma persona (mismo nombre y mismo teléfono) ya en la agenda.
+          alert(`Este cliente ya estaba guardado en el teléfono como "${resultado.nombreGuardado}" (${telefono}). No se creó ningún duplicado.`);
+          return;
+        }
         const ajuste = resultado.nombreAjustado
           ? ` Ya existía "${nombre}" en la agenda, por eso se guardó como "${resultado.nombreGuardado}".`
           : "";
@@ -1085,12 +1090,18 @@ export default function CRMApp() {
         const ajuste = resultado.nombreAjustado
           ? ` Se usó el nombre "${resultado.nombreGuardado}" para evitar un duplicado.`
           : "";
-        alert(`Se abrió el menú para guardar ${resultado.fileName || "el contacto.vcf"}. Elige Contactos y confirma Guardar.${ajuste}`);
+        const avisoPermiso = resultado.sinPermiso
+          ? " Para que se guarde directo, activa el permiso de Contactos: Ajustes › Aplicaciones › Templo Místico CRM › Permisos › Contactos."
+          : "";
+        alert(`Se abrió el menú para guardar ${resultado.fileName || "el contacto.vcf"}. Elige Contactos y confirma Guardar.${ajuste}${avisoPermiso}`);
       } else {
         const ajuste = resultado.nombreAjustado
           ? ` El CRM lo nombró "${resultado.nombreGuardado}" para no repetir una exportación anterior.`
           : "";
-        alert(`Se descargó ${resultado.fileName || "el contacto.vcf"}. Ábrelo en el teléfono para añadirlo a Contactos.${ajuste}`);
+        const avisoPermiso = resultado.sinPermiso
+          ? " Para que se guarde directo, activa el permiso de Contactos: Ajustes › Aplicaciones › Templo Místico CRM › Permisos › Contactos."
+          : "";
+        alert(`Se descargó ${resultado.fileName || "el contacto.vcf"}. Ábrelo en el teléfono para añadirlo a Contactos.${ajuste}${avisoPermiso}`);
       }
     } catch (e: any) {
       console.error("Error guardando contacto:", e);

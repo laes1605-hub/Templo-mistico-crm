@@ -1,6 +1,6 @@
 {
   "name": "templo-mistico-crm",
-  "version": "1.3.3",
+  "version": "1.3.4",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -23,6 +23,7 @@
     "test:sql-triggers": "node scripts/prueba-migraciones-triggers.mjs",
     "simular:recordatorios": "node scripts/simular-recordatorios.mjs",
     "test:tiempo": "node scripts/prueba-tiempo-chat.mjs",
+    "test:contactos": "sucrase-node scripts/prueba-contacto-telefono.ts",
     "test:eliminar": "sucrase-node scripts/prueba-eliminar-cliente.ts",
     "test:eliminar:sql": "node scripts/prueba-eliminar-cliente-sql.mjs",
     "test:rr-storage": "node --conditions=import scripts/prueba-respuestas-rapidas-storage.mjs",

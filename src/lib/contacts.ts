@@ -371,9 +371,25 @@ export async function guardarContactoEnTelefono(nombre: string, telefono: string
 
   const nombreUnico = crearNombreUnico(nombreLimpio, leerNombresWeb());
   const { vcard, nombreArchivo: fileName } = construirVCard(nombreUnico.nombre, telefonoLimpio);
-  descargarVCard(vcard, fileName);
   recordarNombreWeb(nombreUnico.nombre);
 
+  // Web/PWA: primero la hoja de compartir (en Android permite elegir Contactos
+  // y el contacto queda guardado en el teléfono). Solo si no existe, se descarga.
+  // Importante: no hay ningún await antes de esta llamada para conservar el gesto
+  // del usuario que navigator.share necesita.
+  const compartido = await compartirVCardWeb(vcard, fileName, `Contacto: ${nombreUnico.nombre}`);
+  if (compartido !== "no_disponible") {
+    return {
+      native: false,
+      fileName,
+      nombreGuardado: nombreUnico.nombre,
+      nombreAjustado: nombreUnico.ajustado,
+      verificadoEnAgenda: false,
+      metodo: "compartir_web",
+    };
+  }
+
+  descargarVCard(vcard, fileName);
   return {
     native: false,
     fileName,
@@ -382,6 +398,30 @@ export async function guardarContactoEnTelefono(nombre: string, telefono: string
     verificadoEnAgenda: false,
     metodo: "descarga",
   };
+}
+
+/**
+ * Abre la hoja de compartir del navegador con el .vcf. Devuelve "no_disponible"
+ * si el navegador no puede compartir archivos (entonces se usa la descarga).
+ */
+async function compartirVCardWeb(
+  vcard: string,
+  fileName: string,
+  titulo: string
+): Promise<"compartido" | "cancelado" | "no_disponible"> {
+  if (typeof navigator === "undefined" || typeof navigator.canShare !== "function" || typeof File === "undefined") {
+    return "no_disponible";
+  }
+  try {
+    const file = new File([new Blob([vcard], { type: "text/vcard" })], fileName, { type: "text/vcard" });
+    if (!navigator.canShare({ files: [file] })) return "no_disponible";
+    await navigator.share({ files: [file], title: titulo });
+    return "compartido";
+  } catch (e: any) {
+    if (esCancelacion(e)) return "cancelado";
+    console.warn("La hoja de compartir del navegador falló:", e);
+    return "no_disponible";
+  }
 }
 
 /**
@@ -438,19 +478,9 @@ export async function guardarContactoEnGoogle(nombre: string, telefono: string):
   }
 
   // 2) Navegador con hoja de compartir (permite elegir Contactos/Google).
-  if (typeof navigator !== "undefined" && typeof navigator.canShare === "function" && typeof File !== "undefined") {
-    try {
-      const file = new File([new Blob([vcard], { type: "text/vcard" })], fileName, { type: "text/vcard" });
-      if (navigator.canShare({ files: [file] })) {
-        await navigator.share({ files: [file], title: titulo });
-        return { metodo: "compartir_web", fileName, nombreGuardado: nombreLimpio, telefono: telefonoLimpio };
-      }
-    } catch (e: any) {
-      if (esCancelacion(e)) {
-        return { metodo: "compartir_web", fileName, nombreGuardado: nombreLimpio, telefono: telefonoLimpio };
-      }
-      console.warn("La hoja de compartir del navegador falló:", e);
-    }
+  const compartido = await compartirVCardWeb(vcard, fileName, titulo);
+  if (compartido !== "no_disponible") {
+    return { metodo: "compartir_web", fileName, nombreGuardado: nombreLimpio, telefono: telefonoLimpio };
   }
 
   // 3) Respaldo: descarga del .vcf.

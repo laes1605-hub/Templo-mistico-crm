@@ -27,6 +27,7 @@ let agenda: ContactoAgenda[] = [];
 let proximoId = 1;
 let permiso: string = "granted";
 let errorDeContactSaver: Error | null = null;
+let huboArchivo = false;
 
 function nombreVisible(c: ContactoAgenda): string {
   return [c.dado, c.familia].filter(Boolean).join(" ");
@@ -93,8 +94,8 @@ function crearAgendaInicial(nombres: string[], telefonos?: string[]) {
     return { contactId: id };
   }
   // Respaldo .vcf: escribir el archivo y "compartirlo" con el sistema.
-  if (plugin === "Filesystem" && metodo === "writeFile") return { uri: "file:///tmp/" + args.path };
-  if (plugin === "Share" && metodo === "share") return {};
+  if (plugin === "Filesystem" && metodo === "writeFile") { huboArchivo = true; return { uri: "file:///tmp/" + args.path }; }
+  if (plugin === "Share" && metodo === "share") { huboArchivo = true; return {}; }
   throw new Error(`Puerto falso: ${plugin}.${metodo} no simulado`);
 };
 // La APK tiene el plugin propio ContactSaver compilado dentro.
@@ -155,20 +156,23 @@ async function main() {
   ok(r.yaExistia === true && r.native === true, `detecta que ya estaba guardado (yaExistia=${(r as any).yaExistia})`);
   ok(agenda.length === 1, "la agenda NO queda con un contacto repetido");
 
-  // 7) Permiso de contactos denegado: la app lo explica en vez de fallar en silencio.
+  // 7) Permiso de contactos denegado: avisa cómo activarlo, sin exportar archivo.
   agenda = [];
   permiso = "denied";
   errorDeContactSaver = null;
-  r = await guardarContactoEnTelefono("Marta López", "+56977777777");
-  ok(r.native === false, "sin permiso no escribe directo (native=false)");
-  ok((r as any).sinPermiso === true, "avisa que falta el permiso de Contactos (sinPermiso=true)");
+  let error7: any = null;
+  try { await guardarContactoEnTelefono("Marta López", "+56977777777"); } catch (e) { error7 = e; }
+  ok(error7 !== null && /permiso de Contactos/.test(String(error7?.message)), "sin permiso avisa cómo activar Contactos");
+  ok(agenda.length === 0, "sin permiso no crea nada en la agenda");
 
-  // 8) ContactSaver falla (proveedor Android rechaza el lote): respaldo .vcf.
+  // 8) ContactSaver falla: error claro, sin respaldo .vcf.
   permiso = "granted";
   errorDeContactSaver = new Error("CONTACT_SAVE_FAILED");
   crearAgendaInicial(["Pedro Castro"], []);
-  r = await guardarContactoEnTelefono("Marta López", "+56988888888");
-  ok(r.native === false && r.metodo !== undefined, `respaldo vCard activado (metodo=${(r as any).metodo})`);
+  let error8: any = null;
+  try { await guardarContactoEnTelefono("Marta López", "+56988888888"); } catch (e) { error8 = e; }
+  ok(error8 !== null && /No se pudo guardar/.test(String(error8?.message)), "fallo de inserción muestra el motivo");
+  ok(!huboArchivo, "no se genera ningún archivo .vcf");
 
   console.log("\n" + (fallos === 0 ? "✅ TODO OK" : `❌ ${fallos} comprobaciones fallaron`));
   process.exit(fallos === 0 ? 0 : 1);

@@ -260,24 +260,6 @@ export async function estaContactoGuardadoEnTelefono(telefono: string): Promise<
   );
 }
 
-async function guardarComoVCardDesdeAgenda(
-  nombre: string,
-  telefono: string,
-  nombreAjustado: boolean,
-  sinPermiso = false
-): Promise<GuardarContactoResult> {
-  const respaldo = await guardarContactoEnGoogle(nombre, telefono);
-  return {
-    native: false,
-    fileName: respaldo.fileName,
-    nombreGuardado: respaldo.nombreGuardado,
-    nombreAjustado,
-    verificadoEnAgenda: false,
-    metodo: respaldo.metodo,
-    sinPermiso,
-  };
-}
-
 /**
  * Guarda el contacto directamente en la agenda cuando se ejecuta dentro de la
  * APK Capacitor. Antes de crear el registro compara todos los nombres de la
@@ -301,7 +283,12 @@ export async function guardarContactoEnTelefono(nombre: string, telefono: string
     const { contactos, sinPermiso } = await listarContactosNativos(true);
 
     if (!contactos) {
-      return guardarComoVCardDesdeAgenda(nombreLimpio, telefonoLimpio, false, sinPermiso);
+      if (sinPermiso) {
+        throw new Error(
+          "Para guardar el contacto directo en el teléfono, activa el permiso de Contactos: Ajustes › Aplicaciones › Templo Místico CRM › Permisos › Contactos."
+        );
+      }
+      throw new Error("No se pudo leer la agenda del teléfono. Inténtalo de nuevo.");
     }
 
     // ¿Misma persona ya guardada? (nombre —o su variante numerada— con el
@@ -356,11 +343,10 @@ export async function guardarContactoEnTelefono(nombre: string, telefono: string
       // El plugin anterior oculta la excepción de Android y la muestra como
       // "Something went wrong". En vez de dejar al usuario bloqueado, abrimos
       // el flujo del sistema para importar el vCard.
-      console.warn("No se pudo crear el contacto directamente; se abrirá el respaldo .vcf:", error);
-      return guardarComoVCardDesdeAgenda(
-        nombreUnico.nombre,
-        telefonoLimpio,
-        nombreUnico.ajustado
+      console.warn("No se pudo crear el contacto en la agenda:", error);
+      const detalle = String((error as any)?.message || "").trim();
+      throw new Error(
+        `No se pudo guardar ${nombreUnico.nombre} en la agenda del teléfono${detalle ? ` (${detalle})` : ""}. Revisa que la app tenga el permiso de Contactos y vuelve a intentarlo.`
       );
     }
   }
@@ -369,19 +355,35 @@ export async function guardarContactoEnTelefono(nombre: string, telefono: string
     throw new Error("No se puede crear un contacto desde esta plataforma.");
   }
 
-  const nombreUnico = crearNombreUnico(nombreLimpio, leerNombresWeb());
-  const { vcard, nombreArchivo: fileName } = construirVCard(nombreUnico.nombre, telefonoLimpio);
-  descargarVCard(vcard, fileName);
-  recordarNombreWeb(nombreUnico.nombre);
+  // El navegador no puede escribir en la agenda del teléfono: no se descarga
+  // ningún archivo. Para guardado directo hace falta la APK Android.
+  throw new Error(
+    "Este navegador no puede guardar contactos directamente en el teléfono. Abre Templo Místico CRM desde la APK instalada en el Android para guardarlo en Contactos."
+  );
+}
 
-  return {
-    native: false,
-    fileName,
-    nombreGuardado: nombreUnico.nombre,
-    nombreAjustado: nombreUnico.ajustado,
-    verificadoEnAgenda: false,
-    metodo: "descarga",
-  };
+/**
+ * Abre la hoja de compartir del navegador con el .vcf. Devuelve "no_disponible"
+ * si el navegador no puede compartir archivos (entonces se usa la descarga).
+ */
+async function compartirVCardWeb(
+  vcard: string,
+  fileName: string,
+  titulo: string
+): Promise<"compartido" | "cancelado" | "no_disponible"> {
+  if (typeof navigator === "undefined" || typeof navigator.canShare !== "function" || typeof File === "undefined") {
+    return "no_disponible";
+  }
+  try {
+    const file = new File([new Blob([vcard], { type: "text/vcard" })], fileName, { type: "text/vcard" });
+    if (!navigator.canShare({ files: [file] })) return "no_disponible";
+    await navigator.share({ files: [file], title: titulo });
+    return "compartido";
+  } catch (e: any) {
+    if (esCancelacion(e)) return "cancelado";
+    console.warn("La hoja de compartir del navegador falló:", e);
+    return "no_disponible";
+  }
 }
 
 /**
@@ -438,19 +440,9 @@ export async function guardarContactoEnGoogle(nombre: string, telefono: string):
   }
 
   // 2) Navegador con hoja de compartir (permite elegir Contactos/Google).
-  if (typeof navigator !== "undefined" && typeof navigator.canShare === "function" && typeof File !== "undefined") {
-    try {
-      const file = new File([new Blob([vcard], { type: "text/vcard" })], fileName, { type: "text/vcard" });
-      if (navigator.canShare({ files: [file] })) {
-        await navigator.share({ files: [file], title: titulo });
-        return { metodo: "compartir_web", fileName, nombreGuardado: nombreLimpio, telefono: telefonoLimpio };
-      }
-    } catch (e: any) {
-      if (esCancelacion(e)) {
-        return { metodo: "compartir_web", fileName, nombreGuardado: nombreLimpio, telefono: telefonoLimpio };
-      }
-      console.warn("La hoja de compartir del navegador falló:", e);
-    }
+  const compartido = await compartirVCardWeb(vcard, fileName, titulo);
+  if (compartido !== "no_disponible") {
+    return { metodo: "compartir_web", fileName, nombreGuardado: nombreLimpio, telefono: telefonoLimpio };
   }
 
   // 3) Respaldo: descarga del .vcf.

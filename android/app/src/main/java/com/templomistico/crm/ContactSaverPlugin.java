@@ -5,9 +5,11 @@ import android.content.ContentProviderOperation;
 import android.content.ContentProviderResult;
 import android.content.ContentUris;
 import android.database.Cursor;
+import android.net.Uri;
 import android.provider.ContactsContract;
 import android.provider.ContactsContract.CommonDataKinds.Phone;
 import android.provider.ContactsContract.CommonDataKinds.StructuredName;
+import android.provider.ContactsContract.PhoneLookup;
 import android.provider.ContactsContract.RawContacts;
 
 import com.getcapacitor.JSObject;
@@ -49,6 +51,56 @@ public class ContactSaverPlugin extends Plugin {
         saveContact(call);
     }
 
+    /**
+     * Busca un número en la agenda y dice qué contacto lo tiene.
+     *
+     * Usa PhoneLookup, que es la misma consulta con la que Android resuelve una
+     * llamada entrante: encuentra el número aunque la agenda lo guarde sin el
+     * +indicativo o con espacios. No pide permiso: si no está concedido,
+     * contesta found=false sin abrir ningún diálogo.
+     */
+    @PluginMethod
+    public void findByPhone(PluginCall call) {
+        JSObject result = new JSObject();
+        String phoneNumber = clean(call.getString("phoneNumber", ""));
+
+        if (phoneNumber.isEmpty() || getPermissionState("contacts") != PermissionState.GRANTED) {
+            result.put("found", false);
+            result.put("permitted", getPermissionState("contacts") == PermissionState.GRANTED);
+            call.resolve(result);
+            return;
+        }
+
+        try {
+            ContactoExistente existente = buscarPorNumero(phoneNumber);
+            if (existente == null) {
+                result.put("found", false);
+                result.put("permitted", true);
+                call.resolve(result);
+                return;
+            }
+
+            result.put("found", true);
+            result.put("permitted", true);
+            result.put("contactId", existente.contactId);
+            result.put("displayName", existente.displayName);
+            String[] cuenta = cuentaDelContacto(existente.contactId);
+            if (cuenta != null) {
+                result.put("accountType", cuenta[0]);
+                result.put("accountName", cuenta[1]);
+            }
+            call.resolve(result);
+        } catch (SecurityException error) {
+            Logger.error(TAG, "Android denegó la lectura de la agenda", error);
+            result.put("found", false);
+            result.put("permitted", false);
+            call.resolve(result);
+        } catch (Exception error) {
+            Logger.error(TAG, "No se pudo buscar el número en la agenda", error);
+            call.reject("Android no permitió buscar en la agenda: " + error.getMessage(), "CONTACT_LOOKUP_FAILED", error);
+        }
+    }
+
     @PermissionCallback
     private void contactsPermissionCallback(PluginCall call) {
         if (getPermissionState("contacts") != PermissionState.GRANTED) {
@@ -75,6 +127,21 @@ public class ContactSaverPlugin extends Plugin {
             String displayName = (givenName + " " + familyName).trim();
             if (displayName.isEmpty()) {
                 displayName = phoneNumber;
+            }
+
+            // El número manda: si ya está en la agenda (con el nombre que sea) no
+            // se inserta otra ficha. Android fusiona los contactos que comparten
+            // número, así que la segunda ficha no llegaría a verse y la app
+            // daría por guardado un nombre que la agenda nunca muestra.
+            ContactoExistente previo = buscarPorNumero(phoneNumber);
+            if (previo != null) {
+                JSObject existente = new JSObject();
+                existente.put("contactId", previo.contactId);
+                existente.put("yaExistia", true);
+                existente.put("nombreExistente", previo.displayName);
+                existente.put("verificado", true);
+                call.resolve(existente);
+                return;
             }
 
             ContentProviderResult[] results = applyInsertBatch(
@@ -122,10 +189,26 @@ public class ContactSaverPlugin extends Plugin {
             long rawContactId = ContentUris.parseId(results[0].uri);
             String contactId = findContactId(rawContactId);
 
+            // Verificación real: el lote puede aceptar la inserción y que la fila
+            // no quede consultable (cuenta local rechazada, proveedor saturado…).
+            // Sólo se confirma el guardado si el número ya se resuelve en la
+            // agenda; si no, se informa el fallo en vez de celebrar de más.
+            ContactoExistente guardado = buscarPorNumero(phoneNumber);
+            if (guardado == null) {
+                Logger.error(TAG, "La agenda aceptó la inserción pero el número no quedó guardado: " + phoneNumber, null);
+                call.reject(
+                    "Android aceptó la inserción, pero el contacto no aparece en la agenda.",
+                    "CONTACT_SAVE_FAILED"
+                );
+                return;
+            }
+
             JSObject result = new JSObject();
-            // El ID agregado puede tardar en estar disponible en algunas agendas.
-            // En ese caso devolvemos el ID raw; la UI sólo necesita confirmar el guardado.
-            result.put("contactId", contactId != null ? contactId : String.valueOf(rawContactId));
+            // Preferimos el ID agregado que devuelve la propia agenda; si todavía
+            // no está disponible usamos el que se obtuvo al comprobar el número.
+            result.put("contactId", contactId != null ? contactId : guardado.contactId);
+            result.put("verificado", true);
+            result.put("nombreExistente", guardado.displayName);
             call.resolve(result);
         } catch (SecurityException error) {
             Logger.error(TAG, "Android denegó el acceso a la agenda", error);
@@ -237,6 +320,115 @@ public class ContactSaverPlugin extends Plugin {
             }
         }
         return fallback;
+    }
+
+    /** Contacto de la agenda que ya tiene un número determinado. */
+    private static final class ContactoExistente {
+
+        final String contactId;
+        final String displayName;
+
+        ContactoExistente(String contactId, String displayName) {
+            this.contactId = contactId;
+            this.displayName = displayName;
+        }
+    }
+
+    /**
+     * Resuelve un número con PhoneLookup, la misma consulta con la que Android
+     * identifica una llamada entrante: acepta el número con o sin +indicativo y
+     * con los espacios o guiones que la agenda haya guardado.
+     *
+     * Devuelve null cuando ningún contacto tiene ese número.
+     */
+    private ContactoExistente buscarPorNumero(String phoneNumber) {
+        String digitos = phoneNumber.replaceAll("\\D", "");
+        ArrayList<String> candidatos = new ArrayList<>();
+        if (!digitos.isEmpty()) {
+            candidatos.add("+" + digitos);
+            candidatos.add(digitos);
+        }
+        if (!phoneNumber.isEmpty() && !candidatos.contains(phoneNumber)) {
+            candidatos.add(phoneNumber);
+        }
+
+        for (String candidato : candidatos) {
+            Cursor cursor = null;
+            try {
+                cursor = getContext().getContentResolver().query(
+                    Uri.withAppendedPath(PhoneLookup.CONTENT_FILTER_URI, Uri.encode(candidato)),
+                    new String[] { PhoneLookup._ID, PhoneLookup.DISPLAY_NAME },
+                    null,
+                    null,
+                    null
+                );
+                String primerId = null;
+                while (cursor != null && cursor.moveToNext()) {
+                    String id = clean(cursor.getString(0));
+                    String nombre = clean(cursor.getString(1));
+                    if (id.isEmpty()) {
+                        continue;
+                    }
+                    // Se prefiere la ficha con nombre: un contacto sin nombre no
+                    // explica nada al operador en el aviso del CRM.
+                    if (!nombre.isEmpty()) {
+                        return new ContactoExistente(id, nombre);
+                    }
+                    if (primerId == null) {
+                        primerId = id;
+                    }
+                }
+                if (primerId != null) {
+                    return new ContactoExistente(primerId, "");
+                }
+            } catch (IllegalArgumentException error) {
+                // PhoneLookup rechaza un filtro vacío o mal formado: se prueba el
+                // siguiente formato del número.
+                Logger.warn(TAG, "PhoneLookup rechazó el formato «" + candidato + "»: " + error.getMessage());
+            } finally {
+                if (cursor != null) {
+                    cursor.close();
+                }
+            }
+        }
+        return null;
+    }
+
+    /** Cuenta (Google, teléfono, SIM…) donde vive el contacto. Sólo informativo. */
+    private String[] cuentaDelContacto(String contactId) {
+        if (contactId == null || contactId.isEmpty()) {
+            return null;
+        }
+        Cursor cursor = null;
+        String[] respaldo = null;
+        try {
+            cursor = getContext().getContentResolver().query(
+                RawContacts.CONTENT_URI,
+                new String[] { RawContacts.ACCOUNT_TYPE, RawContacts.ACCOUNT_NAME },
+                RawContacts.CONTACT_ID + " = ? AND " + RawContacts.DELETED + " = 0",
+                new String[] { contactId },
+                null
+            );
+            while (cursor != null && cursor.moveToNext()) {
+                String tipo = clean(cursor.getString(0));
+                String nombre = clean(cursor.getString(1));
+                if (tipo.isEmpty()) {
+                    continue;
+                }
+                if ("com.google".equals(tipo)) {
+                    return new String[] { tipo, nombre };
+                }
+                if (respaldo == null) {
+                    respaldo = new String[] { tipo, nombre };
+                }
+            }
+        } catch (Exception ignored) {
+        } finally {
+            if (cursor != null) {
+                cursor.close();
+            }
+        }
+        return respaldo;
     }
 
     private String findContactId(long rawContactId) {

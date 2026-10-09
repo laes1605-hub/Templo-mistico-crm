@@ -1066,14 +1066,22 @@ export default function CRMApp() {
       if (resultado.native) {
         setContactoEnTelefono(true);
         if (resultado.yaExistia) {
-          // Misma persona (mismo nombre y mismo teléfono) ya en la agenda.
-          alert(`Este cliente ya estaba guardado en el teléfono como "${resultado.nombreGuardado}" (${telefono}). No se creó ningún duplicado.`);
+          // El NÚMERO ya estaba en la agenda (con ese nombre o con otro). No se
+          // crea nada: Android fusiona las fichas que comparten número, así que
+          // un segundo contacto no llegaría a verse.
+          const otroNombre = resultado.nombreSolicitado
+            ? ` El CRM lo llama "${resultado.nombreSolicitado}"; para verlo así, cambia el nombre en la app Contactos.`
+            : "";
+          alert(`Este número ya está guardado en el teléfono como "${resultado.nombreGuardado}" (${telefono}). No se creó ningún duplicado.${otroNombre}`);
           return;
         }
-        const ajuste = resultado.nombreAjustado
-          ? ` Ya existía "${nombre}" en la agenda, por eso se guardó como "${resultado.nombreGuardado}".`
-          : "";
-        alert(`Contacto guardado en el teléfono: ${resultado.nombreGuardado} (${telefono}).${ajuste}`);
+        // Aquí sólo se llega si la agenda devolvió el número tras escribirlo.
+        const ajuste = resultado.nombreSolicitado
+          ? ` La agenda lo muestra como "${resultado.nombreGuardado}" en vez de "${resultado.nombreSolicitado}".`
+          : resultado.nombreAjustado
+            ? ` Ya existía "${nombre}" en la agenda, por eso se guardó como "${resultado.nombreGuardado}".`
+            : "";
+        alert(`Contacto guardado en el teléfono: "${resultado.nombreGuardado}" (${telefono}).${ajuste}`);
       } else if (resultado.metodo !== "descarga") {
         // Al volver de Contactos comprobamos si el usuario confirmó la importación.
         if (resultado.metodo === "compartir_nativo") {

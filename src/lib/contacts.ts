@@ -1,9 +1,19 @@
 "use client";
 
-import { Capacitor } from "@capacitor/core";
+import { Capacitor, registerPlugin } from "@capacitor/core";
 import { Contacts, PhoneType, type ContactPayload } from "@capacitor-community/contacts";
 
 const WEB_CONTACT_NAMES_KEY = "tm_contact_names_v1";
+
+type ContactSaverPlugin = {
+  createContact(options: {
+    givenName: string;
+    familyName: string;
+    phoneNumber: string;
+  }): Promise<{ contactId: string }>;
+};
+
+const ContactSaver = registerPlugin<ContactSaverPlugin>("ContactSaver");
 
 export interface GuardarContactoResult {
   /** true cuando se creó directamente en la agenda nativa del teléfono. */
@@ -16,6 +26,8 @@ export interface GuardarContactoResult {
   nombreAjustado: boolean;
   /** La agenda real solo se puede consultar desde la APK; web usa su historial local. */
   verificadoEnAgenda: boolean;
+  /** Método de respaldo cuando la agenda Android no acepta la inserción directa. */
+  metodo?: ViaGuardadoGoogle;
 }
 
 /** Cómo terminó el envío del contacto hacia la cuenta de Google. */
@@ -226,6 +238,22 @@ export async function estaContactoGuardadoEnTelefono(telefono: string): Promise<
   );
 }
 
+async function guardarComoVCardDesdeAgenda(
+  nombre: string,
+  telefono: string,
+  nombreAjustado: boolean
+): Promise<GuardarContactoResult> {
+  const respaldo = await guardarContactoEnGoogle(nombre, telefono);
+  return {
+    native: false,
+    fileName: respaldo.fileName,
+    nombreGuardado: respaldo.nombreGuardado,
+    nombreAjustado,
+    verificadoEnAgenda: false,
+    metodo: respaldo.metodo,
+  };
+}
+
 /**
  * Guarda el contacto directamente en la agenda cuando se ejecuta dentro de la
  * APK Capacitor. Antes de crear el registro compara todos los nombres de la
@@ -239,27 +267,60 @@ export async function guardarContactoEnTelefono(nombre: string, telefono: string
   if (!telefonoLimpio) throw new Error("El cliente no tiene un número de teléfono válido.");
 
   if (esPlataformaNativa()) {
-    const contactos = await listarContactosNativos(true);
+    let contactos: ContactPayload[] | null = null;
+    try {
+      contactos = await listarContactosNativos(true);
+    } catch (error) {
+      // Si el proveedor de contactos no responde, todavía podemos entregar un
+      // vCard al sistema para que Contactos lo importe manualmente.
+      console.warn("No se pudo consultar la agenda; se usará el contacto .vcf:", error);
+    }
+
     if (!contactos) {
-      throw new Error("Permiso denegado para guardar contactos. Actívalo en los ajustes del teléfono.");
+      return guardarComoVCardDesdeAgenda(nombreLimpio, telefonoLimpio, false);
     }
 
     const nombreUnico = crearNombreUnico(nombreLimpio, contactos.map(nombreVisibleContacto));
     const { dado, familia } = separarNombre(nombreUnico.nombre);
-    const result = await Contacts.createContact({
-      contact: {
-        name: { given: dado, family: familia },
-        phones: [{ type: PhoneType.Mobile, number: telefonoLimpio, isPrimary: true }],
-      },
-    });
 
-    return {
-      native: true,
-      contactId: result.contactId,
-      nombreGuardado: nombreUnico.nombre,
-      nombreAjustado: nombreUnico.ajustado,
-      verificadoEnAgenda: true,
-    };
+    try {
+      let result: { contactId: string };
+      if (Capacitor.getPlatform() === "android" && Capacitor.isPluginAvailable("ContactSaver")) {
+        // Plugin propio: crea sólo nombre + teléfono y evita las filas vacías de
+        // organización/fecha/nota que provocan el error genérico del plugin externo.
+        result = await ContactSaver.createContact({
+          givenName: dado,
+          familyName: familia || "",
+          phoneNumber: telefonoLimpio,
+        });
+      } else {
+        // iOS y APKs Android anteriores que aún no incluyen ContactSaver.
+        result = await Contacts.createContact({
+          contact: {
+            name: { given: dado, family: familia },
+            phones: [{ type: PhoneType.Mobile, number: telefonoLimpio, isPrimary: true }],
+          },
+        });
+      }
+
+      return {
+        native: true,
+        contactId: result.contactId,
+        nombreGuardado: nombreUnico.nombre,
+        nombreAjustado: nombreUnico.ajustado,
+        verificadoEnAgenda: true,
+      };
+    } catch (error) {
+      // El plugin anterior oculta la excepción de Android y la muestra como
+      // "Something went wrong". En vez de dejar al usuario bloqueado, abrimos
+      // el flujo del sistema para importar el vCard.
+      console.warn("No se pudo crear el contacto directamente; se abrirá el respaldo .vcf:", error);
+      return guardarComoVCardDesdeAgenda(
+        nombreUnico.nombre,
+        telefonoLimpio,
+        nombreUnico.ajustado
+      );
+    }
   }
 
   if (typeof window === "undefined" || typeof document === "undefined" || typeof URL === "undefined") {
@@ -277,6 +338,7 @@ export async function guardarContactoEnTelefono(nombre: string, telefono: string
     nombreGuardado: nombreUnico.nombre,
     nombreAjustado: nombreUnico.ajustado,
     verificadoEnAgenda: false,
+    metodo: "descarga",
   };
 }
 

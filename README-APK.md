@@ -2,6 +2,25 @@
 
 Este proyecto ya está preparado para convertirse en APK usando **Capacitor**.
 
+## ✅ Actualización APK 1.3.3 — Guardado de contactos Android
+
+La versión está configurada como:
+
+- `versionName`: **1.3.3**
+- `versionCode`: **7**
+- `appId`: `com.templomistico.crm`
+- `compileSdk` / `targetSdk`: **36**
+- Java requerido: **JDK 21**
+
+El guardado directo usa ahora un plugin nativo propio que inserta únicamente el
+nombre y el teléfono. Así evita las filas vacías que algunos proveedores de
+Contactos Android rechazaban y que aparecían como **“Something went wrong”**.
+Si el teléfono no permite la inserción directa, la app abre el menú para guardar
+el `.vcf` con Contactos.
+
+> Para usar el guardado directo, instala la APK **1.3.3**. La pantalla también
+> conserva un respaldo para importar el contacto desde el menú del teléfono.
+
 ## ✅ Actualización APK 1.3.2 — Barra de estado uniforme
 
 La versión está configurada como:
@@ -22,20 +41,10 @@ La versión está configurada como:
 - Requiere que Vercel haya desplegado este commit (la APK carga la web de
   Vercel): el cambio combina código web (`viewport-fit=cover` + safe areas) y
   código nativo (`StatusBarThemePlugin`).
-- **Build automático (activación en 1 minuto):** el workflow `Build APK`
-  (`ci/build-apk.yml`) compila la APK en cada push y la deja en
-  `apk/templo-mistico-crm-debug.apk` + artefacto descargable. **Nunca se
-  ejecutó** porque estaba en `ci/`: GitHub sólo lee workflows desde
-  `.github/workflows/`, y la credencial del agente de Arena no puede crear
-  archivos ahí (GitHub lo bloquea para las GitHub Apps sin permiso
-  `workflows`). Para activarlo, copia el archivo una sola vez (las
-  instrucciones exactas están al inicio de `ci/build-apk.yml`):
-  1. En github.com → este repo → **Add file → Create new file**.
-  2. Nombre exacto: `.github/workflows/build-apk.yml`.
-  3. Pega el contenido completo de `ci/build-apk.yml` y haz commit.
-  A partir de ese momento todo push a `main` o a una rama `arena/**`
-  genera su APK automáticamente (también en **Actions → Build APK → Run
-  workflow** para lanzarlo a mano).
+- **Build automático:** el workflow `.github/workflows/build-apk.yml` compila
+  la APK en cada push a `main` o a una rama `arena/**` y la publica como
+  `apk/templo-mistico-crm-debug.apk` y como artefacto descargable de GitHub
+  Actions. También se puede lanzar desde **Actions → Build APK → Run workflow**.
 
 ## ✅ Actualización APK 1.3.1 — Android Studio
 

@@ -29,7 +29,15 @@ let permiso: string = "granted";
 let errorDeContactSaver: Error | null = null;
 let errorDeContactsCreate: Error | null = null;
 let errorDeGetContacts: Error | null = null;
+let errorDeFindByPhone: Error | null = null;
 let contactSaverDisponible = true;
+/** Simula una APK antigua: el plugin existe pero no tiene findByPhone. */
+let findByPhoneImplementado = true;
+/** La APK responde sin haber buscado porque no tiene el permiso de Contactos. */
+let findByPhoneSinPermiso = false;
+/** El plugin responde «guardado» pero la agenda no recibe la fila (guardado fantasma). */
+let insercionFantasma = false;
+let llamadasFindByPhone = 0;
 let huboArchivo = false;
 
 function nombreVisible(c: ContactoAgenda): string {
@@ -62,7 +70,13 @@ function crearAgendaInicial(nombres: string[], telefonos?: string[]) {
       { name: "createContact", rtype: "promise" },
     ],
   },
-  { name: "ContactSaver", methods: [{ name: "createContact", rtype: "promise" }] },
+  {
+    name: "ContactSaver",
+    methods: [
+      { name: "createContact", rtype: "promise" },
+      { name: "findByPhone", rtype: "promise" },
+    ],
+  },
   { name: "Filesystem", methods: [{ name: "writeFile", rtype: "promise" }] },
   { name: "Share", methods: [{ name: "share", rtype: "promise" }] },
 ];
@@ -113,13 +127,45 @@ function crearAgendaInicial(nombres: string[], telefonos?: string[]) {
   if (plugin === "ContactSaver" && metodo === "createContact") {
     if (errorDeContactSaver) throw errorDeContactSaver;
     const id = String(proximoId++);
-    agenda.push({
-      id,
-      dado: String(args.givenName || ""),
-      familia: String(args.familyName || ""),
-      telefono: String(args.phoneNumber || ""),
+    // Guardado fantasma: Android contesta con URI/ID pero la fila no queda en la
+    // agenda (cuenta local oculta, proveedor que descarta el lote, etc.).
+    if (!insercionFantasma) {
+      agenda.push({
+        id,
+        dado: String(args.givenName || ""),
+        familia: String(args.familyName || ""),
+        telefono: String(args.phoneNumber || ""),
+      });
+    }
+    return { contactId: id, verificado: !insercionFantasma };
+  }
+  // PhoneLookup nativo: resuelve un número aunque esté guardado en otro formato.
+  if (plugin === "ContactSaver" && metodo === "findByPhone") {
+    llamadasFindByPhone += 1;
+    if (!findByPhoneImplementado) {
+      throw new Error("ContactSaver.findByPhone is not implemented on android");
+    }
+    // La APK contesta sin haber buscado cuando le falta el permiso de Contactos.
+    if (findByPhoneSinPermiso) {
+      return { found: false, permitted: false };
+    }
+    if (errorDeFindByPhone) throw errorDeFindByPhone;
+    const soloDigitos = (valor: string) => String(valor || "").replace(/\D/g, "");
+    const buscado = soloDigitos(args?.phoneNumber || "");
+    const coincide = agenda.find((c) => {
+      const guardado = soloDigitos(c.telefono);
+      if (!buscado || !guardado) return false;
+      if (guardado === buscado) return true;
+      return Math.min(guardado.length, buscado.length) >= 8 && (guardado.endsWith(buscado) || buscado.endsWith(guardado));
     });
-    return { contactId: id };
+    if (!coincide) return { found: false };
+    return {
+      found: true,
+      contactId: coincide.id,
+      displayName: nombreVisible(coincide),
+      accountType: "com.google",
+      accountName: "operador@gmail.com",
+    };
   }
   // Respaldo .vcf: escribir el archivo y "compartirlo" con el sistema.
   if (plugin === "Filesystem" && metodo === "writeFile") { huboArchivo = true; return { uri: "file:///tmp/" + args.path }; }
@@ -130,7 +176,7 @@ function crearAgendaInicial(nombres: string[], telefonos?: string[]) {
 (Capacitor as any).isPluginAvailable = (nombre: string) =>
   nombre === "ContactSaver" ? contactSaverDisponible : false;
 
-const { guardarContactoEnTelefono } = require("../src/lib/contacts.ts");
+const { guardarContactoEnTelefono, buscarContactoPorTelefono } = require("../src/lib/contacts.ts");
 
 // ------------------------------------------------------------------ aserciones
 let fallos = 0;
@@ -233,6 +279,81 @@ async function main() {
   r = await guardarContactoEnTelefono("Lucía Gómez", "+56999999993");
   ok(r.native === true && r.nombreGuardado === "Lucía Gómez", "guarda el contacto aunque getContacts haya fallado");
   errorDeGetContacts = null;
+
+  // 12) El número YA está en la agenda con otro nombre (típico: la ficha que
+  //     creó WhatsApp). No se crea nada: Android fusionaría los dos contactos
+  //     por número y el nombre nuevo nunca llegaría a verse.
+  console.log("\n· El número ya está guardado con OTRO nombre → no duplica y avisa con el nombre real");
+  errorDeContactSaver = null;
+  errorDeContactsCreate = null;
+  insercionFantasma = false;
+  crearAgendaInicial(["Ficha WhatsApp"], ["+56912345678"]);
+  r = await guardarContactoEnTelefono("Marta López", "+56912345678");
+  ok(r.yaExistia === true, `marca que ya existía (yaExistia=${(r as any).yaExistia})`);
+  ok(r.nombreGuardado === "Ficha WhatsApp", `informa el nombre real de la agenda (${r.nombreGuardado})`);
+  ok(agenda.length === 1, `no crea un contacto duplicado (agenda=${agenda.length})`);
+
+  // 13) Regresión del «dice guardado pero no guardó»: la inserción falla y el
+  //     número ya estaba en la agenda. Antes eso se resolvía como éxito con el
+  //     nombre del CRM; debe quedarse en «ya existía» (o fallar), nunca mentir.
+  console.log("\n· Inserción fallida con el número ya presente → NO celebra un guardado inexistente");
+  crearAgendaInicial(["Contacto Viejo"], ["+56933334444"]);
+  errorDeContactSaver = new Error("CONTACT_SAVE_FAILED");
+  errorDeContactsCreate = new Error("Something went wrong.");
+  let r13: any = null;
+  let error13: any = null;
+  try { r13 = await guardarContactoEnTelefono("Marta López", "+56933334444"); } catch (e) { error13 = e; }
+  ok(
+    error13 !== null || (r13?.yaExistia === true && r13?.nombreGuardado === "Contacto Viejo"),
+    `no reporta «Marta López» como guardado (${error13 ? "falló: " + String(error13?.message) : `yaExistia=${r13?.yaExistia}, nombre=${r13?.nombreGuardado}`})`
+  );
+  ok(agenda.length === 1, "la agenda no queda con un contacto repetido");
+  errorDeContactSaver = null;
+  errorDeContactsCreate = null;
+
+  // 14) Guardado fantasma: el plugin nativo responde con ID pero la fila no
+  //     llega a la agenda. El CRM debe comprobarlo y dar error.
+  console.log("\n· El plugin responde OK pero la agenda queda vacía → error, no «contacto guardado»");
+  crearAgendaInicial([], []);
+  insercionFantasma = true;
+  errorDeContactsCreate = new Error("Something went wrong.");
+  llamadasFindByPhone = 0;
+  let error14: any = null;
+  let r14: any = null;
+  try { r14 = await guardarContactoEnTelefono("Marta López", "+56955556666"); } catch (e) { error14 = e; }
+  ok(error14 !== null, `no se celebra un guardado que no existe (${error14 ? String(error14?.message) : `devolvió ${JSON.stringify(r14)}`})`);
+  ok(agenda.length === 0, "la agenda sigue vacía (coherente con el error mostrado)");
+  ok(llamadasFindByPhone >= 2, `relee la agenda después de insertar (findByPhone×${llamadasFindByPhone})`);
+  insercionFantasma = false;
+  errorDeContactsCreate = null;
+
+  // 15) Guardado normal: se comprueba el número ANTES y DESPUÉS de insertar.
+  console.log("\n· Guardado correcto → verifica el número antes y después de escribir");
+  crearAgendaInicial(["Pedro Castro"], []);
+  llamadasFindByPhone = 0;
+  r = await guardarContactoEnTelefono("Marta López", "+56966667777");
+  ok(r.native === true && r.nombreGuardado === "Marta López", `guardado confirmado (${r.nombreGuardado})`);
+  ok(r.verificadoEnAgenda === true, "informa que el guardado se verificó en la agenda");
+  ok(llamadasFindByPhone >= 2, `comprobó el número antes y después (findByPhone×${llamadasFindByPhone})`);
+
+  // 16) APK antigua sin findByPhone: la comprobación por número se hace
+  //     recorriendo la agenda con el plugin comunitario.
+  console.log("\n· APK sin findByPhone → la comprobación por número usa la agenda completa");
+  findByPhoneImplementado = false;
+  crearAgendaInicial(["Otro Cliente"], ["+56977778888"]);
+  r = await guardarContactoEnTelefono("Marta López", "+56977778888");
+  ok(r.yaExistia === true && r.nombreGuardado === "Otro Cliente", `detecta el número sin findByPhone (${r.nombreGuardado})`);
+  ok(agenda.length === 1, "tampoco duplica en la APK antigua");
+  findByPhoneImplementado = true;
+
+  // 17) La APK contesta «no encontrado» sin haber podido buscar (sin permiso de
+  //     Contactos). Esa respuesta no prueba nada: agendaLeida=false.
+  console.log("\n· La agenda responde sin permiso → la búsqueda no se da por buena");
+  crearAgendaInicial(["Marta López"], ["+56911112222"]);
+  findByPhoneSinPermiso = true;
+  const busqueda = await buscarContactoPorTelefono("+56911112222");
+  ok(busqueda.encontrado === false && busqueda.agendaLeida === false, `no afirma que el número no esté (agendaLeida=${busqueda.agendaLeida})`);
+  findByPhoneSinPermiso = false;
 
   console.log("\n" + (fallos === 0 ? "✅ TODO OK" : `❌ ${fallos} comprobaciones fallaron`));
   process.exit(fallos === 0 ? 0 : 1);

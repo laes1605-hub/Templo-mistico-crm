@@ -10,7 +10,25 @@ type ContactSaverPlugin = {
     givenName: string;
     familyName: string;
     phoneNumber: string;
-  }): Promise<{ contactId: string }>;
+  }): Promise<{
+    contactId: string;
+    /** La APK confirmó que el número ya se puede resolver en la agenda. */
+    verificado?: boolean;
+    /** El número ya estaba en la agenda: la APK no creó nada. */
+    yaExistia?: boolean;
+    /** Nombre visible del contacto que ya tenía ese número. */
+    nombreExistente?: string;
+  }>;
+  /** PhoneLookup de Android: resuelve un número esté como esté escrito. */
+  findByPhone(options: { phoneNumber: string }): Promise<{
+    found: boolean;
+    /** false si la APK no tenía permiso de Contactos: la búsqueda no prueba nada. */
+    permitted?: boolean;
+    contactId?: string;
+    displayName?: string;
+    accountType?: string;
+    accountName?: string;
+  }>;
 };
 
 const ContactSaver = registerPlugin<ContactSaverPlugin>("ContactSaver");
@@ -20,18 +38,30 @@ export interface GuardarContactoResult {
   native: boolean;
   contactId?: string;
   fileName?: string;
-  /** Nombre exacto que se guardó o se incluyó en el vCard. */
+  /** Nombre que quedó visible en la agenda (o el del vCard generado). */
   nombreGuardado: string;
-  /** true si se añadió un número para no repetir un nombre de la agenda. */
+  /** true si la agenda no muestra el nombre que pidió el CRM. */
   nombreAjustado: boolean;
-  /** La agenda real solo se puede consultar desde la APK; web usa su historial local. */
+  /** true cuando se releyó la agenda después de escribir y el número está. */
   verificadoEnAgenda: boolean;
   /** Método de respaldo cuando la agenda Android no acepta la inserción directa. */
   metodo?: ViaGuardadoGoogle;
-  /** Ya había un contacto con ese nombre y ese teléfono: no se creó nada nuevo. */
+  /** Ese número ya estaba en la agenda: no se creó ningún contacto nuevo. */
   yaExistia?: boolean;
+  /** Nombre que pidió el CRM cuando la agenda muestra otro distinto. */
+  nombreSolicitado?: string;
   /** Android denegó el permiso de Contactos: el guardado directo necesita activarlo. */
   sinPermiso?: boolean;
+}
+
+/** Qué encontró la agenda al buscar un número de teléfono. */
+export interface BusquedaTelefono {
+  encontrado: boolean;
+  contactId?: string;
+  /** Nombre visible del contacto que ya tiene ese número. */
+  nombre?: string;
+  /** false si la agenda no se pudo leer: la respuesta no demuestra nada. */
+  agendaLeida: boolean;
 }
 
 /** Cómo terminó el envío del contacto hacia la cuenta de Google. */
@@ -48,6 +78,15 @@ export interface GuardarContactoGoogleResult {
 function esPlataformaNativa(): boolean {
   try {
     return Capacitor.isNativePlatform();
+  } catch {
+    return false;
+  }
+}
+
+/** La APK lleva compilado el plugin propio ContactSaver (búsqueda e inserción). */
+function esContactSaverDisponible(): boolean {
+  try {
+    return Capacitor.getPlatform() === "android" && Capacitor.isPluginAvailable("ContactSaver");
   } catch {
     return false;
   }
@@ -255,46 +294,107 @@ function recordarNombreWeb(nombre: string) {
 }
 
 /**
+ * Busca un número en la agenda del teléfono, sea cual sea el nombre del
+ * contacto que lo tenga (incluidas las fichas que crea WhatsApp).
+ *
+ * Primero usa `ContactSaver.findByPhone`: es el PhoneLookup que Android emplea
+ * para resolver llamadas, así que encuentra el número aunque la agenda lo
+ * guarde sin el +indicativo, y no recorre la tabla entera. Si la APK instalada
+ * es anterior a ese método, se recorre la agenda con el plugin comunitario.
+ *
+ * Por defecto no solicita permiso (la ficha del cliente muestra el estado sin
+ * abrir un diálogo); «Guardar en teléfono» sí lo pide.
+ */
+export async function buscarContactoPorTelefono(
+  telefono: string,
+  solicitarPermiso = false
+): Promise<BusquedaTelefono> {
+  const nada: BusquedaTelefono = { encontrado: false, agendaLeida: false };
+  if (!esPlataformaNativa()) return nada;
+
+  const telefonoLimpio = String(telefono || "").trim();
+  if (!telefonoLimpio) return nada;
+
+  const concedido = await permisosContactos(solicitarPermiso).catch(() => false);
+  if (!concedido) return nada;
+
+  if (esContactSaverDisponible()) {
+    try {
+      const encontrado = await ContactSaver.findByPhone({ phoneNumber: telefonoLimpio });
+      if (encontrado?.found) {
+        return {
+          encontrado: true,
+          contactId: encontrado.contactId,
+          nombre: String(encontrado.displayName || "").trim() || undefined,
+          agendaLeida: true,
+        };
+      }
+      // Sin permiso la APK contesta found=false sin haber buscado: eso no
+      // demuestra que el número no esté en la agenda.
+      if (encontrado && encontrado.permitted === false) {
+        return { encontrado: false, agendaLeida: false };
+      }
+      return { encontrado: false, agendaLeida: true };
+    } catch (error) {
+      console.warn("ContactSaver.findByPhone no respondió, se recorre la agenda:", error);
+    }
+  }
+
+  const { contactos } = await listarContactosNativos(false);
+  if (!contactos) return { encontrado: false, agendaLeida: false };
+  const coincidencia = contactos.find((contacto) =>
+    (contacto.phones || []).some((p) => mismoTelefono(String(p.number || ""), telefonoLimpio))
+  );
+  if (!coincidencia) return { encontrado: false, agendaLeida: true };
+  return {
+    encontrado: true,
+    contactId: coincidencia.contactId ? String(coincidencia.contactId) : undefined,
+    nombre: nombreVisibleContacto(coincidencia) || undefined,
+    agendaLeida: true,
+  };
+}
+
+/**
  * Comprueba si ese número está realmente guardado en la agenda del dispositivo.
  * Nunca solicita permiso de forma inesperada: la pantalla puede mostrar el
  * estado sin abrir un diálogo; Guardar en teléfono sí lo solicita.
  */
 export async function estaContactoGuardadoEnTelefono(telefono: string): Promise<boolean> {
-  const { contactos } = await listarContactosNativos(false);
-  if (!contactos) return false;
-  return contactos.some((contacto) =>
-    (contacto.phones || []).some((p) => mismoTelefono(String(p.number || ""), telefono))
-  );
+  const { encontrado } = await buscarContactoPorTelefono(telefono, false);
+  return encontrado;
 }
 
 /**
- * Guarda el contacto directamente en la agenda cuando se ejecuta dentro de la
- * APK Capacitor. Antes de crear el registro compara todos los nombres de la
- * agenda para no repetirlos:
+ * Inserta el contacto en la agenda nativa.
  *
- *   · nombre nuevo → se guarda tal cual («Marta López»).
- *   · nombre repetido con otro número → consecutivo («Marta López 2»,
- *     «Marta López 3»… según el más alto que ya exista).
- *   · mismo nombre Y mismo teléfono → ya estaba guardado: no se duplica.
- *
- * En navegador/PWA genera un vCard descargable como respaldo; por privacidad
- * la web no puede consultar la agenda real, por lo que ahí solo evita nombres
- * que el propio CRM haya exportado en este navegador.
+ * `agendaSinEseNumero` dice si ANTES de insertar se comprobó que ese número no
+ * estaba guardado. Sólo con esa certeza un fallo del plugin puede interpretarse
+ * como «se escribió igual»: sin ella, encontrar el número después significaría
+ * confirmar como propio un contacto que ya era de otra persona.
  */
 async function crearContactoNativo(
   dado: string,
   familia: string | null,
-  telefonoLimpio: string
-): Promise<{ contactId?: string }> {
+  telefonoLimpio: string,
+  agendaSinEseNumero: boolean
+): Promise<{ contactId?: string; yaExistia?: boolean; nombreExistente?: string }> {
   const errores: string[] = [];
 
-  if (Capacitor.getPlatform() === "android" && Capacitor.isPluginAvailable("ContactSaver")) {
+  if (esContactSaverDisponible()) {
     try {
-      return await ContactSaver.createContact({
+      const creado = await ContactSaver.createContact({
         givenName: dado,
         familyName: familia || "",
         phoneNumber: telefonoLimpio,
       });
+      if (creado?.yaExistia) {
+        return {
+          contactId: creado.contactId,
+          yaExistia: true,
+          nombreExistente: creado.nombreExistente,
+        };
+      }
+      return { contactId: creado?.contactId };
     } catch (error: any) {
       const msg = String(error?.message || error || "").trim();
       if (msg) errores.push(msg);
@@ -324,14 +424,17 @@ async function crearContactoNativo(
   } catch (error: any) {
     // En algunas agendas Android el contacto sí se inserta en RawContacts, pero
     // `getContactIdByRawId` devuelve null unos milisegundos antes de que termine
-    // la agregación y el plugin lanza "Something went wrong.". Comprobamos si el
-    // número ya quedó guardado antes de darlo por fallido.
-    try {
-      await new Promise((resolve) => setTimeout(resolve, 150));
-      if (await estaContactoGuardadoEnTelefono(telefonoLimpio)) {
-        return { contactId: undefined };
-      }
-    } catch {}
+    // la agregación y el plugin lanza "Something went wrong.". Sólo se da por
+    // bueno si antes se comprobó que el número NO estaba en la agenda.
+    if (agendaSinEseNumero) {
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        const comprobacion = await buscarContactoPorTelefono(telefonoLimpio, false);
+        if (comprobacion.encontrado) {
+          return { contactId: comprobacion.contactId };
+        }
+      } catch {}
+    }
 
     const msg = String(error?.message || error || "").trim();
     if (msg && !errores.includes(msg)) errores.push(msg);
@@ -339,56 +442,75 @@ async function crearContactoNativo(
   }
 }
 
+/**
+ * Respuesta cuando el número ya estaba en la agenda: no se crea nada y se
+ * informa con el nombre real de la ficha que ya existía.
+ */
+function contactoYaExistente(existente: BusquedaTelefono, nombreSolicitado: string): GuardarContactoResult {
+  const nombreAgenda = (existente.nombre || "").trim() || nombreSolicitado;
+  // «Marta López 2» sigue siendo la Marta López del CRM: no se cuenta como otro
+  // nombre, sólo es el consecutivo que la propia agenda necesitó.
+  const distinto =
+    normalizarNombre(nombreAgenda) !== normalizarNombre(nombreSolicitado) &&
+    !nombrePerteneceALaBase(nombreAgenda, nombreSolicitado);
+  return {
+    native: true,
+    contactId: existente.contactId,
+    nombreGuardado: nombreAgenda,
+    nombreAjustado: distinto,
+    verificadoEnAgenda: true,
+    yaExistia: true,
+    nombreSolicitado: distinto ? nombreSolicitado : undefined,
+  };
+}
+
+/**
+ * Guarda el contacto directamente en la agenda cuando se ejecuta dentro de la
+ * APK Capacitor:
+ *
+ *   · el número ya está en la agenda (con cualquier nombre) → no se crea nada;
+ *     Android fusiona los contactos que comparten número, así que una segunda
+ *     ficha no llegaría a verse. Se informa con el nombre que ya existía.
+ *   · número libre y nombre nuevo → se guarda tal cual («Marta López»).
+ *   · número libre y nombre repetido → consecutivo («Marta López 2»,
+ *     «Marta López 3»… según el más alto que ya exista).
+ *
+ * Después de escribir vuelve a leer la agenda: sólo si el número aparece se
+ * informa «guardado». Así un fallo de Android no se cuenta como éxito.
+ */
 export async function guardarContactoEnTelefono(nombre: string, telefono: string): Promise<GuardarContactoResult> {
   const nombreLimpio = nombre.trim() || telefono.trim() || "Cliente";
   const telefonoLimpio = telefono.trim();
   if (!telefonoLimpio) throw new Error("El cliente no tiene un número de teléfono válido.");
 
   if (esPlataformaNativa()) {
-    const { contactos, sinPermiso } = await listarContactosNativos(true);
-
-    if (sinPermiso) {
+    const concedido = await permisosContactos(true).catch(() => false);
+    if (!concedido) {
       throw new Error(
         "Para guardar el contacto directo en el teléfono, activa el permiso de Contactos: Ajustes › Aplicaciones › Templo Místico CRM › Permisos › Contactos."
       );
     }
 
-    // Si la lectura previa de toda la agenda falla por un contacto corrupto o un
-    // límite de cursor, no bloqueamos el guardado: continuamos con lista vacía.
-    const listaContactos = contactos ?? [];
-    const verificadoEnAgenda = contactos !== null;
-
-    // ¿Misma persona ya guardada? (nombre —o su variante numerada— con el
-    // mismo teléfono). Pulsar el botón dos veces no debe crear «Marta 2»
-    // repetida con el mismo número.
-    const yaGuardado = listaContactos.some(
-      (contacto) =>
-        nombrePerteneceALaBase(nombreVisibleContacto(contacto), nombreLimpio) &&
-        (contacto.phones || []).some((p) => mismoTelefono(String(p.number || ""), telefonoLimpio))
-    );
-    if (yaGuardado) {
-      return {
-        native: true,
-        nombreGuardado: nombreLimpio,
-        nombreAjustado: false,
-        verificadoEnAgenda: true,
-        yaExistia: true,
-      };
+    // 1) ¿Ese número ya está guardado? Se comprueba por NÚMERO (no por nombre):
+    //    es lo que identifica a la persona en la agenda y lo que usa Android
+    //    para fusionar fichas. Cubre el caso típico del número que ya llegó con
+    //    WhatsApp o que otro operador guardó con otro nombre.
+    const existente = await buscarContactoPorTelefono(telefonoLimpio, false);
+    if (existente.encontrado) {
+      return contactoYaExistente(existente, nombreLimpio);
     }
+
+    // 2) Nombre: la agenda completa sólo hace falta para el consecutivo. Si esa
+    //    lectura falla (contacto corrupto, cursor grande) seguimos sin lista.
+    const { contactos } = await listarContactosNativos(false);
+    const listaContactos = contactos ?? [];
 
     const nombreUnico = crearNombreUnico(nombreLimpio, listaContactos.map(nombreVisibleContacto));
     const { dado, familia } = separarNombre(nombreUnico.nombre);
 
+    let creado: { contactId?: string; yaExistia?: boolean; nombreExistente?: string };
     try {
-      const result = await crearContactoNativo(dado, familia, telefonoLimpio);
-
-      return {
-        native: true,
-        contactId: result.contactId,
-        nombreGuardado: nombreUnico.nombre,
-        nombreAjustado: nombreUnico.ajustado,
-        verificadoEnAgenda,
-      };
+      creado = await crearContactoNativo(dado, familia, telefonoLimpio, existente.agendaLeida);
     } catch (error) {
       console.warn("No se pudo crear el contacto en la agenda:", error);
       const detalle = String((error as any)?.message || "").trim();
@@ -396,6 +518,37 @@ export async function guardarContactoEnTelefono(nombre: string, telefono: string
         `No se pudo guardar ${nombreUnico.nombre} en la agenda del teléfono${detalle ? ` (${detalle})` : ""}.`
       );
     }
+
+    if (creado.yaExistia) {
+      return contactoYaExistente(
+        { encontrado: true, contactId: creado.contactId, nombre: creado.nombreExistente, agendaLeida: true },
+        nombreLimpio
+      );
+    }
+
+    // 3) Verificación: releer la agenda. Sin este paso la app decía «contacto
+    //    guardado» aunque Android hubiera descartado la ficha.
+    const comprobacion = await buscarContactoPorTelefono(telefonoLimpio, false);
+    if (!comprobacion.encontrado) {
+      throw new Error(
+        comprobacion.agendaLeida
+          ? `Android aceptó la inserción, pero ${nombreUnico.nombre} (${telefonoLimpio}) no aparece en la agenda. Abre la app Contactos para forzar su carga e inténtalo otra vez.`
+          : `No se pudo comprobar que ${nombreUnico.nombre} quedara en la agenda porque Android no dejó leer Contactos. Revisa el permiso de Contactos e inténtalo otra vez.`
+      );
+    }
+
+    const nombreReal = (comprobacion.nombre || "").trim() || nombreUnico.nombre;
+    const difiere =
+      normalizarNombre(nombreReal) !== normalizarNombre(nombreUnico.nombre) &&
+      !nombrePerteneceALaBase(nombreReal, nombreUnico.nombre);
+    return {
+      native: true,
+      contactId: creado.contactId ?? comprobacion.contactId,
+      nombreGuardado: nombreReal,
+      nombreAjustado: nombreUnico.ajustado || difiere,
+      verificadoEnAgenda: true,
+      nombreSolicitado: difiere ? nombreUnico.nombre : undefined,
+    };
   }
 
   if (typeof window === "undefined" || typeof document === "undefined" || typeof URL === "undefined") {

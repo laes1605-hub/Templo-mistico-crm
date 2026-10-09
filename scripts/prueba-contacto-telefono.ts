@@ -27,6 +27,9 @@ let agenda: ContactoAgenda[] = [];
 let proximoId = 1;
 let permiso: string = "granted";
 let errorDeContactSaver: Error | null = null;
+let errorDeContactsCreate: Error | null = null;
+let errorDeGetContacts: Error | null = null;
+let contactSaverDisponible = true;
 let huboArchivo = false;
 
 function nombreVisible(c: ContactoAgenda): string {
@@ -69,6 +72,7 @@ function crearAgendaInicial(nombres: string[], telefonos?: string[]) {
     if (metodo === "checkPermissions") return { contacts: permiso };
     if (metodo === "requestPermissions") return { contacts: permiso };
     if (metodo === "getContacts") {
+      if (errorDeGetContacts) throw errorDeGetContacts;
       return {
         contacts: agenda.map((c) => ({
           contactId: c.id,
@@ -80,6 +84,30 @@ function crearAgendaInicial(nombres: string[], telefonos?: string[]) {
           phones: [{ type: "Mobile", number: c.telefono, isPrimary: true }],
         })),
       };
+    }
+    if (metodo === "createContact") {
+      if (errorDeContactsCreate) throw errorDeContactsCreate;
+      const contact = args?.contact || {};
+      const nameObj = contact.name || {};
+      const phones = Array.isArray(contact.phones) ? contact.phones : [];
+      // Reproduce el fallo real de @capacitor-community/contacts en Android:
+      // 1) `isPrimary: true` escribe un Boolean en ContentValues("is_primary") y
+      //    ContactsProvider2 lanza ClassCastException/NullPointerException → "Something went wrong."
+      if (phones.some((p: any) => p && p.isPrimary === true)) {
+        throw new Error("Something went wrong.");
+      }
+      // 2) `family: null` en JSON hace que nameObject.optString("family") devuelva "null"
+      if ("family" in nameObj && nameObj.family === null) {
+        throw new Error("FAMILY_NULL_STRING_BUG");
+      }
+      const id = String(proximoId++);
+      agenda.push({
+        id,
+        dado: String(nameObj.given || ""),
+        familia: String(nameObj.family || ""),
+        telefono: String(phones[0]?.number || ""),
+      });
+      return { contactId: id };
     }
   }
   if (plugin === "ContactSaver" && metodo === "createContact") {
@@ -99,7 +127,8 @@ function crearAgendaInicial(nombres: string[], telefonos?: string[]) {
   throw new Error(`Puerto falso: ${plugin}.${metodo} no simulado`);
 };
 // La APK tiene el plugin propio ContactSaver compilado dentro.
-(Capacitor as any).isPluginAvailable = (nombre: string) => nombre === "ContactSaver";
+(Capacitor as any).isPluginAvailable = (nombre: string) =>
+  nombre === "ContactSaver" ? contactSaverDisponible : false;
 
 const { guardarContactoEnTelefono } = require("../src/lib/contacts.ts");
 
@@ -165,14 +194,45 @@ async function main() {
   ok(error7 !== null && /permiso de Contactos/.test(String(error7?.message)), "sin permiso avisa cómo activar Contactos");
   ok(agenda.length === 0, "sin permiso no crea nada en la agenda");
 
-  // 8) ContactSaver falla: error claro, sin respaldo .vcf.
+  // 8) ContactSaver y Contacts.createContact fallan: error claro, sin respaldo .vcf.
   permiso = "granted";
   errorDeContactSaver = new Error("CONTACT_SAVE_FAILED");
+  errorDeContactsCreate = new Error("CONTACT_SAVE_FAILED");
   crearAgendaInicial(["Pedro Castro"], []);
   let error8: any = null;
   try { await guardarContactoEnTelefono("Marta López", "+56988888888"); } catch (e) { error8 = e; }
   ok(error8 !== null && /No se pudo guardar/.test(String(error8?.message)), "fallo de inserción muestra el motivo");
   ok(!huboArchivo, "no se genera ningún archivo .vcf");
+
+  // 9) APK sin ContactSaver (o cuando ContactSaver falla): Contacts.createContact
+  //    guarda directo sin enviar isPrimary:true ni family:null.
+  console.log("\n· APK sin ContactSaver (y nombre de una sola palabra) → guarda directo sin el bug de isPrimary:true");
+  contactSaverDisponible = false;
+  errorDeContactSaver = null;
+  errorDeContactsCreate = null;
+  crearAgendaInicial(["Pedro Castro"], []);
+  r = await guardarContactoEnTelefono("Marta", "+56999999991");
+  ok(r.native === true && r.nombreGuardado === "Marta", `guardado directo con Contacts.createContact (${r.nombreGuardado})`);
+  ok(nombresAgenda().join("|") === "Pedro Castro|Marta", "no añade 'null' al apellido ni falla por isPrimary:true");
+
+  // 10) Si ContactSaver lanza error pero Contacts.createContact funciona, guarda igual.
+  console.log("\n· ContactSaver lanza excepción → respalda con Contacts.createContact nativo");
+  contactSaverDisponible = true;
+  errorDeContactSaver = new Error("OEM_RAW_CONTACT_ERROR");
+  errorDeContactsCreate = null;
+  crearAgendaInicial(["Pedro Castro"], []);
+  r = await guardarContactoEnTelefono("Marta López", "+56999999992");
+  ok(r.native === true && r.nombreGuardado === "Marta López", "respaldo nativo Contacts.createContact completó el guardado");
+
+  // 11) Si getContacts falla al leer una agenda grande/corrupta (con permiso activo),
+  //     igual guarda el contacto en vez de bloquear al operador.
+  console.log("\n· Fallo al listar agenda previa con permiso concedido → guarda el contacto igualmente");
+  errorDeContactSaver = null;
+  errorDeGetContacts = new Error("CURSOR_WINDOW_OVERFLOW");
+  crearAgendaInicial([], []);
+  r = await guardarContactoEnTelefono("Lucía Gómez", "+56999999993");
+  ok(r.native === true && r.nombreGuardado === "Lucía Gómez", "guarda el contacto aunque getContacts haya fallado");
+  errorDeGetContacts = null;
 
   console.log("\n" + (fallos === 0 ? "✅ TODO OK" : `❌ ${fallos} comprobaciones fallaron`));
   process.exit(fallos === 0 ? 0 : 1);

@@ -72,41 +72,49 @@ public class ContactSaverPlugin extends Plugin {
         }
 
         try {
-            ArrayList<ContentProviderOperation> operations = new ArrayList<>();
-            operations.add(
-                ContentProviderOperation.newInsert(RawContacts.CONTENT_URI)
-                    .withValue(RawContacts.ACCOUNT_TYPE, null)
-                    .withValue(RawContacts.ACCOUNT_NAME, null)
-                    .build()
+            String displayName = (givenName + " " + familyName).trim();
+            if (displayName.isEmpty()) {
+                displayName = phoneNumber;
+            }
+
+            ContentProviderResult[] results = applyInsertBatch(
+                displayName,
+                givenName,
+                familyName,
+                phoneNumber,
+                null,
+                null,
+                true
             );
 
-            ContentProviderOperation.Builder nameOperation =
-                ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
-                    .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, 0)
-                    .withValue(ContactsContract.Data.MIMETYPE, StructuredName.CONTENT_ITEM_TYPE);
-            if (!givenName.isEmpty()) {
-                nameOperation.withValue(StructuredName.GIVEN_NAME, givenName);
+            if (!hasInsertedUri(results)) {
+                results = applyInsertBatch(
+                    displayName,
+                    givenName,
+                    familyName,
+                    phoneNumber,
+                    null,
+                    null,
+                    false
+                );
             }
-            if (!familyName.isEmpty()) {
-                nameOperation.withValue(StructuredName.FAMILY_NAME, familyName);
+
+            if (!hasInsertedUri(results)) {
+                String[] existingAccount = findPreferredAccount();
+                if (existingAccount != null) {
+                    results = applyInsertBatch(
+                        displayName,
+                        givenName,
+                        familyName,
+                        phoneNumber,
+                        existingAccount[0],
+                        existingAccount[1],
+                        true
+                    );
+                }
             }
-            operations.add(nameOperation.build());
 
-            operations.add(
-                ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
-                    .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, 0)
-                    .withValue(ContactsContract.Data.MIMETYPE, Phone.CONTENT_ITEM_TYPE)
-                    .withValue(Phone.TYPE, Phone.TYPE_MOBILE)
-                    .withValue(Phone.NUMBER, phoneNumber)
-                    .withValue(Phone.IS_PRIMARY, 1)
-                    .build()
-            );
-
-            ContentProviderResult[] results = getContext()
-                .getContentResolver()
-                .applyBatch(ContactsContract.AUTHORITY, operations);
-
-            if (results == null || results.length == 0 || results[0] == null || results[0].uri == null) {
+            if (!hasInsertedUri(results)) {
                 call.reject("Android no confirmó que el contacto se guardara.", "CONTACT_SAVE_FAILED");
                 return;
             }
@@ -129,11 +137,106 @@ public class ContactSaverPlugin extends Plugin {
         } catch (Exception error) {
             Logger.error(TAG, "No se pudo insertar el contacto en la agenda Android", error);
             call.reject(
-                "Android no pudo escribir en la agenda. Se puede guardar como archivo de contacto.",
+                "Android no pudo escribir en la agenda: " + error.getMessage(),
                 "CONTACT_SAVE_FAILED",
                 error
             );
         }
+    }
+
+    private boolean hasInsertedUri(ContentProviderResult[] results) {
+        return results != null && results.length > 0 && results[0] != null && results[0].uri != null;
+    }
+
+    private ContentProviderResult[] applyInsertBatch(
+        String displayName,
+        String givenName,
+        String familyName,
+        String phoneNumber,
+        String accountType,
+        String accountName,
+        boolean explicitAccountColumns
+    ) throws Exception {
+        ArrayList<ContentProviderOperation> operations = new ArrayList<>();
+        ContentProviderOperation.Builder rawContactOp =
+            ContentProviderOperation.newInsert(RawContacts.CONTENT_URI);
+        if (explicitAccountColumns) {
+            rawContactOp
+                .withValue(RawContacts.ACCOUNT_TYPE, accountType)
+                .withValue(RawContacts.ACCOUNT_NAME, accountName);
+        }
+        operations.add(rawContactOp.build());
+
+        ContentProviderOperation.Builder nameOperation =
+            ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
+                .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, 0)
+                .withValue(ContactsContract.Data.MIMETYPE, StructuredName.CONTENT_ITEM_TYPE)
+                .withValue(StructuredName.DISPLAY_NAME, displayName);
+        if (!givenName.isEmpty()) {
+            nameOperation.withValue(StructuredName.GIVEN_NAME, givenName);
+        }
+        if (!familyName.isEmpty()) {
+            nameOperation.withValue(StructuredName.FAMILY_NAME, familyName);
+        }
+        operations.add(nameOperation.build());
+
+        operations.add(
+            ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
+                .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, 0)
+                .withValue(ContactsContract.Data.MIMETYPE, Phone.CONTENT_ITEM_TYPE)
+                .withValue(Phone.TYPE, Phone.TYPE_MOBILE)
+                .withValue(Phone.NUMBER, phoneNumber)
+                .build()
+        );
+
+        try {
+            return getContext()
+                .getContentResolver()
+                .applyBatch(ContactsContract.AUTHORITY, operations);
+        } catch (SecurityException securityException) {
+            throw securityException;
+        } catch (Exception error) {
+            if (explicitAccountColumns && accountType == null) {
+                Logger.warn(TAG, "Reintentando inserción de contacto con estrategia alternativa: " + error.getMessage());
+                return null;
+            }
+            throw error;
+        }
+    }
+
+    private String[] findPreferredAccount() {
+        Cursor cursor = null;
+        String[] fallback = null;
+        try {
+            cursor = getContext().getContentResolver().query(
+                RawContacts.CONTENT_URI,
+                new String[] { RawContacts.ACCOUNT_TYPE, RawContacts.ACCOUNT_NAME },
+                RawContacts.DELETED + " = 0 AND " + RawContacts.ACCOUNT_TYPE + " IS NOT NULL AND " + RawContacts.ACCOUNT_NAME + " IS NOT NULL",
+                null,
+                null
+            );
+            while (cursor != null && cursor.moveToNext()) {
+                String type = clean(cursor.getString(0));
+                String name = clean(cursor.getString(1));
+                if (type.isEmpty() || name.isEmpty()) continue;
+                String lower = type.toLowerCase();
+                if (lower.contains("whatsapp") || lower.contains("telegram") || lower.contains("signal") || lower.contains("facebook")) {
+                    continue;
+                }
+                if ("com.google".equals(type)) {
+                    return new String[] { type, name };
+                }
+                if (fallback == null) {
+                    fallback = new String[] { type, name };
+                }
+            }
+        } catch (Exception ignored) {
+        } finally {
+            if (cursor != null) {
+                cursor.close();
+            }
+        }
+        return fallback;
     }
 
     private String findContactId(long rawContactId) {

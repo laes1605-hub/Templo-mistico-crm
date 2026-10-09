@@ -26,7 +26,10 @@ import com.getcapacitor.annotation.Permission;
 @CapacitorPlugin(
     name = "WhatsAppPersonal",
     permissions = {
-        @Permission(strings = { Manifest.permission.READ_CONTACTS }, alias = "contacts")
+        @Permission(
+            strings = { Manifest.permission.READ_CONTACTS, Manifest.permission.WRITE_CONTACTS },
+            alias = "contacts"
+        )
     }
 )
 public class WhatsAppPersonalPlugin extends Plugin {

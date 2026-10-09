@@ -3,7 +3,9 @@ package com.templomistico.crm;
 import android.Manifest;
 import android.content.ContentProviderOperation;
 import android.content.ContentProviderResult;
+import android.content.ContentResolver;
 import android.content.ContentUris;
+import android.content.ContentValues;
 import android.database.Cursor;
 import android.net.Uri;
 import android.provider.ContactsContract;
@@ -144,7 +146,7 @@ public class ContactSaverPlugin extends Plugin {
                 return;
             }
 
-            ContentProviderResult[] results = applyInsertBatch(
+            ContentProviderResult[] results = intentarLote(
                 displayName,
                 givenName,
                 familyName,
@@ -155,7 +157,7 @@ public class ContactSaverPlugin extends Plugin {
             );
 
             if (!hasInsertedUri(results)) {
-                results = applyInsertBatch(
+                results = intentarLote(
                     displayName,
                     givenName,
                     familyName,
@@ -169,7 +171,7 @@ public class ContactSaverPlugin extends Plugin {
             if (!hasInsertedUri(results)) {
                 String[] existingAccount = findPreferredAccount();
                 if (existingAccount != null) {
-                    results = applyInsertBatch(
+                    results = intentarLote(
                         displayName,
                         givenName,
                         familyName,
@@ -181,12 +183,23 @@ public class ContactSaverPlugin extends Plugin {
                 }
             }
 
-            if (!hasInsertedUri(results)) {
-                call.reject("Android no confirmó que el contacto se guardara.", "CONTACT_SAVE_FAILED");
-                return;
+            long rawContactId;
+            if (hasInsertedUri(results)) {
+                rawContactId = ContentUris.parseId(results[0].uri);
+            } else {
+                // Algunas agendas (proveedores modificados por el fabricante)
+                // rechazan applyBatch con NullPointerException
+                // ("ContentValues.keySet() on a null object reference"). En ese
+                // caso se inserta fila por fila, sin lote ni referencias
+                // cruzadas: el camino incremental que documenta Android.
+                rawContactId = insertarSecuencial(
+                    displayName,
+                    givenName,
+                    familyName,
+                    phoneNumber
+                );
             }
 
-            long rawContactId = ContentUris.parseId(results[0].uri);
             String contactId = findContactId(rawContactId);
 
             // Verificación real: el lote puede aceptar la inserción y que la fila
@@ -285,6 +298,85 @@ public class ContactSaverPlugin extends Plugin {
             }
             throw error;
         }
+    }
+
+    /**
+     * Ejecuta el lote de inserción y devuelve null (en vez de lanzar) cuando el
+     * proveedor lo rechaza: así saveContact puede pasar a la siguiente
+     * estrategia. Una SecurityException (permiso revocado) sí se propaga para
+     * que el aviso hable de permisos y no de un fallo de escritura.
+     */
+    private ContentProviderResult[] intentarLote(
+        String displayName,
+        String givenName,
+        String familyName,
+        String phoneNumber,
+        String accountType,
+        String accountName,
+        boolean explicitAccountColumns
+    ) {
+        try {
+            return applyInsertBatch(
+                displayName, givenName, familyName, phoneNumber,
+                accountType, accountName, explicitAccountColumns
+            );
+        } catch (SecurityException securityException) {
+            throw securityException;
+        } catch (Exception error) {
+            Logger.warn(TAG, "La agenda rechazó el lote de inserción: " + error.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Inserción fila por fila para agendas donde applyBatch falla. Hace las
+     * mismas tres escrituras que el lote (ficha base, nombre y número) pero con
+     * inserciones independientes y el RAW_CONTACT_ID explícito, sin
+     * withValueBackReference: es el camino incremental que documenta Android y
+     * evita el código del proveedor que lanza la NullPointerException.
+     */
+    private long insertarSecuencial(
+        String displayName,
+        String givenName,
+        String familyName,
+        String phoneNumber
+    ) throws Exception {
+        ContentResolver resolver = getContext().getContentResolver();
+
+        Uri rawUri = resolver.insert(RawContacts.CONTENT_URI, new ContentValues());
+        if (rawUri == null) {
+            throw new IllegalStateException(
+                "Android no devolvió la ficha base del contacto al insertarla."
+            );
+        }
+        long rawContactId = ContentUris.parseId(rawUri);
+
+        ContentValues nombre = new ContentValues();
+        nombre.put(ContactsContract.Data.RAW_CONTACT_ID, rawContactId);
+        nombre.put(ContactsContract.Data.MIMETYPE, StructuredName.CONTENT_ITEM_TYPE);
+        nombre.put(StructuredName.DISPLAY_NAME, displayName);
+        if (!givenName.isEmpty()) {
+            nombre.put(StructuredName.GIVEN_NAME, givenName);
+        }
+        if (!familyName.isEmpty()) {
+            nombre.put(StructuredName.FAMILY_NAME, familyName);
+        }
+        if (resolver.insert(ContactsContract.Data.CONTENT_URI, nombre) == null) {
+            Logger.warn(TAG, "La agenda no confirmó la fila de nombre; el contacto quedará con el número.");
+        }
+
+        ContentValues telefonoValores = new ContentValues();
+        telefonoValores.put(ContactsContract.Data.RAW_CONTACT_ID, rawContactId);
+        telefonoValores.put(ContactsContract.Data.MIMETYPE, Phone.CONTENT_ITEM_TYPE);
+        telefonoValores.put(Phone.TYPE, Phone.TYPE_MOBILE);
+        telefonoValores.put(Phone.NUMBER, phoneNumber);
+        if (resolver.insert(ContactsContract.Data.CONTENT_URI, telefonoValores) == null) {
+            throw new IllegalStateException(
+                "Android no confirmó la inserción del número en la agenda."
+            );
+        }
+
+        return rawContactId;
     }
 
     private String[] findPreferredAccount() {

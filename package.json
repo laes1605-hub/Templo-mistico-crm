@@ -24,6 +24,7 @@
     "simular:recordatorios": "node scripts/simular-recordatorios.mjs",
     "test:tiempo": "node scripts/prueba-tiempo-chat.mjs",
     "test:contactos": "sucrase-node scripts/prueba-contacto-telefono.ts",
+    "test:contactos-web": "sucrase-node scripts/prueba-contacto-web.ts",
     "test:eliminar": "sucrase-node scripts/prueba-eliminar-cliente.ts",
     "test:eliminar:sql": "node scripts/prueba-eliminar-cliente-sql.mjs",
     "test:rr-storage": "node --conditions=import scripts/prueba-respuestas-rapidas-storage.mjs",

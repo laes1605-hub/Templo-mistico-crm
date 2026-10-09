@@ -52,6 +52,8 @@ export interface GuardarContactoResult {
   nombreSolicitado?: string;
   /** Android denegó el permiso de Contactos: el guardado directo necesita activarlo. */
   sinPermiso?: boolean;
+  /** Sólo web: el usuario cerró la hoja de compartir sin elegir Contactos. */
+  cancelado?: boolean;
 }
 
 /** Qué encontró la agenda al buscar un número de teléfono. */
@@ -555,11 +557,33 @@ export async function guardarContactoEnTelefono(nombre: string, telefono: string
     throw new Error("No se puede crear un contacto desde esta plataforma.");
   }
 
-  // El navegador no puede escribir en la agenda del teléfono: no se descarga
-  // ningún archivo. Para guardado directo hace falta la APK Android.
-  throw new Error(
-    "Este navegador no puede guardar contactos directamente en el teléfono. Abre Templo Místico CRM desde la APK instalada en el Android para guardarlo en Contactos."
-  );
+  // Navegador (web/PWA): los navegadores no pueden escribir en la agenda, pero
+  // en Chrome Android la hoja de compartir entrega la ficha .vcf al sistema y
+  // al elegir Contactos el contacto se crea directamente, sin descargar nada.
+  // La descarga del archivo queda sólo como último respaldo (navegadores sin
+  // hoja de compartir con archivos, p. ej. Safari de iPhone).
+  const { vcard, nombreArchivo: fileName } = construirVCard(nombreLimpio, telefonoLimpio);
+  const compartido = await compartirVCardWeb(vcard, fileName, `Contacto: ${nombreLimpio}`);
+  if (compartido !== "no_disponible") {
+    return {
+      native: false,
+      metodo: "compartir_web",
+      fileName,
+      nombreGuardado: nombreLimpio,
+      nombreAjustado: false,
+      verificadoEnAgenda: false,
+      cancelado: compartido === "cancelado",
+    };
+  }
+  descargarVCard(vcard, fileName);
+  return {
+    native: false,
+    metodo: "descarga",
+    fileName,
+    nombreGuardado: nombreLimpio,
+    nombreAjustado: false,
+    verificadoEnAgenda: false,
+  };
 }
 
 /**

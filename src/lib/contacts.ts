@@ -204,12 +204,19 @@ function mismoTelefono(a: string, b: string): boolean {
   return Math.min(aa.length, bb.length) >= 8 && (aa.endsWith(bb) || bb.endsWith(aa));
 }
 
+function estadoPermisoConcedido(estado: any): boolean {
+  if (!estado) return false;
+  if (estado.granted === true) return true;
+  const valor = estado.contacts ?? estado.write ?? estado.read;
+  return valor === "granted" || valor === "limited";
+}
+
 async function permisosContactos(solicitar: boolean): Promise<boolean> {
   const actuales = await Contacts.checkPermissions();
-  const concedidos = actuales.contacts === "granted" || actuales.contacts === "limited";
+  const concedidos = estadoPermisoConcedido(actuales);
   if (concedidos || !solicitar) return concedidos;
   const nuevos = await Contacts.requestPermissions();
-  return nuevos.contacts === "granted" || nuevos.contacts === "limited";
+  return estadoPermisoConcedido(nuevos);
 }
 
 async function listarContactosNativos(
@@ -274,6 +281,64 @@ export async function estaContactoGuardadoEnTelefono(telefono: string): Promise<
  * la web no puede consultar la agenda real, por lo que ahí solo evita nombres
  * que el propio CRM haya exportado en este navegador.
  */
+async function crearContactoNativo(
+  dado: string,
+  familia: string | null,
+  telefonoLimpio: string
+): Promise<{ contactId?: string }> {
+  const errores: string[] = [];
+
+  if (Capacitor.getPlatform() === "android" && Capacitor.isPluginAvailable("ContactSaver")) {
+    try {
+      return await ContactSaver.createContact({
+        givenName: dado,
+        familyName: familia || "",
+        phoneNumber: telefonoLimpio,
+      });
+    } catch (error: any) {
+      const msg = String(error?.message || error || "").trim();
+      if (msg) errores.push(msg);
+      console.warn("ContactSaver falló, reintentando con Contacts.createContact:", error);
+    }
+  }
+
+  try {
+    // IMPORTANTE: en @capacitor-community/contacts (Contacts.java línea 233),
+    // pasar `isPrimary: true` ejecuta `op.withValue(Phone.IS_PRIMARY, true)` con
+    // un Boolean en vez de un Integer (1). En Android ContactsProvider2 eso lanza
+    // ClassCastException/NullPointerException al evaluar `getAsInteger("is_primary")`
+    // y el plugin rechaza siempre con "Something went wrong.".
+    // Además, `CreateContactInput.java` usa `nameObject.optString("family")`
+    // cuando la clave `family` existe, convirtiendo `family: null` en la cadena
+    // literal `"null"`. Por eso omitimos `isPrimary` y sólo enviamos `family`
+    // cuando tiene texto.
+    const namePayload: { given: string; family?: string } = { given: dado };
+    if (familia) namePayload.family = familia;
+
+    return await Contacts.createContact({
+      contact: {
+        name: namePayload,
+        phones: [{ type: PhoneType.Mobile, number: telefonoLimpio }],
+      },
+    });
+  } catch (error: any) {
+    // En algunas agendas Android el contacto sí se inserta en RawContacts, pero
+    // `getContactIdByRawId` devuelve null unos milisegundos antes de que termine
+    // la agregación y el plugin lanza "Something went wrong.". Comprobamos si el
+    // número ya quedó guardado antes de darlo por fallido.
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      if (await estaContactoGuardadoEnTelefono(telefonoLimpio)) {
+        return { contactId: undefined };
+      }
+    } catch {}
+
+    const msg = String(error?.message || error || "").trim();
+    if (msg && !errores.includes(msg)) errores.push(msg);
+    throw new Error(errores[0] || "CONTACT_SAVE_FAILED");
+  }
+}
+
 export async function guardarContactoEnTelefono(nombre: string, telefono: string): Promise<GuardarContactoResult> {
   const nombreLimpio = nombre.trim() || telefono.trim() || "Cliente";
   const telefonoLimpio = telefono.trim();
@@ -282,19 +347,21 @@ export async function guardarContactoEnTelefono(nombre: string, telefono: string
   if (esPlataformaNativa()) {
     const { contactos, sinPermiso } = await listarContactosNativos(true);
 
-    if (!contactos) {
-      if (sinPermiso) {
-        throw new Error(
-          "Para guardar el contacto directo en el teléfono, activa el permiso de Contactos: Ajustes › Aplicaciones › Templo Místico CRM › Permisos › Contactos."
-        );
-      }
-      throw new Error("No se pudo leer la agenda del teléfono. Inténtalo de nuevo.");
+    if (sinPermiso) {
+      throw new Error(
+        "Para guardar el contacto directo en el teléfono, activa el permiso de Contactos: Ajustes › Aplicaciones › Templo Místico CRM › Permisos › Contactos."
+      );
     }
+
+    // Si la lectura previa de toda la agenda falla por un contacto corrupto o un
+    // límite de cursor, no bloqueamos el guardado: continuamos con lista vacía.
+    const listaContactos = contactos ?? [];
+    const verificadoEnAgenda = contactos !== null;
 
     // ¿Misma persona ya guardada? (nombre —o su variante numerada— con el
     // mismo teléfono). Pulsar el botón dos veces no debe crear «Marta 2»
     // repetida con el mismo número.
-    const yaGuardado = contactos.some(
+    const yaGuardado = listaContactos.some(
       (contacto) =>
         nombrePerteneceALaBase(nombreVisibleContacto(contacto), nombreLimpio) &&
         (contacto.phones || []).some((p) => mismoTelefono(String(p.number || ""), telefonoLimpio))
@@ -309,44 +376,24 @@ export async function guardarContactoEnTelefono(nombre: string, telefono: string
       };
     }
 
-    const nombreUnico = crearNombreUnico(nombreLimpio, contactos.map(nombreVisibleContacto));
+    const nombreUnico = crearNombreUnico(nombreLimpio, listaContactos.map(nombreVisibleContacto));
     const { dado, familia } = separarNombre(nombreUnico.nombre);
 
     try {
-      let result: { contactId: string };
-      if (Capacitor.getPlatform() === "android" && Capacitor.isPluginAvailable("ContactSaver")) {
-        // Plugin propio: crea sólo nombre + teléfono y evita las filas vacías de
-        // organización/fecha/nota que provocan el error genérico del plugin externo.
-        result = await ContactSaver.createContact({
-          givenName: dado,
-          familyName: familia || "",
-          phoneNumber: telefonoLimpio,
-        });
-      } else {
-        // iOS y APKs Android anteriores que aún no incluyen ContactSaver.
-        result = await Contacts.createContact({
-          contact: {
-            name: { given: dado, family: familia },
-            phones: [{ type: PhoneType.Mobile, number: telefonoLimpio, isPrimary: true }],
-          },
-        });
-      }
+      const result = await crearContactoNativo(dado, familia, telefonoLimpio);
 
       return {
         native: true,
         contactId: result.contactId,
         nombreGuardado: nombreUnico.nombre,
         nombreAjustado: nombreUnico.ajustado,
-        verificadoEnAgenda: true,
+        verificadoEnAgenda,
       };
     } catch (error) {
-      // El plugin anterior oculta la excepción de Android y la muestra como
-      // "Something went wrong". En vez de dejar al usuario bloqueado, abrimos
-      // el flujo del sistema para importar el vCard.
       console.warn("No se pudo crear el contacto en la agenda:", error);
       const detalle = String((error as any)?.message || "").trim();
       throw new Error(
-        `No se pudo guardar ${nombreUnico.nombre} en la agenda del teléfono${detalle ? ` (${detalle})` : ""}. Revisa que la app tenga el permiso de Contactos y vuelve a intentarlo.`
+        `No se pudo guardar ${nombreUnico.nombre} en la agenda del teléfono${detalle ? ` (${detalle})` : ""}.`
       );
     }
   }

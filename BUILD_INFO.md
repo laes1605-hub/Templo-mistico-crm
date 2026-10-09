@@ -1,3 +1,22 @@
+## Build 2026-10-09 (v1.3.5 / APK code 9): corregir fallo «Something went wrong» al guardar contactos en Android con permiso activo
+
+**Síntoma:** al pulsar **Guardar en teléfono** en Android (con el permiso de Contactos ya activado), seguía mostrando el error `No se pudo guardar … en la agenda del teléfono (Something went wrong.). Revisa que la app tenga el permiso de Contactos y vuelve a intentarlo.`
+
+**Causa raíz:**
+1. Como la APK carga la web en vivo (`https://templo-mistico-crm.vercel.app`), cualquier APK instalada antes de `ContactSaverPlugin` (o el respaldo a `Contacts.createContact`) entraba por `@capacitor-community/contacts` pasando `phones: [{ type: PhoneType.Mobile, number, isPrimary: true }]` y `name: { given, family: null }`.
+2. En `@capacitor-community/contacts` (`Contacts.java` línea 233), `if (phone.isPrimary)` ejecuta `op.withValue(Phone.IS_PRIMARY, true)` pasando un `Boolean` (`true`) en vez de un `Integer` (`1`). Cuando el proveedor nativo de Android (`ContactsProvider2.java`) evalúa `mValues.getAsInteger(Data.IS_PRIMARY) == 0`, `ContentValues.getAsInteger("is_primary")` falla con `ClassCastException: java.lang.Boolean cannot be cast to java.lang.Number`, devuelve `null`, y al desempaquetar `null == 0` lanza `NullPointerException`, por lo que el plugin rechazaba siempre con `"Something went wrong."`.
+3. Además, `CreateContactInput.java` usa `nameObject.optString("family")` cuando la propiedad `family` está presente en el JSON, convirtiendo `family: null` en el texto `"null"` cuando el cliente tiene un nombre de una sola palabra.
+
+### Arreglo
+- **`src/lib/contacts.ts`**:
+  - Se elimina `isPrimary: true` al llamar a `Contacts.createContact` (evitando el `Boolean` en `Data.IS_PRIMARY` que hace explotar a `ContactsProvider2`) y sólo se incluye `family` cuando `familia` tiene texto. Así el guardado directo funciona de inmediato incluso en APKs ya instaladas sin necesidad de reinstalar.
+  - Si `ContactSaver` está disponible en la APK se intenta primero y, si falla por cualquier motivo de la ROM, reintenta automáticamente con `Contacts.createContact`.
+  - Si la lectura previa de toda la agenda (`Contacts.getContacts`) falla habiendo permiso concedido, no bloquea el guardado: continúa y crea el contacto igualmente.
+  - Si el contacto se insertó pero Android tardó unos milisegundos en asignarle el `CONTACT_ID` agregado, comprueba si el número ya aparece en la agenda antes de reportar error.
+- **`ContactSaverPlugin.java` y `WhatsAppPersonalPlugin.java`**:
+  - `ContactSaverPlugin` incluye `StructuredName.DISPLAY_NAME`, elimina `Phone.IS_PRIMARY` innecesario y añade reintentos automáticos si la ROM rechaza `ACCOUNT_TYPE = null`.
+  - `WhatsAppPersonalPlugin` declara `READ_CONTACTS` y `WRITE_CONTACTS` bajo el mismo alias `contacts` para que pedir permiso desde cualquier pantalla conceda lectura y escritura a la vez.
+
 ## Build 2026-10-09 (v1.3.4 / APK code 8): consecutivo de nombres y cero duplicados al guardar en el teléfono
 
 **Qué se pidió:** que el contacto se guarde **directo en la agenda del teléfono**

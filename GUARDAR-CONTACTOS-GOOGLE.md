@@ -4,7 +4,7 @@ La ficha de cada cliente tiene ahora **dos botones**:
 
 | Botón | Qué hace | Dónde queda el contacto |
 | --- | --- | --- |
-| 👤 **Guardar en teléfono** | La APK crea el contacto directamente con el plugin nativo de contactos (`Contacts.createContact`). En web/PWA descarga un `.vcf`. | Agenda del teléfono (cuenta general del dispositivo). |
+| 👤 **Guardar en teléfono** | La APK 1.3.3 crea el contacto con el plugin nativo del CRM (sólo nombre y teléfono). Si Android no permite la inserción, abre el menú de Contactos para importar un `.vcf`. En web/PWA descarga el archivo. | Agenda del teléfono (cuenta general o la que elija al importar). |
 | 🌐 **Guardar en cuenta Google** | Genera la ficha `.vcf` y abre el **menú de compartir** del sistema con el archivo listo. | Al elegir **Contactos / Google Contacts** y la cuenta Google, el contacto se importa en la nube y baja al teléfono. |
 
 ## Cómo se usa el botón de Google (paso a paso)

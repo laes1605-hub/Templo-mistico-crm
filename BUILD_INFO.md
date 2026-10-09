@@ -1,3 +1,34 @@
+## Build 2026-10-09 (v1.3.3 / APK code 7): reparar «Something went wrong» al guardar contactos
+
+**Síntoma:** al pulsar **Guardar en teléfono**, Android mostraba «Something went wrong».
+
+**Diagnóstico:** el texto coincide con el rechazo genérico de
+`@capacitor-community/contacts` cuando `Contacts.createContact()` no obtiene un
+ID del proveedor Android. El plugin oculta la excepción del `applyBatch`, por lo
+que no era posible ver la causa exacta desde la app. Este flujo guarda en la
+agenda local del propio teléfono: no hace una llamada al servidor Ubuntu ni a
+Supabase, así que el servidor nuevo no es el origen del mensaje.
+
+### Arreglo
+
+- `ContactSaverPlugin.java` inserta directamente un contacto Android con sólo
+  las filas de nombre y teléfono; ya no envía filas vacías de empresa,
+  cumpleaños y nota que pueden hacer que algunos proveedores rechacen todo el
+  lote.
+- Si no se puede leer/escribir en la agenda o el proveedor devuelve un error,
+  la app abre la hoja para importar el `.vcf` en Contactos, en vez de dejar al
+  usuario bloqueado con el error genérico. También queda como respaldo para
+  APKs Android antiguas que aún no tienen el plugin propio.
+- La APK se identifica ahora como **1.3.3 (versionCode 7)** para que Android
+  acepte la actualización con el plugin nativo.
+
+### Verificación
+
+- `npm run build` ✅
+- `npx cap sync android` ✅
+- No se compiló el APK localmente: este entorno no tiene JDK/Android SDK; el
+  workflow `.github/workflows/build-apk.yml` lo genera al publicar el cambio.
+
 ## Build 2026-09-21 (v6): «Sincronizar» ya no depende del trigger de la huella
 
 **Síntoma que reportó el Templo:** «no me deja sincronizar las respuestas rápidas».

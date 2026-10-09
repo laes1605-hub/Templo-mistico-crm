@@ -428,7 +428,7 @@ export default function CRMApp() {
   const [comprobandoRR, setComprobandoRR] = useState(false);
   const rrFileInputRef = useRef<HTMLInputElement>(null);
   const [guardandoContacto, setGuardandoContacto] = useState(false);
-  const [contactoGuardado, setContactoGuardado] = useState<"nativo" | "vcf" | null>(null);
+  const [contactoGuardado, setContactoGuardado] = useState<"nativo" | "vcf" | "compartido" | null>(null);
   // null = comprobando / sin acceso a agenda; true = puede llamar; false = debe guardarlo primero.
   const [contactoEnTelefono, setContactoEnTelefono] = useState<boolean | null>(null);
   const [llamandoWhatsApp, setLlamandoWhatsApp] = useState(false);
@@ -1060,13 +1060,32 @@ export default function CRMApp() {
     setGuardandoContacto(true);
     try {
       const resultado = await guardarContactoEnTelefono(nombre, telefono);
-      setContactoGuardado(resultado.native ? "nativo" : "vcf");
+      setContactoGuardado(
+        resultado.native ? "nativo" : resultado.metodo === "descarga" ? "vcf" : "compartido"
+      );
       if (resultado.native) {
         setContactoEnTelefono(true);
         const ajuste = resultado.nombreAjustado
           ? ` Ya existía "${nombre}" en la agenda, por eso se guardó como "${resultado.nombreGuardado}".`
           : "";
         alert(`Contacto guardado en el teléfono: ${resultado.nombreGuardado} (${telefono}).${ajuste}`);
+      } else if (resultado.metodo !== "descarga") {
+        // Al volver de Contactos comprobamos si el usuario confirmó la importación.
+        if (resultado.metodo === "compartir_nativo") {
+          try {
+            const guardado = await estaContactoGuardadoEnTelefono(telefono);
+            if (guardado) {
+              setContactoEnTelefono(true);
+              setContactoGuardado("nativo");
+              alert(`Contacto guardado en el teléfono: ${resultado.nombreGuardado} (${telefono}).`);
+              return;
+            }
+          } catch {}
+        }
+        const ajuste = resultado.nombreAjustado
+          ? ` Se usó el nombre "${resultado.nombreGuardado}" para evitar un duplicado.`
+          : "";
+        alert(`Se abrió el menú para guardar ${resultado.fileName || "el contacto.vcf"}. Elige Contactos y confirma Guardar.${ajuste}`);
       } else {
         const ajuste = resultado.nombreAjustado
           ? ` El CRM lo nombró "${resultado.nombreGuardado}" para no repetir una exportación anterior.`
@@ -5368,7 +5387,7 @@ export default function CRMApp() {
                         title="Guardar en los contactos del teléfono"
                       >
                         <UserPlus className="w-3.5 h-3.5" />
-                        {guardandoContacto ? "Guardando contacto..." : contactoGuardado === "nativo" ? "Contacto guardado en el teléfono" : contactoGuardado === "vcf" ? "Contacto descargado (.vcf)" : "Guardar en teléfono"}
+                        {guardandoContacto ? "Guardando contacto..." : contactoGuardado === "nativo" ? "Contacto guardado en el teléfono" : contactoGuardado === "vcf" ? "Contacto descargado (.vcf)" : contactoGuardado === "compartido" ? "Listo para guardar en Contactos" : "Guardar en teléfono"}
                       </button>
                       {!clienteActual.es_spam && esConversacionWhatsAppPersonal(selectedConv) && (
                         <>

@@ -4,7 +4,7 @@ La ficha de cada cliente tiene ahora **dos botones**:
 
 | Botón | Qué hace | Dónde queda el contacto |
 | --- | --- | --- |
-| 👤 **Guardar en teléfono** | La APK 1.3.4 crea el contacto con el plugin nativo del CRM (sólo nombre y teléfono). Si Android no permite la inserción, abre el menú de Contactos para importar un `.vcf`. En web/PWA descarga el archivo. | Agenda del teléfono (cuenta general o la que elija al importar). |
+| 👤 **Guardar en teléfono** | La APK crea el contacto **directamente** en la agenda con el plugin nativo del CRM (sólo nombre y teléfono). En web/PWA (Chrome Android) abre la **hoja de compartir** con la ficha `.vcf` lista: al elegir **Contactos** el contacto **se crea** en la agenda, sin descargar nada. Si el navegador no permite compartir archivos (p. ej. Safari de iPhone), descarga el `.vcf` como último respaldo. | Agenda del teléfono (cuenta general o la que elija al importar). |
 | 🌐 **Guardar en cuenta Google** | Genera la ficha `.vcf` y abre el **menú de compartir** del sistema con el archivo listo. | Al elegir **Contactos / Google Contacts** y la cuenta Google, el contacto se importa en la nube y baja al teléfono. |
 
 ## Reglas al guardar en el teléfono

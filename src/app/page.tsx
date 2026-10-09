@@ -1082,6 +1082,15 @@ export default function CRMApp() {
             ? ` Ya existía "${nombre}" en la agenda, por eso se guardó como "${resultado.nombreGuardado}".`
             : "";
         alert(`Contacto guardado en el teléfono: "${resultado.nombreGuardado}" (${telefono}).${ajuste}`);
+      } else if (resultado.metodo === "compartir_web") {
+        // Navegador del teléfono: la hoja de compartir entrega la ficha a
+        // Contactos para que el contacto se cree sin descargar ningún archivo.
+        if (resultado.cancelado) {
+          setContactoGuardado(null);
+          alert("Se cerró la hoja de compartir: el contacto no se guardó. Vuelve a tocar «Guardar en teléfono» y elige Contactos.");
+        } else {
+          alert(`Se abrió la hoja de compartir. Elige Contactos (o Google Contacts) y confirma Guardar: se creará el contacto ${resultado.nombreGuardado} (${telefono}) en la agenda.`);
+        }
       } else if (resultado.metodo !== "descarga") {
         // Al volver de Contactos comprobamos si el usuario confirmó la importación.
         if (resultado.metodo === "compartir_nativo") {

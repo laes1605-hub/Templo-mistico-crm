@@ -33,7 +33,8 @@
     "test:media": "node scripts/prueba-media-fuente.mjs",
     "medir:adjuntos": "node scripts/medir-adjuntos.mjs",
     "test:remux": "node scripts/prueba-remux-ogg.mjs",
-    "test:backups": "node scripts/prueba-limpiar-backups-gdrive.mjs"
+    "test:backups": "node scripts/prueba-limpiar-backups-gdrive.mjs",
+    "servir:luna-import": "node scripts/servir-luna-import.mjs"
   },
   "dependencies": {
     "@capacitor-community/contacts": "^8.0.0",

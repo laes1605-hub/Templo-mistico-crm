@@ -141,6 +141,16 @@ migraciones anteriores), ejecuta la migración
 duplicados por nombre conservando la etapa que ya estaba creada, re-apunta los clientes
 a su clave real y no crea ninguna etapa nueva.
 
+## Generador local para n8n sin variables de entorno
+
+Para generar el workflow importable con las claves escritas directamente en el JSON, usa el generador local:
+
+```bash
+npm run servir:luna-import
+```
+
+Abre la vista previa del servidor, introduce las claves de OpenAI y Groq y pulsa **Generar JSON de Luna**. El access token de Chatwoot se lee desde `n8n/luna/secrets.local.json` (archivo ignorado por Git). Las claves de IA se procesan en memoria y se incorporan al JSON; el archivo generado `n8n/IMPORTAR-EN-N8N.json` también está ignorado por Git. No compartas el importable, porque contiene credenciales. El generador valida que el JSON no conserve `$env`, el token anterior ni la credencial de IA obsoleta.
+
 ## Verificación
 
 ```bash

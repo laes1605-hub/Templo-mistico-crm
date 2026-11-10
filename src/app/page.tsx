@@ -41,6 +41,14 @@ import { abrirLlamadaWhatsAppPersonal, llamadasWhatsAppPersonalDisponibles } fro
 import { initTheme } from "../lib/theme";
 import { DETALLE_FUENTE_COPY, etiquetaCortaFuenteCopy, limpiarCopy } from "../lib/copy-post";
 import {
+  analizarConsulta,
+  buscarEnCrm,
+  camposTelefonoDe,
+  coincidenciaContacto,
+  nombreManualDe,
+  ubicacionDeConversacion,
+} from "../lib/buscador-global";
+import {
   initializeNotificationChannels,
   NOTIFICATION_CHANNELS,
   notify,
@@ -96,6 +104,19 @@ const ETAPAS_DEFAULT = [
   // ventana de 24 h venció se continúan desde el WhatsApp Personal.
   { clave: CLAVE_VENCIDOS, nombre: "Vencidos", orden: 7, color: "border-red-500", bg_color: "bg-red-500/10", text_color: "text-red-300", cuenta_responsable: "evolution" },
 ];
+
+// Buscador global de la bandeja: cuántos resultados se pintan de entrada. Con
+// uno o dos caracteres coincide casi todo el CRM; pintar cientos de filas en
+// cada tecla haría lenta la escritura en el teléfono. El resto se ve con
+// «Ver todos» o escribiendo más.
+const LIMITE_RESULTADOS_BUSQUEDA = 60;
+
+// Supabase entrega como máximo 1.000 filas por consulta mientras no se cambie
+// ese ajuste en el proyecto. Si la lista de chats llega justo con ese tamaño,
+// lo más probable es que haya chats antiguos que la bandeja no cargó: el
+// buscador lo avisa (con el texto «1.000») en vez de afirmar sin más que buscó
+// en todo el CRM.
+const MAX_FILAS_POR_CONSULTA = 1000;
 
 // Cuotas: límite y fechas por defecto (una cuota por mes desde la primera).
 const MAX_CUOTAS = 30;
@@ -344,7 +365,12 @@ export default function CRMApp() {
   const [bloqueoChatwoot, setBloqueoChatwoot] = useState<{ clienteId: string; detalle: string[] } | null>(null);
   const [filtroArchivados, setFiltroArchivados] = useState<"todos" | "evolution" | "meta_business">("todos");
   const [searchArchivados, setSearchArchivados] = useState("");
+  // Buscador de la bandeja: al escribir busca en TODO el CRM (todas las etapas,
+  // Spam y Archivados), no solo en la subcategoría abierta.
   const [searchChats, setSearchChats] = useState("");
+  const [limiteResultadosBusqueda, setLimiteResultadosBusqueda] = useState(LIMITE_RESULTADOS_BUSQUEDA);
+  // true = la bandeja no pudo cargar todos los chats (ver MAX_FILAS_POR_CONSULTA).
+  const [bandejaIncompleta, setBandejaIncompleta] = useState(false);
 
   // PAGOS Y DIVISAS
   const [tipoPago, setTipoPago] = useState<"unico" | "cuotas">("unico");
@@ -599,6 +625,28 @@ export default function CRMApp() {
       setChatCategoria("nuevo_lead");
     }
   }, [chatCategoria, pipelineEtapas]);
+
+  // La subcategoría activa siempre queda a la vista en el carrusel. Hace falta
+  // cuando la bandeja cambia de subcategoría sin tocar un chip (al abrir un
+  // resultado del buscador global, que puede vivir en otra etapa) y cuando el
+  // carrusel vuelve a mostrarse: al regresar del chat a la lista en el teléfono
+  // o al volver a la pestaña Chats.
+  const subcatVistaRef = useRef<{ categoria: string; tab: string; chatAbierto: boolean } | null>(null);
+  const hayChatAbierto = selectedConv !== null;
+  useEffect(() => {
+    const previo = subcatVistaRef.current;
+    subcatVistaRef.current = { categoria: chatCategoria, tab, chatAbierto: hayChatAbierto };
+    if (!previo || tab !== "chats") return;
+    const cambioCategoria = previo.categoria !== chatCategoria;
+    const volvioElCarrusel = previo.tab !== "chats" || (previo.chatAbierto && !hayChatAbierto);
+    if (!cambioCategoria && !volvioElCarrusel) return;
+    // Sin cancelar en la limpieza: si en esos milisegundos cambia otra cosa, el
+    // centrado igual se hace, y siempre sobre la subcategoría vigente.
+    setTimeout(() => {
+      const actual = subcatVistaRef.current;
+      if (actual && actual.tab === "chats") centrarSubcat(actual.categoria);
+    }, 60);
+  }, [chatCategoria, tab, hayChatAbierto]);
 
   // Al volver a la app con un chat abierto, ese chat cuenta como revisado
   useEffect(() => {
@@ -993,7 +1041,8 @@ export default function CRMApp() {
   // Entre candidatos (telefono_display, telefono, numero_whatsapp) gana el más
   // largo, porque es el que incluye el indicativo del país.
   function getTelefonoE164(cliente: any, conv?: any): string {
-    const candidatos = [cliente?.telefono_display, cliente?.telefono, conv?.numero_whatsapp];
+    // Los mismos campos en los que busca el buscador global.
+    const candidatos = camposTelefonoDe(cliente, conv);
     let mejor = "";
     for (const cand of candidatos) {
       const f = formatPhoneE164(cand);
@@ -1004,12 +1053,10 @@ export default function CRMApp() {
 
   // Nombre visible: solo el puesto manualmente por el operador (nombre_manual).
   // "nombre" viene cargado automáticamente (WhatsApp/agenda) y NUNCA se muestra.
+  // La regla vive en lib/buscador-global para que el buscador compare exactamente
+  // el mismo nombre que se ve en pantalla.
   function getNombreManual(cliente: any): string {
-    const n = cliente?.nombre_manual;
-    if (!n) return "";
-    const t = String(n).trim();
-    if (!t || t.toLowerCase() === "sin nombre") return "";
-    return t;
+    return nombreManualDe(cliente);
   }
 
   // Lo que se muestra como título del chat: nombre manual si existe, si no el número con +
@@ -1802,6 +1849,8 @@ export default function CRMApp() {
     }
     const { data } = await supabase.from("conversaciones").select("*, clientes(*)").order("ultimo_mensaje_en", { ascending: false });
     if (data) {
+      // Lista llena hasta el tope de Supabase = quedaron chats antiguos sin cargar.
+      setBandejaIncompleta(data.length === MAX_FILAS_POR_CONSULTA);
       // ¿Ya está aplicada la migración de la ventana de 24 h? Si la columna no
       // existe, Supabase no la devuelve y se usa el respaldo de abajo.
       const hayColumnaVentana = data.some((fila: any) => Object.prototype.hasOwnProperty.call(fila, "ultimo_entrante_en"));
@@ -3312,8 +3361,37 @@ export default function CRMApp() {
     paraArchivar.forEach(c => archivarConversacion(c.id, true));
   }
 
+  // ===================== UBICACIÓN DE UN CHAT EN LA BANDEJA =====================
+  // Subcategoría donde vive un chat: Spam, Archivados o su etapa del pipeline.
+  function categoriaDeConversacion(conv: any): string {
+    const ubicacion = ubicacionDeConversacion(conv);
+    if (ubicacion === "spam") return "spam";
+    if (ubicacion === "archivado") return CATEGORIA_ARCHIVADOS;
+    return normalizarEstado(conv?.clientes?.estado);
+  }
+
+  // ¿El chat aparece en la lista de esta subcategoría? Es la regla única de la
+  // bandeja: la usan la lista, y el buscador para saber si debe cambiar de lista.
+  function convPerteneceACategoria(conv: any, categoria: string): boolean {
+    const esSpam = conv?.clientes?.es_spam === true;
+    const isArchivada = conv?.archivada === true;
+    // 📬 Por leer
+    if (categoria === CATEGORIA_POR_LEER) return !esSpam && !isArchivada && conv?.no_leidos > 0;
+    // 🔔 En seguimiento
+    if (categoria === CATEGORIA_EN_SEGUIMIENTO) return !esSpam && !isArchivada && estaPendienteSeguimientoHoy(conv?.clientes);
+    // 📦 Archivados (subcategoría en vez de pestaña)
+    if (categoria === CATEGORIA_ARCHIVADOS) return !esSpam && isArchivada;
+    // 🚫 Spam
+    if (categoria === "spam") return esSpam;
+    // Etapas normales del pipeline unificado
+    return !esSpam && !isArchivada && normalizarEstado(conv?.clientes?.estado) === categoria;
+  }
+
   // ===================== SELECCIONAR CHAT =====================
-  async function selectConversation(conv: any) {
+  // `ubicar` = el chat se abrió desde el buscador global: puede vivir en una
+  // subcategoría distinta de la que está abierta, así que la bandeja salta a
+  // donde está el contacto para que quede ubicado al cerrar el buscador.
+  async function selectConversation(conv: any, opciones: { ubicar?: boolean } = {}) {
     setSelectedConv(conv);
     setClienteActual(conv.clientes);
     setContactoGuardado(null);
@@ -3321,8 +3399,16 @@ export default function CRMApp() {
     setLlamandoWhatsApp(false);
     // Al abrir un chat, mantener la subcategoría si estamos en Por leer, En seguimiento o Archivados
     const esSpamCliente = conv.clientes?.es_spam === true;
-    const isArchivada = (conv as any).archivada === true;
-    if (chatCategoria !== CATEGORIA_POR_LEER && chatCategoria !== CATEGORIA_EN_SEGUIMIENTO && chatCategoria !== CATEGORIA_ARCHIVADOS) {
+    const enListaEspecial =
+      chatCategoria === CATEGORIA_POR_LEER ||
+      chatCategoria === CATEGORIA_EN_SEGUIMIENTO ||
+      chatCategoria === CATEGORIA_ARCHIVADOS;
+    if (opciones.ubicar) {
+      // Desde el buscador: la lista especial solo se conserva si el chat está en ella.
+      if (!enListaEspecial || !convPerteneceACategoria(conv, chatCategoria)) {
+        setChatCategoria(categoriaDeConversacion(conv));
+      }
+    } else if (!enListaEspecial) {
       const estCliente = esSpamCliente ? "spam" : normalizarEstado(conv.clientes?.estado);
       setChatCategoria(estCliente);
     }
@@ -4477,17 +4563,32 @@ export default function CRMApp() {
     }
   }
 
+  // Lleva el chip de una subcategoría al centro del carrusel. Mueve SOLO el
+  // carrusel (no usa scrollIntoView): con el teclado abierto en el teléfono no
+  // debe desplazarse nada más de la pantalla.
+  function centrarSubcat(clave: string) {
+    const carrusel = subcatScrollRef.current;
+    if (!carrusel || typeof carrusel.scrollTo !== "function") return;
+    const chip = Array.from(carrusel.querySelectorAll<HTMLElement>("[data-cat]")).find(
+      (el) => el.dataset.cat === clave
+    );
+    if (!chip) return;
+    const cajaCarrusel = carrusel.getBoundingClientRect();
+    // Sin ancho = la lista está oculta (chat abierto en el teléfono): se centra
+    // cuando vuelva a mostrarse.
+    if (cajaCarrusel.width === 0) return;
+    const cajaChip = chip.getBoundingClientRect();
+    const destino =
+      carrusel.scrollLeft + (cajaChip.left - cajaCarrusel.left) - (cajaCarrusel.width - cajaChip.width) / 2;
+    carrusel.scrollTo({ left: Math.max(0, destino), behavior: "smooth" });
+  }
+
   // Desplazamiento suave y selección de subcategorías
   function selectSubcat(clave: string) {
+    // Tocar una subcategoría cierra el buscador global y muestra esa lista.
+    if (searchChats) setSearchChats("");
     setChatCategoria(clave);
-    setTimeout(() => {
-      if (subcatScrollRef.current) {
-        const el = subcatScrollRef.current.querySelector(`[data-cat="${clave}"]`);
-        if (el && typeof (el as any).scrollIntoView === "function") {
-          (el as any).scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
-        }
-      }
-    }, 50);
+    setTimeout(() => centrarSubcat(clave), 50);
   }
 
   function scrollSubcat(dir: "left" | "right") {
@@ -4528,21 +4629,10 @@ export default function CRMApp() {
     return estaPendienteSeguimientoHoy(c.clientes);
   });
 
-  // Conversaciones archivadas (subcategoría dentro de Chats)
-  const conversacionesArchivadas = conversaciones.filter((c) => {
-    const esSpam = c.clientes?.es_spam === true;
-    const isArchivada = (c as any).archivada === true;
-    if (!isArchivada || esSpam) return false;
-    const q = searchChats.toLowerCase();
-    const qDigits = q.replace(/\D/g, "");
-    const tel = getTelefonoE164(c.clientes, c);
-    const matchSearch = !searchChats ||
-      getDisplayName(c.clientes, c).toLowerCase().includes(q) ||
-      tel.includes(searchChats) ||
-      (!!qDigits && tel.replace("+", "").includes(qDigits)) ||
-      (c.ultimo_mensaje || "").toLowerCase().includes(q);
-    return matchSearch;
-  });
+  // Conversaciones archivadas (subcategoría dentro de Chats). El contador del
+  // chip y la columna del pipeline muestran SIEMPRE todas: lo que se escribe en
+  // el buscador ya no las recorta (el buscador es global y pinta su propia lista).
+  const conversacionesArchivadas = conversaciones.filter((c) => convPerteneceACategoria(c, CATEGORIA_ARCHIVADOS));
 
   // Conversaciones spam
   const conversacionesSpam = conversaciones.filter((c) => {
@@ -4560,44 +4650,102 @@ export default function CRMApp() {
     return counts;
   }, [conversaciones]);
 
-  const conversacionesFiltradas = conversaciones.filter((c) => {
-    const esSpam = c.clientes?.es_spam === true;
-    const isArchivada = (c as any).archivada === true;
+  // ===== BUSCADOR GLOBAL DE LA BANDEJA =====
+  // Con texto en el buscador se busca en TODO el CRM (todas las etapas, Spam y
+  // Archivados), no solo en la subcategoría abierta: antes, si el contacto
+  // estaba en otra etapa, la lista salía vacía. Cada resultado dice dónde está
+  // y al abrirlo la bandeja se ubica en su subcategoría.
+  const consultaChats = React.useMemo(() => analizarConsulta(searchChats), [searchChats]);
+  const busquedaActiva = consultaChats.activa;
+  const resultadosBusqueda = React.useMemo(
+    () =>
+      busquedaActiva
+        ? buscarEnCrm({
+            consulta: consultaChats,
+            conversaciones,
+            // Fichas de clientes sin conversación: solo cuando la bandeja ya
+            // cargó, para no confundir «aún no llega la lista» con «no tiene chat».
+            clientes: loadingChats ? [] : todosClientes,
+            // Se conserva lo que ya hacía la subcategoría Archivados: estando
+            // en ella, un chat archivado también se encuentra por el texto de
+            // su último mensaje.
+            mensajeEnArchivados: chatCategoria === CATEGORIA_ARCHIVADOS,
+          })
+        : [],
+    [busquedaActiva, consultaChats, conversaciones, todosClientes, loadingChats, chatCategoria]
+  );
 
-    // 📬 Por leer
-    if (chatCategoria === CATEGORIA_POR_LEER) {
-      if (esSpam || isArchivada || !(c.no_leidos > 0)) return false;
-    }
-    // 🔔 En seguimiento
-    else if (chatCategoria === CATEGORIA_EN_SEGUIMIENTO) {
-      if (esSpam || isArchivada || !estaPendienteSeguimientoHoy(c.clientes)) return false;
-    }
-    // 📦 Archivados (subcategoría en vez de pestaña)
-    else if (chatCategoria === CATEGORIA_ARCHIVADOS) {
-      if (esSpam || !isArchivada) return false;
-    }
-    // 🚫 Spam
-    else if (chatCategoria === "spam") {
-      if (!esSpam) return false;
-    }
-    // Etapas normales del pipeline unificado
-    else {
-      if (esSpam || isArchivada) return false;
-      const estadoCliente = normalizarEstado(c.clientes?.estado);
-      if (estadoCliente !== chatCategoria) return false;
-    }
+  // Filas que pinta la bandeja: la subcategoría abierta o, con el buscador en
+  // uso, los resultados de todo el CRM (chats y fichas de clientes sin chat).
+  const filasBandeja: Array<{ conv: any | null; cliente: any | null }> = busquedaActiva
+    ? resultadosBusqueda
+        .slice(0, limiteResultadosBusqueda)
+        .map((r) => ({ conv: r.conv, cliente: r.cliente }))
+    : conversaciones
+        .filter((c) => convPerteneceACategoria(c, chatCategoria))
+        .map((conv) => ({ conv, cliente: conv.clientes }));
+  const totalFilasBandeja = busquedaActiva ? resultadosBusqueda.length : filasBandeja.length;
 
-    // Búsqueda: nombre manual, número o dígitos
-    const q = searchChats.toLowerCase();
-    const qDigits = q.replace(/\D/g, "");
-    const tel = getTelefonoE164(c.clientes, c);
-    const matchSearch = !searchChats ||
-      getDisplayName(c.clientes, c).toLowerCase().includes(q) ||
-      tel.includes(searchChats) ||
-      (!!qDigits && tel.replace("+", "").includes(qDigits)) ||
-      (chatCategoria === CATEGORIA_ARCHIVADOS && (c.ultimo_mensaje || "").toLowerCase().includes(q));
-    return matchSearch;
-  });
+  // Cartera solo lista clientes (no spam) con algún pago pendiente.
+  function clienteEstaEnCartera(cliente: any): boolean {
+    if (!cliente?.id || cliente.es_spam === true) return false;
+    return todosPagos.some((p) => p.cliente_id === cliente.id && p.estado === "pendiente");
+  }
+
+  // Lleva a la ficha de cobro del cliente en Cartera (el buscador de Cartera
+  // también busca en los dos grupos, así que no hace falta cambiar el selector).
+  function verClienteEnCartera(cliente: any) {
+    setSearchCartera(getTelefonoE164(cliente) || getNombreManual(cliente));
+    setExpandedCarteraCliente(cliente.id);
+    setTab("cartera");
+  }
+
+  // Fila de un resultado del buscador global que es una ficha de cliente SIN
+  // conversación en la bandeja (caso raro: se borró su chat o aún no se
+  // sincroniza). Se muestra para que «no se encontró en el CRM» sea verdad solo
+  // cuando el contacto no existe; si debe pagos, la fila lleva a su Cartera.
+  function renderClienteSinChat(cliente: any) {
+    const nombre = getDisplayName(cliente);
+    const telefono = getTelefonoE164(cliente);
+    const enCartera = clienteEstaEnCartera(cliente);
+    const contenido = (
+      <>
+        <div className="w-12 h-12 rounded-full bg-surface border border-gray-700 flex items-center justify-center text-gray-400 font-bold overflow-hidden flex-shrink-0">
+          {cliente?.foto_url
+            ? <img src={cliente.foto_url} alt="" className="w-full h-full object-cover grayscale" />
+            : nombre.startsWith("+")
+              ? <Phone className="w-5 h-5" />
+              : <span>{nombre.charAt(0).toUpperCase()}</span>}
+        </div>
+        <div className="flex-1 min-w-0">
+          <h2 className={`text-sm font-semibold truncate text-gray-300 mb-1 ${nombre.startsWith("+") ? "font-mono tracking-tight" : ""}`}>{nombre}</h2>
+          <div className="flex items-center gap-1 mb-1 flex-wrap">
+            {enCartera && <span className="text-[9px] text-gray-500">📍 Está en</span>}
+            <span className="text-[9px] px-1.5 py-0 rounded bg-gray-500/10 text-gray-300 border border-gray-600">
+              {enCartera ? "CARTERA" : "SIN CHAT"}
+            </span>
+            {telefono && telefono !== nombre && <span className="text-[10px] font-mono text-gray-500">{telefono}</span>}
+          </div>
+          <p className="text-xs text-gray-500">
+            {enCartera
+              ? "No tiene chat en la bandeja, pero debe pagos: toca para verlo en Cartera."
+              : "Está registrado en el CRM, pero no tiene chat en la bandeja."}
+          </p>
+        </div>
+      </>
+    );
+    const clave = `cliente-sin-chat-${cliente.id}`;
+    const clases = "w-full p-4 flex items-start gap-3 text-left border-l-4 border-gray-700";
+    return enCartera ? (
+      <button key={clave} type="button" onClick={() => verClienteEnCartera(cliente)} className={`${clases} hover:bg-surfaceHover transition-colors`}>
+        {contenido}
+      </button>
+    ) : (
+      <div key={clave} className={`${clases} opacity-80`}>
+        {contenido}
+      </div>
+    );
+  }
 
   // ===== VENTANA DE 24 H DEL CHAT ABIERTO (WhatsApp API) =====
   // Se cuenta desde el último mensaje del CLIENTE (regla de Meta). Se calcula
@@ -4638,8 +4786,14 @@ export default function CRMApp() {
   // Cada fila = cliente con al menos un pago pendiente. De aquí salen TODAS las estadísticas.
   const carteraGrupoOk = (cliente: any) => carteraGrupoFiltro === "todas" || getGrupoCliente(cliente) === carteraGrupoFiltro;
 
+  // Buscador de Cartera: igual que el de la bandeja, al escribir busca en TODA
+  // la cartera (los dos grupos) y no solo en el grupo elegido en el selector.
+  // Usa el mismo motor: número con cualquier formato y nombre sin tildes.
+  const consultaCartera = React.useMemo(() => analizarConsulta(searchCartera), [searchCartera]);
+  const buscandoEnCartera = consultaCartera.activa;
+
   const clientesCartera = todosClientes
-    .filter((c) => !c.es_spam && carteraGrupoOk(c))
+    .filter((c) => !c.es_spam && (buscandoEnCartera || carteraGrupoOk(c)))
     .map((cliente) => {
       const pagosCliente = todosPagos.filter((p) => p.cliente_id === cliente.id);
       const pendientes = pagosCliente
@@ -4664,14 +4818,7 @@ export default function CRMApp() {
       };
     })
     .filter((r) => r.pendientes.length > 0) // Solo los que deben = cartera real por cobrar
-    .filter((r) => {
-      const q = searchCartera.trim().toLowerCase();
-      if (!q) return true;
-      const nombre = getDisplayName(r.cliente).toLowerCase();
-      const tel = getTelefonoE164(r.cliente).replace("+", "");
-      const qDigits = q.replace(/\D/g, "");
-      return nombre.includes(q) || (!!qDigits && tel.includes(qDigits)) || tel.includes(q);
-    })
+    .filter((r) => !buscandoEnCartera || coincidenciaContacto(consultaCartera, r.cliente) !== null)
     .sort((a, b) => {
       // Vencidos primero, luego por próxima fecha de pago (el más urgente arriba)
       if (a.vencido !== b.vencido) return a.vencido ? -1 : 1;
@@ -4812,8 +4959,11 @@ export default function CRMApp() {
                 <div className="flex items-center justify-between">
                   <h1 className="text-lg font-bold text-gray-100">Bandeja</h1>
                   <div className="flex items-center gap-2">
-                    <span className="text-xs px-2 py-0.5 rounded-full bg-purple-900/50 text-purple-300 font-medium">
-                      {conversacionesFiltradas.length}
+                    <span
+                      className="text-xs px-2 py-0.5 rounded-full bg-purple-900/50 text-purple-300 font-medium"
+                      title={busquedaActiva ? "Resultados encontrados en todo el CRM" : "Chats en esta subcategoría"}
+                    >
+                      {totalFilasBandeja}
                     </span>
                     <button className="md:hidden text-gray-500" onClick={() => setShowAdmin(true)}><Shield className="w-4 h-4" /></button>
                   </div>
@@ -4822,14 +4972,24 @@ export default function CRMApp() {
                 <div className="flex items-center gap-2">
                   <div className="relative flex-1">
                     <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
+                    {/* Buscador GLOBAL: busca el nombre o el número en todo el CRM
+                        (todas las etapas, Spam y Archivados), no solo en la
+                        subcategoría abierta. */}
                     <input 
                       value={searchChats} 
-                      onChange={e => setSearchChats(e.target.value)}
-                      placeholder="Buscar por nombre o número..." 
-                      className="w-full bg-background border border-border rounded-lg pl-9 pr-3 py-2 text-xs text-gray-200 placeholder-gray-500 focus:outline-none focus:border-purple-500"
+                      onChange={e => { setSearchChats(e.target.value); setLimiteResultadosBusqueda(LIMITE_RESULTADOS_BUSQUEDA); }}
+                      placeholder="Buscar en todo el CRM..." 
+                      title="Busca por nombre o número en todo el CRM: todas las etapas, Spam y Archivados"
+                      aria-label="Buscar por nombre o número en todo el CRM"
+                      className={`w-full bg-background border border-border rounded-lg pl-9 ${searchChats ? "pr-8" : "pr-3"} py-2 text-xs text-gray-200 placeholder-gray-500 focus:outline-none focus:border-purple-500`}
                     />
                     {searchChats && (
-                      <button onClick={() => setSearchChats("")} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white">
+                      <button
+                        onClick={() => { setSearchChats(""); setLimiteResultadosBusqueda(LIMITE_RESULTADOS_BUSQUEDA); }}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white"
+                        title="Borrar la búsqueda y volver a la subcategoría"
+                        aria-label="Borrar la búsqueda"
+                      >
                         <X className="w-3.5 h-3.5" />
                       </button>
                     )}
@@ -4866,9 +5026,12 @@ export default function CRMApp() {
                       <ChevronLeft className="w-3.5 h-3.5" />
                     </button>
 
+                    {/* Con el buscador en uso la lista NO es la de la subcategoría
+                        marcada (se busca en todo el CRM): el carrusel se atenúa para
+                        que se note. Tocar una subcategoría cierra la búsqueda. */}
                     <div
                       ref={subcatScrollRef}
-                      className="flex-1 flex gap-1.5 overflow-x-auto scroll-smooth py-1 px-0.5 no-scrollbar select-none"
+                      className={`flex-1 flex gap-1.5 overflow-x-auto scroll-smooth py-1 px-0.5 no-scrollbar select-none transition-opacity ${busquedaActiva ? "opacity-60" : ""}`}
                       style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
                     >
                       {/* Subcategorías en el MISMO ORDEN del pipeline, con las pestañas
@@ -5023,18 +5186,47 @@ export default function CRMApp() {
                 )}
               </div>
               <div className="flex-1 overflow-y-auto divide-y divide-border/50">
+                {/* Aviso del buscador global: deja claro que la lista de abajo sale
+                    de todo el CRM y no de la subcategoría marcada en el carrusel. */}
+                {busquedaActiva && !loadingChats && (
+                  <div className="px-4 py-2 bg-purple-950/30 text-[11px] leading-snug text-purple-200 flex items-start gap-1.5">
+                    <Search className="w-3 h-3 mt-0.5 flex-shrink-0" />
+                    <span className="min-w-0 break-words">
+                      Buscando <span className="font-semibold">«{searchChats.trim()}»</span> en todo el CRM ·{" "}
+                      <span className="font-semibold">
+                        {totalFilasBandeja === 1 ? "1 resultado" : `${totalFilasBandeja} resultados`}
+                      </span>
+                      {bandejaIncompleta && (
+                        <span className="block mt-1 text-amber-300">
+                          ⚠️ La bandeja solo carga los 1.000 chats más recientes: un contacto más antiguo puede no aparecer aquí.
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                )}
                 {loadingChats ? <div className="p-6 text-center text-sm text-gray-500">Cargando...</div>
-                  : conversacionesFiltradas.length === 0
-                  ? <div className="p-6 text-center text-sm text-gray-500">
+                  : filasBandeja.length === 0
+                  ? (busquedaActiva
+                    ? <div className="p-6 text-center text-sm text-gray-500">
+                        <p>No se encontró <span className="text-gray-300 break-words">«{searchChats.trim()}»</span> en ningún lugar del CRM.</p>
+                        <p className="mt-2 text-xs text-gray-600">
+                          Se buscó en todas las etapas, Spam y Archivados, por número y por el nombre que le pusiste al contacto. Prueba con menos letras o solo con los últimos dígitos del número.
+                        </p>
+                      </div>
+                    : <div className="p-6 text-center text-sm text-gray-500">
                       {chatCategoria === CATEGORIA_POR_LEER ? "No hay chats pendientes por leer 🎉"
                         : chatCategoria === CATEGORIA_EN_SEGUIMIENTO ? "No hay clientes en seguimiento pendientes para hoy 🎉"
                         : chatCategoria === CATEGORIA_ARCHIVADOS ? "No hay conversaciones archivadas 📦"
                         : chatCategoria === "spam" ? "No hay chats marcados como spam 🛡️"
                         : "Bandeja vacía"}
-                    </div>
-                  : conversacionesFiltradas.map((conv) => {
-                    const cliente = conv.clientes;
+                    </div>)
+                  : filasBandeja.map(({ conv, cliente }) => {
+                    // Resultado del buscador que es una ficha de cliente SIN
+                    // conversación en la bandeja: no hay chat que abrir.
+                    if (!conv) return renderClienteSinChat(cliente);
                     const displayName = getDisplayName(cliente, conv);
+                    const telefonoConv = busquedaActiva ? getTelefonoE164(cliente, conv) : "";
+                    const telefonoResultado = telefonoConv && telefonoConv !== displayName ? telefonoConv : "";
                     const tieneNotas = cliente?.notas_personales || cliente?.detalles_caso;
                     const esSpamChat = cliente?.es_spam === true;
                     const isArchivada = (conv as any).archivada === true;
@@ -5047,7 +5239,7 @@ export default function CRMApp() {
 
                     return (
                       <div key={conv.id} className={`group relative w-full flex items-start gap-3 text-left hover:bg-surfaceHover transition-colors ${selectedConv?.id === conv.id ? `bg-surfaceHover border-l-4 ${etapaColor}` : `border-l-4 ${etapaColor} ${etapaBg}`}`}>
-                        <button onClick={() => selectConversation(conv)} className="flex-1 p-4 flex items-start gap-3 text-left">
+                        <button onClick={() => selectConversation(conv, { ubicar: busquedaActiva })} className="flex-1 p-4 flex items-start gap-3 text-left">
                           <div className="relative flex-shrink-0">
                             <div className={`w-12 h-12 rounded-full bg-surface border ${etapaColor} flex items-center justify-center ${etapaText} font-bold overflow-hidden ${isArchivada ? "opacity-80" : ""}`}>
                               {cliente?.foto_url
@@ -5093,9 +5285,15 @@ export default function CRMApp() {
                               </div>
                             </div>
                             <div className="flex items-center gap-1 mb-1 flex-wrap">
-                              {isArchivada ? (
+                              {/* Resultado del buscador global: dónde está el contacto. */}
+                              {busquedaActiva && <span className="text-[9px] text-gray-500">📍 Está en</span>}
+                              {busquedaActiva && esSpamChat ? (
+                                <span className="text-[9px] px-1.5 py-0 rounded bg-gray-500/15 text-gray-300 border border-gray-500">
+                                  SPAM
+                                </span>
+                              ) : isArchivada ? (
                                 <span className="text-[9px] px-1.5 py-0 rounded bg-amber-900/50 text-amber-300 border border-amber-800/50">
-                                  ARCHIVADO
+                                  {busquedaActiva ? "ARCHIVADOS" : "ARCHIVADO"}
                                 </span>
                               ) : etapaCliente && !cliente?.es_spam ? (
                                 <span className={`inline-flex items-center gap-1 text-[9px] px-1.5 py-0 rounded ${etapaBg} ${etapaText} border ${etapaColor}`}>
@@ -5103,6 +5301,11 @@ export default function CRMApp() {
                                   <span>{etapaCliente.nombre}</span>
                                 </span>
                               ) : null}
+                              {/* Si el título es el nombre, el resultado muestra también el
+                                  número: confirma que es el contacto que se buscaba. */}
+                              {busquedaActiva && telefonoResultado && (
+                                <span className="text-[10px] font-mono text-gray-500">{telefonoResultado}</span>
+                              )}
                               {chatCategoria === CATEGORIA_EN_SEGUIMIENTO && estaPendienteSeguimientoHoy(cliente) && (
                                 <button
                                   type="button"
@@ -5133,6 +5336,16 @@ export default function CRMApp() {
                     );
                   })
                 }
+                {/* El buscador pinta primero los mejores resultados; el resto, a un toque. */}
+                {busquedaActiva && !loadingChats && totalFilasBandeja > filasBandeja.length && (
+                  <button
+                    type="button"
+                    onClick={() => setLimiteResultadosBusqueda(Number.MAX_SAFE_INTEGER)}
+                    className="w-full px-4 py-3 text-center text-xs font-medium text-purple-300 hover:bg-surfaceHover transition-colors"
+                  >
+                    Mostrando {filasBandeja.length} de {totalFilasBandeja} · Ver todos
+                  </button>
+                )}
               </div>
             </section>
 
@@ -6195,7 +6408,25 @@ export default function CRMApp() {
                 </div>
               </div>
 
-              {clientesCartera.length === 0 ? (
+              {/* Aviso del buscador: la lista sale de toda la cartera, no solo del
+                  grupo marcado arriba. Cada fila dice de qué grupo es. */}
+              {buscandoEnCartera && (
+                <div className="px-4 py-2 border-b border-border bg-emerald-950/20 text-[11px] leading-snug text-emerald-200 flex items-start gap-1.5">
+                  <Search className="w-3 h-3 mt-0.5 flex-shrink-0" />
+                  <span className="min-w-0 break-words">
+                    Buscando <span className="font-semibold">«{searchCartera.trim()}»</span> en toda la cartera ({personalLabel} y {temploLabel}) ·{" "}
+                    <span className="font-semibold">{clientesCartera.length === 1 ? "1 resultado" : `${clientesCartera.length} resultados`}</span>
+                  </span>
+                </div>
+              )}
+
+              {clientesCartera.length === 0 && buscandoEnCartera ? (
+                <div className="p-10 text-center">
+                  <Search className="w-12 h-12 mx-auto text-gray-600 mb-3" />
+                  <p className="text-sm text-gray-400 font-medium">Nadie con pagos pendientes coincide con <span className="text-gray-200 break-words">«{searchCartera.trim()}»</span></p>
+                  <p className="text-xs text-gray-500 mt-1">Aquí solo aparecen los clientes que deben algún pago. Para ubicar a cualquier contacto usa el buscador de la bandeja de Chats.</p>
+                </div>
+              ) : clientesCartera.length === 0 ? (
                 <div className="p-10 text-center">
                   <Wallet className="w-12 h-12 mx-auto text-gray-600 mb-3" />
                   <p className="text-sm text-gray-400 font-medium">Cartera al día ✨</p>
@@ -6210,6 +6441,7 @@ export default function CRMApp() {
                     const pp = row.proximoPago;
                     const monedaPP = pp?.moneda || "COP";
                     const expandido = expandedCarteraCliente === cliente.id;
+                    const grupoFila = getGrupoCliente(cliente);
                     // Conversación del cliente para saltar al chat y mostrar no leídos
                     const convCliente = conversaciones.find((c) => c.cliente_id === cliente.id && !(c as any).archivada) || conversaciones.find((c) => c.cliente_id === cliente.id);
                     const noLeidosCliente = convCliente?.no_leidos || 0;
@@ -6242,6 +6474,12 @@ export default function CRMApp() {
                                 <h3 className={`text-sm font-bold truncate ${row.vencido ? "text-red-200" : "text-gray-100"}`}>{nombre}</h3>
                                 {noLeidosCliente > 0 && <span className="bg-red-600 text-white text-[9px] min-w-[18px] h-[18px] px-1 rounded-full flex items-center justify-center font-bold">{noLeidosCliente > 99 ? "99+" : noLeidosCliente}</span>}
                                 <span className={`text-[9px] px-1.5 py-0.5 rounded-full border font-semibold ${estadoPill.cls}`}>{estadoPill.txt}</span>
+                                {/* El buscador mira los dos grupos: se indica de cuál es cada resultado. */}
+                                {buscandoEnCartera && (
+                                  <span className={`text-[9px] px-1.5 py-0.5 rounded-full border font-semibold ${grupoFila === "templo" ? "bg-purple-950/40 text-purple-300 border-purple-900/50" : "bg-blue-950/40 text-blue-300 border-blue-900/50"}`}>
+                                    📍 {grupoFila === "templo" ? temploLabel : personalLabel}
+                                  </span>
+                                )}
                               </div>
                               <p className="text-[11px] text-gray-400 flex items-center gap-1 mt-0.5"><Phone className="w-3 h-3" /> {telefono}</p>
                               <div className="flex items-center gap-2 mt-1 flex-wrap">

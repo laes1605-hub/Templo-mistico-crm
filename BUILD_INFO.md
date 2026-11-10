@@ -1,3 +1,72 @@
+## Build 2026-11-10 (v1.3.6): los chats del WhatsApp Personal vuelven a actualizarse + botón 🔄 con diagnóstico
+
+**Síntoma reportado:** «no me está actualizando las conversaciones en el chat
+del CRM, que tengo en el WhatsApp personal».
+
+**Causas encontradas (varias, se arreglaron todas):**
+
+1. **El sondeo del chat abierto sólo miraba UNA conversación de Chatwoot.** El
+   CRM une en una fila las conversaciones del WhatsApp API y las del WhatsApp
+   Personal (Evolution) de un mismo cliente, pero el sondeo de 6 s pasaba sólo
+   `chatwoot_conversation_id` (la principal): los mensajes que entraban por la
+   OTRA bandeja no aparecían nunca. Ahora se pasan todos los ids
+   (`conversacionId=12,34`) y el servidor los sincroniza en la misma llamada.
+2. **`sinNovedades` saltaba para siempre chats sin marca de actividad**: si el
+   listado venía sin `last_non_activity_message_at`, `0 <= ultMs - 3000` era
+   siempre cierto → el chat no se volvía a mirar aunque llegaran mensajes.
+3. **Tolerancia de reloj de 3 s → 90 s.** Al enviar desde el CRM,
+   `ultimo_mensaje_en` se escribe con el reloj de Vercel; la actividad de
+   Chatwoot lleva el reloj del VPS de Contabo. Con el VPS atrasado, la
+   respuesta rápida del cliente quedaba «más vieja» que lo guardado y el
+   sondeo la saltaba hasta el siguiente mensaje o la pasada completa.
+4. **Hambre de cupos en el sondeo rápido:** con la tolerancia de ±3 s, todos
+   los chats ya sincronizados re-qualificaban como «novedad» cada 45 s y los
+   8 más recientes se comían los 8 cupos por pasada. Una pasada limpia ahora
+   se recuerda 10 minutos (invalidación inmediata si cambia la actividad).
+5. **Bandeja congelada sin realtime:** si el websocket de Supabase no llega
+   (típico en la APK) y el webhook ya había guardado el mensaje, ningún
+   sondeo lo repintaba. Ahora el sondeo reporta `actividad_maxima_ms`
+   (también de los chats omitidos) y el dashboard refresca cuando Chatwoot va
+   adelantado a lo pintado + refresco de respaldo cada ~60 s.
+6. **Realtime vacío por caché de mapa obsoleta:** tras escribir una
+   conversación, el mapa en memoria (10 s) seguía con los valores viejos → el
+   siguiente sondeo re-PATCHeaba lo mismo → recargas de lista sin mensajes.
+   El mapa ahora se actualiza tras cada escritura.
+
+### Diagnóstico con veredicto (nuevo)
+
+- **`GET /api/chatwoot/sync?diagnostico=1`**: revisa la cadena
+  WhatsApp Personal → Evolution → Chatwoot → Supabase y devuelve hallazgos
+  con severidad y solución (estado de la instancia `personal` de Evolution,
+  bandejas por inbox con su última actividad, frescura de Supabase, reloj del
+  VPS).
+- **Botón 🔄 Chatwoot**: ahora ejecuta una reparación completa acotada
+  (`completa=1&max=30`) y muestra el veredicto debajo del buscador; si algo
+  está roto, abre un aviso con el eslabón fallido y cómo arreglarlo. Antes el
+  botón no decía nada: fallar era invisible.
+- **Runbook** con la tabla «veredicto → causa → arreglo» al principio de
+  `SINCRONIZACION-CHATWOOT.md`.
+
+### Otras mejoras de la misma pasada
+
+- Listado de bandeja con **`status=all` en una sola llamada** (respaldo al
+  bucle por estado si el Chatwoot instalado no lo soporta): cubre
+  open+pending+snoozed con la mitad de llamadas.
+- Verificación por id exacto en la deduplicación con **una** consulta ligera
+  en vez de tres (el webhook baja de 10 a 8 round-trips).
+- `max` param en `/api/chatwoot/sync` (10–100) para pasadas completas
+  acotadas.
+
+### Verificación
+
+- `node scripts/prueba-sincronizacion-rapida.mjs` ✅ **27/27** (nuevas:
+  sondeo multi-id del chat unificado, `actividad_maxima_ms` en pasada idle,
+  diagnóstico de la cadena; arregladas 4 comprobaciones que fallaban en main
+  desde la llegada del estado `pending` y de las lecturas ligeras).
+- `npx tsc --noEmit` ✅ · `npm run build` ✅ · `npm run test:tiempo` ✅ (60/60)
+- La APK carga la web en vivo: **no hay que reinstalarla**; basta el deploy de
+  Vercel al hacer merge.
+
 ## Build 2026-10-09 (v1.3.5 / APK code 9): corregir fallo «Something went wrong» al guardar contactos en Android con permiso activo
 
 **Síntoma:** al pulsar **Guardar en teléfono** en Android (con el permiso de Contactos ya activado), seguía mostrando el error `No se pudo guardar … en la agenda del teléfono (Something went wrong.). Revisa que la app tenga el permiso de Contactos y vuelve a intentarlo.`

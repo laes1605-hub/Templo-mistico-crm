@@ -5,6 +5,67 @@ sí llegaban al chat de Chatwoot, pero nunca cargaban en el dashboard del CRM.
 
 ---
 
+## 🚨 2026-11-10: «no se actualizan los chats del WhatsApp Personal»
+
+**Primer paso (10 segundos, sin salir del CRM):** pulsa el botón **🔄 Chatwoot**
+junto al buscador. Ahora hace dos cosas:
+
+1. **Reparación completa** de las 30 conversaciones más recientes (historial
+   incluido, sin depender del webhook ni de n8n).
+2. **Diagnóstico de la cadena** WhatsApp Personal → Evolution → Chatwoot →
+   Supabase, con veredicto visible debajo del buscador y, si algo está roto,
+   un aviso que dice **qué eslabón falló y cómo arreglarlo**.
+
+El mismo diagnóstico se puede ver en JSON abriendo:
+
+```
+https://templo-mistico-crm.vercel.app/api/chatwoot/sync?diagnostico=1
+```
+
+### Qué revisar según el veredicto (en orden de frecuencia)
+
+| Veredicto | Causa | Arreglo |
+|---|---|---|
+| «El WhatsApp Personal está desconectado de Evolution» | La sesión QR del número personal caducó (pasa solo; es LA causa típica) | Abre `https://evo-crmesteban.duckdns.org/manager` y escanea el QR de la instancia `personal`. También sirve `GET /instance/connect/personal` con la cabecera `apikey` |
+| «No se pudo verificar el WhatsApp Personal: falta EVOLUTION_API_KEY» | A Vercel le falta la llave | Añádela en Vercel → Settings → Environment Variables (la misma de `/opt/templo/.env`) |
+| «Chatwoot no responde» | El servidor Contabo está caído o el token cambió | `ssh` al servidor → `cd /opt/templo && docker compose ps`; revisa `CHATWOOT_URL`/`CHATWOOT_API_TOKEN` en Vercel |
+| «La sincronización Chatwoot → Supabase está quedándose atrás» | El sondeo/webhook falla al guardar (migración pendiente, llave de Supabase) | Pulsa 🔄 (repara); si persiste, revisa los logs de `/api/chatwoot/sync` en Vercel y aplica las migraciones pendientes de `supabase/migrations/` |
+| «Cadena sana» pero el chat sigue igual | El mensaje nunca llegó a Chatwoot | Escribe un mensaje de prueba desde otro teléfono; si no aparece ni en Chatwoot, es la reconexión QR (primer caso) |
+
+### Arreglos de código incluidos en esta pasada (2026-11-10)
+
+1. **El sondeo del chat abierto vigila TODAS las conversaciones de Chatwoot
+   del chat unificado.** Un cliente puede tener una conversación en el inbox
+   del WhatsApp API y OTRA en el del WhatsApp Personal (Evolution): el CRM las
+   une en una sola fila, pero el sondeo de 6 s sólo miraba la principal → los
+   mensajes que entraban por la otra bandeja no aparecían nunca (hasta la
+   pasada de la bandeja o la de reparación). Ahora `conversacionId=12,34`
+   sincroniza varias a la vez.
+2. **`sinNovedades` ya no salta para siempre chats sin marca de actividad.**
+   Si el listado de Chatwoot venía sin `last_non_activity_message_at`, la
+   comparación `0 <= ultMs - 3000` daba «sin novedades» eterno.
+3. **Tolerancia de reloj ampliada a 90 s.** `ultimo_mensaje_en` se escribe con
+   el reloj de Vercel al enviar desde el CRM, pero la actividad de Chatwoot
+   lleva el reloj del VPS: si el VPS iba atrasado, la respuesta rápida del
+   cliente quedaba «más vieja» que lo guardado y el sondeo la saltaba.
+4. **Fin del hambre de cupos en el sondeo rápido.** Los chats ya sincronizados
+   volvían a contar como «novedad» cada 45 s y ocupaban los 8 cupos por
+   pasada, dejando fuera a los demás. Ahora una pasada limpia se recuerda
+   10 minutos (se invalida sola en cuanto cambia la actividad del chat).
+5. **`status=all` en una sola llamada** (con respaldo por estado si el
+   Chatwoot instalado no lo soporta) y el **mapa de conversaciones se
+   mantiene vivo tras cada escritura** (antes la caché de 10 s provocaba
+   re-PATCHes y eventos realtime vacíos).
+6. **El dashboard se repinta aunque el realtime de Supabase no llegue**
+   (típico en la APK): el sondeo reporta la actividad más reciente de Chatwoot
+   y, si va adelantada a lo que se está pintando, refresca la bandeja y los
+   mensajes del chat abierto; además hay un refresco de respaldo cada ~60 s.
+7. **Prueba local ampliada** (`node scripts/prueba-sincronizacion-rapida.mjs`):
+   27 comprobaciones incluyendo el sondeo multi-id y el diagnóstico.
+
+---
+
+
 ## 🔍 Causa raíz
 
 El dashboard **no lee Chatwoot**: lee las tablas `conversaciones` y `mensajes`

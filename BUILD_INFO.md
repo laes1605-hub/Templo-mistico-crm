@@ -1,3 +1,85 @@
+## Build 2026-11-10 (v1.3.7): el buscador busca en todo el CRM y dice dónde está el contacto
+
+**Qué se pidió:** que el buscador no busque solo en la categoría que está
+abierta, sino en todo el CRM, y que ubique el número o el contacto.
+
+**Causa:** el buscador de la bandeja filtraba la lista de la subcategoría
+abierta: primero aplicaba la etapa (Nuevo Lead, En Consulta, Archivados,
+Spam…) y después el texto. Un contacto que estaba en otra etapa no aparecía y
+la lista salía vacía aunque existiera en el CRM. En Cartera pasaba lo mismo con
+el selector de grupo (Personal / Templo).
+
+### Arreglo
+
+- **`src/lib/buscador-global.ts` (nuevo, funciones puras)** — un solo motor
+  para los dos buscadores:
+  - **Número** escrito como sea: con o sin `+`, con espacios, guiones o
+    paréntesis; sin el indicativo (`305 402 1111` encuentra
+    `+57 305 402 1111`); con el `0` / `00` de marcado (`0985 123456`,
+    `0057…`); pegando un enlace `wa.me/…`; o solo una parte del número. Mira
+    `telefono_display`, `telefono` y `numero_whatsapp`.
+  - **Nombre** puesto a mano (`nombre_manual`), sin importar mayúsculas ni
+    tildes y con las palabras en cualquier orden (`lopez maria` encuentra
+    «María López»). El nombre que carga WhatsApp sigue sin usarse (regla de
+    `PRIORIDAD-TELEFONO-Y-POR-LEER.md`).
+  - **Orden:** la coincidencia más exacta primero; a igual coincidencia, chats
+    activos → archivados → spam → fichas sin chat, y arriba el de actividad
+    más reciente.
+- **Bandeja de Chats (`src/app/page.tsx`)**:
+  - Al escribir, la lista pasa a ser el resultado de **todo el CRM** (todas
+    las etapas, Archivados y Spam) con el aviso «Buscando «x» en todo el CRM ·
+    N resultados». El carrusel de subcategorías se atenúa y sus contadores no
+    cambian.
+  - Cada resultado dice **«📍 Está en [etapa / ARCHIVADOS / SPAM]»** y muestra
+    el número cuando el título es el nombre.
+  - **Al abrir un resultado la bandeja se ubica en su subcategoría** (el chip
+    queda marcado y centrado en el carrusel) y el texto buscado se conserva.
+    Estando en Por leer / En seguimiento / Archivados se conserva esa lista si
+    el chat pertenece a ella.
+  - Tocar una subcategoría o la ✕ cierra la búsqueda y vuelve a la lista
+    normal.
+  - Los clientes registrados **sin chat en la bandeja** también salen: si
+    deben pagos, la fila lleva a su ficha en Cartera; si no, queda marcada
+    «SIN CHAT».
+  - Se pintan los 60 mejores resultados y un botón «Ver todos» para el resto,
+    para que escribir no se vuelva lento en el teléfono.
+  - Si la bandeja llega con exactamente 1.000 chats (el tope por consulta de
+    Supabase), el buscador avisa de que un contacto más antiguo puede no
+    aparecer. La carga de chats sigue siendo una sola consulta, sin paginar.
+  - El carrusel se centra con `scrollTo` sobre el propio carrusel (antes
+    `scrollIntoView`): con el teclado abierto no mueve el resto de la
+    pantalla. Al volver del chat a la lista deja a la vista la subcategoría
+    activa.
+- **Cartera**: con texto en su buscador busca en los **dos grupos** (mientras
+  se escribe ignora el selector Personal / Templo / Todas) con el mismo motor,
+  y cada fila lleva la etiqueta «📍 grupo». Sigue listando solo clientes con
+  pagos pendientes.
+- **Diferencias con el filtro anterior:** se ignoran las tildes; los dígitos
+  dentro de un texto solo cuentan como teléfono si son 7 o más («paciente 12»
+  ya no trae todos los números que contienen 12); un campo con solo espacios o
+  signos (`+`, `()`) no busca. Buscar por el texto del último mensaje sigue
+  funcionando solo dentro de Archivados, como antes. El contador de Archivados
+  (chip y columna del Pipeline) ya no se encoge con lo escrito en el buscador.
+
+### Verificación
+
+- `npm run test:buscador` ✅ **105/105** (nuevo,
+  `scripts/prueba-buscador-global.mjs`: formatos de número, nombres, orden,
+  ubicación, fichas sin chat; 5.000 chats + 5.000 clientes se recorren en
+  ~14 ms).
+- `npx tsc --noEmit` ✅ · `npm run build` ✅ · `npm run test:tiempo` ✅ (60/60)
+- Pantalla completa (`CRMApp`) montada en jsdom con un Supabase simulado
+  (arnés temporal, no se guarda en el repo): **86/86** comprobaciones del
+  recorrido (buscar desde otra etapa, abrir y quedar ubicado, Archivados,
+  Spam, formatos de número, flujo del teléfono con el botón Atrás, «Ver
+  todos», fichas sin chat, Cartera), el aviso de los 1.000 chats (sale con
+  1.000; no sale con 999 ni con 1.001) y un volcado de todas las vistas
+  **sin** búsqueda idéntico antes y después del cambio.
+- **No probado** contra la base de datos real, en un navegador real ni en el
+  teléfono: el entorno donde se hizo el cambio no tiene acceso a ninguno.
+- La APK carga la web en vivo: **no hay que reinstalarla**; basta el deploy de
+  Vercel al hacer merge.
+
 ## Build 2026-11-10 (v1.3.6): los chats del WhatsApp Personal vuelven a actualizarse + botón 🔄 con diagnóstico
 
 **Síntoma reportado:** «no me está actualizando las conversaciones en el chat

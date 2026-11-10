@@ -249,6 +249,16 @@ export type ResultadoSync = {
   mensajes_vinculados: number;
   errores: string[];
   tardo_ms: number;
+  /**
+   * Actividad más reciente vista en Chatwoot durante la pasada (ms epoch),
+   * contando TAMBIÉN las conversaciones que se omitieron por no tener
+   * novedades. El dashboard la compara con su propia lista: si Chatwoot va
+   * adelantado (p. ej. el webhook ya guardó el mensaje pero el realtime de
+   * Supabase no llegó al teléfono), refresca aunque el sondeo no haya traído
+   * nada nuevo. Sin esto, un APK sin realtime se queda con la bandeja vieja
+   * aunque Supabase esté perfectamente al día.
+   */
+  actividad_maxima_ms: number;
 };
 
 function nuevoResultado(): ResultadoSync {
@@ -262,6 +272,7 @@ function nuevoResultado(): ResultadoSync {
     mensajes_vinculados: 0,
     errores: [],
     tardo_ms: 0,
+    actividad_maxima_ms: 0,
   };
 }
 
@@ -507,11 +518,24 @@ async function upsertConversacion(
       ...(!existente.chatwoot_conversation_id && cwId ? { chatwoot_conversation_id: cwId } : {}),
       actualizado_en: new Date().toISOString(),
     });
-    await sbFetch(`/conversaciones?id=eq.${existente.id}`, {
+    const respuestaPatch = await sbFetch(`/conversaciones?id=eq.${existente.id}`, {
       method: "PATCH",
       headers: { Prefer: "return=minimal" },
       body: JSON.stringify(cambios),
     });
+    if (respuestaPatch.ok) {
+      // Mantener vivo el mapa en memoria (vale 10 s): sin esto, la segunda
+      // pasada de un sondeo volvía a PATCHear lo mismo porque el mapa seguía
+      // con los valores viejos → un evento realtime vacío por cada chat y
+      // recargas de la lista en el teléfono sin ningún mensaje nuevo.
+      existente.ultimo_mensaje = ultimoMensaje;
+      existente.ultimo_mensaje_en = ultimoMensajeEn;
+      existente.numero_whatsapp = telefonoFinal;
+      if (subirEntranteApi && entranteApiNuevo) existente.ultimo_entrante_api_en = entranteApiNuevo;
+      if (cacheMapaConversaciones && cacheMapaConversaciones.expira > Date.now()) {
+        for (const id of idsUnidos) cacheMapaConversaciones.mapa.set(id, existente);
+      }
+    }
     return {
       ...existente,
       ultimo_mensaje_en: ultimoMensajeEn,
@@ -539,7 +563,13 @@ async function upsertConversacion(
   });
   if (creacion.ok && Array.isArray(creacion.json) && creacion.json.length > 0) {
     res.conversaciones_nuevas += 1;
-    return creacion.json[0];
+    const fila = creacion.json[0];
+    // También el mapa en memoria debe conocerla ya (evita re-buscarla en la
+    // ventana de la caché).
+    if (cacheMapaConversaciones && cacheMapaConversaciones.expira > Date.now()) {
+      for (const id of idsChatwootDe(fila)) cacheMapaConversaciones.mapa.set(id, fila);
+    }
+    return fila;
   }
   // Carrera con n8n: rebuscar antes de rendirse.
   const rebusqueda = await buscarConversacion(convCw.id);
@@ -732,12 +762,15 @@ async function sincronizarMensajes(
         `conversacion_id=eq.${convSupabaseId}&creado_en=gte.${encodeURIComponent(desde)}`,
         `&order=creado_en.asc&limit=300`
       ),
+      // La verificación por id exacto NO necesita las URLs (no compara
+      // huellas): una sola consulta ligera. Si el mensaje está en la ventana
+      // de tiempo, la copia de porVentana (que sí trae URLs) gana en la unión.
       ids.length > 0 && tieneId !== false
-        ? traerExistentesLigero(
-            `conversacion_id=eq.${convSupabaseId}&chatwoot_message_id=in.(${ids
+        ? sbFetch(
+            `/mensajes?conversacion_id=eq.${convSupabaseId}&chatwoot_message_id=in.(${ids
               .map((x) => encodeURIComponent(String(x)))
-              .join(",")})`
-          )
+              .join(",")})&select=${SEL_MSG_LIGERO}`
+          ).then((r) => (Array.isArray(r.json) ? (r.json as MensajeExistente[]) : []))
         : Promise.resolve([] as MensajeExistente[]),
     ]);
     const vistos = new Set<string>();
@@ -920,7 +953,7 @@ function resumenUltimoMensaje(
 export type OpcionesSync = {
   /** Traer historial de TODAS las conversaciones, no sólo las con novedades. */
   completa?: boolean;
-  /** Sincronizar una sola conversación de Chatwoot. */
+  /** Sincronizar una sola conversación de Chatwoot (o varias, separadas por coma). */
   chatwootConversationId?: string | number;
   /** Máximo de conversaciones por pasada (por defecto 100). */
   maxConversaciones?: number;
@@ -957,9 +990,10 @@ async function sincronizarConversacionCw(
     /** Modo reparación: refresca nombre/foto/attrs del cliente aunque exista. */
     refrescarCliente?: boolean;
   }
-): Promise<{ ok: boolean; nuevos: number; actualizados: number }> {
+): Promise<{ ok: boolean; nuevos: number; actualizados: number; errores: number }> {
   const antesNuevos = res.mensajes_nuevos;
   const antesAct = res.mensajes_actualizados;
+  const antesErrores = res.errores.length;
   const sender = convCw?.meta?.sender || {};
   const attrs = convCw?.custom_attributes || sender?.custom_attributes || {};
   const { telefono, display } = telefonoDe(sender, convCw);
@@ -978,7 +1012,7 @@ async function sincronizarConversacionCw(
       attrs,
       res
     );
-    if (!clienteId) return { ok: false, nuevos: 0, actualizados: 0 };
+    if (!clienteId) return { ok: false, nuevos: 0, actualizados: 0, errores: res.errores.length - antesErrores };
   }
 
   const mensajesResp = await cwGet(
@@ -1019,7 +1053,7 @@ async function sincronizarConversacionCw(
     existente,
     ultimo?.ultimoEntrante ?? null
   );
-  if (!convRow) return { ok: false, nuevos: 0, actualizados: 0 };
+  if (!convRow) return { ok: false, nuevos: 0, actualizados: 0, errores: res.errores.length - antesErrores };
 
   if (mensajesCw.length > 0) {
     const sync = await sincronizarMensajes(convRow.id, mensajesCw, res, {
@@ -1038,6 +1072,7 @@ async function sincronizarConversacionCw(
     ok: true,
     nuevos: res.mensajes_nuevos - antesNuevos,
     actualizados: res.mensajes_actualizados - antesAct,
+    errores: res.errores.length - antesErrores,
   };
 }
 
@@ -1048,27 +1083,49 @@ function actividadCwMs(convCw: any): number {
 /** ¿El CRM ya tiene esa actividad (o más nueva)? Entonces no hay nada que bajar. */
 function sinNovedades(convCw: any, existente: ConvExistente | null): boolean {
   if (!existente || !existente.ultimo_mensaje_en) return false;
+  const actMs = actividadCwMs(convCw);
+  // Sin marca de actividad en el listado de Chatwoot (0) la comparación
+  // antigua daba `0 <= ultMs - 3000` = cierto → el chat quedaba saltado PARA
+  // SIEMPRE aunque llegaran mensajes nuevos. Sin marca, mejor mirarlo.
+  if (!actMs) return false;
   const ultMs = Date.parse(existente.ultimo_mensaje_en) || 0;
-  return actividadCwMs(convCw) <= ultMs - 3000;
+  // Tolerancia amplia (90 s) a propósito: `ultimo_mensaje_en` se escribe con
+  // el reloj de VERCEL cuando el operador envía desde el CRM, pero la
+  // actividad de Chatwoot lleva el reloj del VPS de Contabo. Si ese reloj va
+  // atrasado, una respuesta rápida del cliente quedaba con actividad "más
+  // vieja" que lo guardado y el sondeo la saltaba hasta el siguiente mensaje
+  // o la pasada completa de 10 minutos. Con 90 s de margen esos mensajes se
+  // traen igual. El coste (re-procesar un chat ya sincronizado una vez) lo
+  // absorbe la caché de "sin novedades".
+  return actMs <= ultMs - 90_000;
 }
 
-// El solape de ±3 s para tolerar reloj hace que un chat "empatado" parezca
+// La tolerancia de reloj de `sinNovedades` (90 s) hace que un chat "empatado"
+// (actividad de Chatwoot a la par o algo por detrás de lo guardado) parezca
 // siempre novedad. Para que los sondeos cada pocos segundos no descarguen el
-// historial de esos chats una y otra vez, se recuerda brevemente que ya se
-// miró y no había nada (se invalida sola cuando Chatwoot reporta otra
-// actividad, y a los 45 s como mucho). La reparación profunda del botón 🔄 y
-// de la app al abrir ignora esta caché.
-const cacheSinNovedades = new Map<string, { actMs: number; en: number }>();
+// historial de esos chats una y otra vez, se recuerda que ya se miró y no
+// había nada (se invalida sola cuando Chatwoot reporta otra actividad). La
+// reparación profunda del botón 🔄 y de la app al abrir ignora esta caché.
+const cacheSinNovedades = new Map<string, { actMs: number; en: number; limpio: boolean }>();
 const CACHE_MS = 45_000;
+// Cuando la pasada salió limpia (0 mensajes nuevos, 0 errores) no hace falta
+// re-mirar el chat cada 45 s: con la marca de actividad bastará, porque el
+// próximo mensaje la cambia y la caché se invalida sola. Antes, con más de 8
+// chats "empatados", los 8 más recientes se re-procesaban cada 45 s y
+// ocupaban TODOS los cupos del sondeo rápido (máx. 8 chats por pasada),
+// dejando sin sincronizar a los demás hasta 10 minutos.
+const CACHE_LIMPIO_MS = 10 * 60_000;
 
 function sePuedeOmitir(convCw: any): boolean {
   const hit = cacheSinNovedades.get(String(convCw.id));
-  return Boolean(hit && hit.actMs === actividadCwMs(convCw) && Date.now() - hit.en < CACHE_MS);
+  if (!hit) return false;
+  const ttl = hit.limpio ? CACHE_LIMPIO_MS : CACHE_MS;
+  return hit.actMs === actividadCwMs(convCw) && Date.now() - hit.en < ttl;
 }
 
-function marcarSinNovedades(convCw: any): void {
+function marcarSinNovedades(convCw: any, limpio = false): void {
   if (cacheSinNovedades.size > 500) cacheSinNovedades.clear();
-  cacheSinNovedades.set(String(convCw.id), { actMs: actividadCwMs(convCw), en: Date.now() });
+  cacheSinNovedades.set(String(convCw.id), { actMs: actividadCwMs(convCw), en: Date.now(), limpio });
 }
 
 export async function sincronizarTodo(opciones: OpcionesSync = {}): Promise<ResultadoSync> {
@@ -1080,27 +1137,39 @@ export async function sincronizarTodo(opciones: OpcionesSync = {}): Promise<Resu
   try {
     // ------------------------------------------------------------------
     // 1) Conversación única (abrir el chat + sondeo de 2.5 s del chat abierto)
+    //    Acepta VARIOS ids separados por coma: un cliente puede tener una
+    //    conversación en el inbox del WhatsApp API y OTRA en el de WhatsApp
+    //    Personal (Evolution). El chat del CRM las une en una sola fila, así
+    //    que hay que vigilarlas todas: si sólo se mira la principal, los
+    //    mensajes que entran por la otra bandeja no se ven nunca.
     // ------------------------------------------------------------------
     if (opciones.chatwootConversationId) {
-      const detalle = await cwGet(`/conversations/${opciones.chatwootConversationId}`, 15000);
-      if (detalle.ok && detalle.json) {
-        res.conversaciones_recorridas = 1;
-        const existente = await buscarConversacion(opciones.chatwootConversationId);
-        if (!opciones.completa && (sinNovedades(detalle.json, existente) || sePuedeOmitir(detalle.json))) {
-          // Nada nuevo: el sondeo rápido del chat abierto son 2 consultas y ya.
-          res.tardo_ms = Date.now() - inicio;
-          return res;
+      const idsPedidos = String(opciones.chatwootConversationId)
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .slice(0, 4);
+      for (const idUnico of idsPedidos) {
+        const detalle = await cwGet(`/conversations/${idUnico}`, 15000);
+        if (detalle.ok && detalle.json) {
+          res.conversaciones_recorridas += 1;
+          res.actividad_maxima_ms = Math.max(res.actividad_maxima_ms, actividadCwMs(detalle.json));
+          const existente = await buscarConversacion(idUnico);
+          if (!opciones.completa && (sinNovedades(detalle.json, existente) || sePuedeOmitir(detalle.json))) {
+            // Nada nuevo: el sondeo rápido del chat abierto son 2 consultas y ya.
+            continue;
+          }
+          const hec = await sincronizarConversacionCw(detalle.json, res, tocadas, {
+            existente,
+            ventanaDedupe: !opciones.completa,
+            perPageMensajes: opciones.completa ? 100 : 40,
+          });
+          if (!opciones.completa && hec.ok && hec.nuevos === 0 && hec.actualizados === 0) {
+            marcarSinNovedades(detalle.json, hec.errores === 0);
+          }
+        } else if (detalle.status === 404) {
+          res.errores.push(`la conversación ${idUnico} no existe en Chatwoot (¿se borró?)`);
         }
-        const hec = await sincronizarConversacionCw(detalle.json, res, tocadas, {
-          existente,
-          ventanaDedupe: !opciones.completa,
-          perPageMensajes: opciones.completa ? 100 : 40,
-        });
-        if (!opciones.completa && hec.ok && hec.nuevos === 0 && hec.actualizados === 0) {
-          marcarSinNovedades(detalle.json);
-        }
-      } else if (detalle.status === 404) {
-        res.errores.push("la conversación no existe en Chatwoot (¿se borró?)");
       }
       if (tocadas.length > 0) await recalcularNoLeidos(tocadas);
       res.tardo_ms = Date.now() - inicio;
@@ -1111,34 +1180,77 @@ export async function sincronizarTodo(opciones: OpcionesSync = {}): Promise<Resu
     // ------------------------------------------------------------------
     // 2) Bandeja. WhatsApp Personal (Evolution) suele crear chats en
     //    `pending` y/o sin asignar: si sólo pedimos status=open se pierden.
+    //    Se pide `status=all` en UNA llamada y se filtra localmente a
+    //    open/pending/snoozed (las resueltas sin actividad no interesan: al
+    //    entrar un mensaje Chatwoot las reabre). Si el Chatwoot instalado no
+    //    soporta `all`, se vuelve al bucle por estado.
     // ------------------------------------------------------------------
     let conversacionesCw: any[] = [];
     const perPage = 100;
     const maxPaginas = opciones.rapido ? 2 : 5;
-    const estados = opciones.completa
-      ? ["open", "pending", "snoozed"]
-      : ["open", "pending"];
+    const estadosUtiles = new Set(["open", "pending", "snoozed"]);
     const vistosCw = new Set<string>();
-    for (const estado of estados) {
-      for (let pagina = 1; pagina <= maxPaginas; pagina += 1) {
-        const listado = await cwGet(
-          `/conversations?status=${estado}&assignee_type=all&per_page=${perPage}&page=${pagina}`,
-          15000
-        );
-        if (!listado.ok && pagina === 1 && estado === estados[0]) {
-          res.errores.push(
-            `Chatwoot no respondió el listado (${listado.status}): ${listado.texto.slice(0, 160)}`
+    const listaTodoOk = await cwGet(
+      `/conversations?status=all&assignee_type=all&per_page=${perPage}&page=1`,
+      15000
+    );
+    if (listaTodoOk.ok) {
+      for (const conv of extraerConversacionesCw(listaTodoOk.json)) {
+        const id = String(conv?.id || "");
+        const estado = String(conv?.status || "").toLowerCase();
+        // Sin estado en el payload no se descarta (mejor mirar de más).
+        if (!id || vistosCw.has(id)) continue;
+        if (estado && !estadosUtiles.has(estado)) continue;
+        vistosCw.add(id);
+        conversacionesCw.push(conv);
+      }
+      // ¿Había más páginas? Se traen también con status=all.
+      const lote1 = extraerConversacionesCw(listaTodoOk.json).length;
+      if (lote1 >= perPage) {
+        for (let pagina = 2; pagina <= maxPaginas; pagina += 1) {
+          const listado = await cwGet(
+            `/conversations?status=all&assignee_type=all&per_page=${perPage}&page=${pagina}`,
+            15000
           );
+          if (!listado.ok) break;
+          const lote = extraerConversacionesCw(listado.json);
+          for (const conv of lote) {
+            const id = String(conv?.id || "");
+            const estado = String(conv?.status || "").toLowerCase();
+            if (!id || vistosCw.has(id)) continue;
+            if (estado && !estadosUtiles.has(estado)) continue;
+            vistosCw.add(id);
+            conversacionesCw.push(conv);
+          }
+          if (lote.length < perPage || conversacionesCw.length >= maxConversaciones * 2) break;
         }
-        const lote = extraerConversacionesCw(listado.json);
-        for (const conv of lote) {
-          const id = String(conv?.id || "");
-          if (!id || vistosCw.has(id)) continue;
-          vistosCw.add(id);
-          conversacionesCw.push(conv);
+      }
+    } else {
+      // Respaldo: Chatwoot sin soporte de status=all → bucle por estado.
+      const estados = opciones.completa
+        ? ["open", "pending", "snoozed"]
+        : ["open", "pending"];
+      for (const estado of estados) {
+        for (let pagina = 1; pagina <= maxPaginas; pagina += 1) {
+          const listado = await cwGet(
+            `/conversations?status=${estado}&assignee_type=all&per_page=${perPage}&page=${pagina}`,
+            15000
+          );
+          if (!listado.ok && pagina === 1 && estado === estados[0]) {
+            res.errores.push(
+              `Chatwoot no respondió el listado (${listado.status}): ${listado.texto.slice(0, 160)}`
+            );
+          }
+          const lote = extraerConversacionesCw(listado.json);
+          for (const conv of lote) {
+            const id = String(conv?.id || "");
+            if (!id || vistosCw.has(id)) continue;
+            vistosCw.add(id);
+            conversacionesCw.push(conv);
+          }
+          if (!listado.ok || lote.length < perPage) break;
+          if (conversacionesCw.length >= maxConversaciones * 2) break;
         }
-        if (!listado.ok || lote.length < perPage) break;
-        if (conversacionesCw.length >= maxConversaciones * 2) break;
       }
     }
     // Ordenar por actividad más reciente primero (prioriza lo urgente).
@@ -1155,6 +1267,10 @@ export async function sincronizarTodo(opciones: OpcionesSync = {}): Promise<Resu
     const mapaSb = await mapaDeConversaciones(Boolean(opciones.rapido));
     let aProcesar: Array<{ convCw: any; existente: ConvExistente | null }> = [];
     for (const convCw of conversacionesCw) {
+      // La actividad vista se reporta SIEMPRE (también de los chats omitidos):
+      // es la señal con la que el dashboard se da cuenta de que Chatwoot va
+      // adelantado a lo que está pintando (webhook ya guardó, realtime no llegó).
+      res.actividad_maxima_ms = Math.max(res.actividad_maxima_ms, actividadCwMs(convCw));
       const existente = mapaSb.get(String(convCw.id)) || null;
       if (!opciones.completa && (sinNovedades(convCw, existente) || sePuedeOmitir(convCw))) continue;
       aProcesar.push({ convCw, existente });
@@ -1171,7 +1287,7 @@ export async function sincronizarTodo(opciones: OpcionesSync = {}): Promise<Resu
         refrescarCliente: opciones.completa,
       });
       if (!opciones.completa && hec.ok && hec.nuevos === 0 && hec.actualizados === 0) {
-        marcarSinNovedades(convCw);
+        marcarSinNovedades(convCw, hec.errores === 0);
       }
     }
 
@@ -1339,4 +1455,349 @@ export async function procesarEventoWebhook(
   res.tardo_ms = Date.now() - inicio;
   res.ok = res.ok && res.errores.length === 0;
   return res;
+}
+
+// ---------------------------------------------------------------------------
+// Diagnóstico de la cadena WhatsApp Personal → Evolution → Chatwoot → Supabase
+// ---------------------------------------------------------------------------
+// «No me está actualizando las conversaciones del WhatsApp Personal» puede
+// romperse en 4 eslabones distintos, y desde el CRM no se ve cuál. Esta
+// función recorre la cadena de fuera hacia dentro y devuelve un veredicto en
+// español con el primer eslabón roto y cómo arreglarlo:
+//
+//   1. Evolution (¿la sesión del WhatsApp Personal sigue conectada? El QR
+//      caduca y es la causa típica).
+//   2. Chatwoot (¿responde? ¿la bandeja del Personal registra actividad?)
+//   3. Sincronización Chatwoot → Supabase (¿el último mensaje de Supabase va
+//      a la zaga del de Chatwoot? → el sondeo/webhook está fallando).
+//   4. Reloj del servidor (¿la actividad de Chatwoot está en el futuro? →
+//      el VPS tiene el reloj atrasado y el sondeo puede saltar mensajes).
+
+export type HallazgoDiagnostico = {
+  paso: string;
+  estado: "ok" | "aviso" | "error" | "desconocido";
+  detalle: string;
+  solucion?: string;
+};
+
+export type ResultadoDiagnostico = {
+  estado: "ok" | "aviso" | "error";
+  veredicto: string;
+  generado_en: string;
+  evolution: {
+    url: string;
+    instancia: string;
+    estado: string | null;
+    conectado: boolean;
+  };
+  chatwoot: {
+    conectado: boolean;
+    conversaciones: number;
+    ultima_actividad: string | null;
+    ultima_actividad_hace_s: number | null;
+    inboxes: Array<{
+      id: number | string | null;
+      nombre: string;
+      canal: string;
+      es_personal: boolean;
+      conversaciones: number;
+      ultima_actividad: string | null;
+      ultima_actividad_hace_s: number | null;
+    }>;
+  };
+  supabase: {
+    conectado: boolean;
+    ultimo_mensaje_en: string | null;
+    ultimo_mensaje_hace_s: number | null;
+    ultima_conversacion_en: string | null;
+    mensajes_ultimas_2h: number | null;
+  };
+  reloj_chatwoot_adelantado_s: number | null;
+  hallazgos: HallazgoDiagnostico[];
+};
+
+function haceSegundos(iso: string | null | undefined, ahora = Date.now()): number | null {
+  if (!iso) return null;
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return null;
+  return Math.round((ahora - t) / 1000);
+}
+
+async function estadoEvolution(): Promise<{
+  url: string;
+  instancia: string;
+  estado: string | null;
+  conectado: boolean;
+  error: string | null;
+}> {
+  const url = (process.env.EVOLUTION_API_URL || "https://evo-crmesteban.duckdns.org").replace(/\/$/, "");
+  const instancia = (process.env.EVOLUTION_INSTANCE || "personal").trim();
+  const llave = (process.env.EVOLUTION_API_KEY || "").trim();
+  if (!llave) {
+    return { url, instancia, estado: null, conectado: false, error: "sin EVOLUTION_API_KEY en el servidor" };
+  }
+  const controlador = new AbortController();
+  const temporizador = setTimeout(() => controlador.abort(), 10000);
+  try {
+    const respuesta = await fetch(`${url}/instance/connectionState/${instancia}`, {
+      headers: { apikey: llave },
+      signal: controlador.signal,
+    });
+    const texto = await respuesta.text();
+    let json: any = null;
+    try {
+      json = texto ? JSON.parse(texto) : null;
+    } catch {
+      json = null;
+    }
+    const estado = String(json?.instance?.state || json?.state || "") || null;
+    return {
+      url,
+      instancia,
+      estado,
+      conectado: Boolean(estado && estado.toLowerCase() === "open"),
+      error: respuesta.ok ? null : `HTTP ${respuesta.status}: ${texto.slice(0, 120)}`,
+    };
+  } catch (e: any) {
+    return {
+      url,
+      instancia,
+      estado: null,
+      conectado: false,
+      error: e?.name === "AbortError" ? "tiempo de espera agotado" : e?.message || "error de red",
+    };
+  } finally {
+    clearTimeout(temporizador);
+  }
+}
+
+export async function diagnosticoCadena(): Promise<ResultadoDiagnostico> {
+  const hallazgos: HallazgoDiagnostico[] = [];
+  const ahora = Date.now();
+
+  // ------------------------- 1) Evolution (WhatsApp Personal) ----------------
+  const evo = await estadoEvolution();
+  const evoSinLlave = !evo.conectado && Boolean(evo.error && evo.error.includes("EVOLUTION_API_KEY"));
+  if (!evo.conectado) {
+    const detalle = evoSinLlave
+      ? `No se pudo verificar la sesión del WhatsApp Personal: falta EVOLUTION_API_KEY en el servidor (Vercel).`
+      : evo.error
+        ? `No se pudo consultar Evolution (${evo.url}): ${evo.error}`
+        : evo.estado
+          ? `La instancia «${evo.instancia}» del WhatsApp Personal está en estado «${evo.estado}» (debe ser «open»).`
+          : `No se pudo verificar la sesión del WhatsApp Personal (instancia «${evo.instancia}»).`;
+    hallazgos.push({
+      paso: "Evolution (WhatsApp Personal)",
+      estado: evoSinLlave ? "desconocido" : "error",
+      detalle,
+      solucion: evoSinLlave
+        ? "Define EVOLUTION_API_KEY en Vercel (la misma de /opt/templo/.env del servidor). Sin ella tampoco se puede enviar desde el CRM por el WhatsApp Personal."
+        : `Abre ${evo.url}/manager (o GET ${evo.url}/instance/connect/${evo.instancia} con la cabecera apikey) y escanea el QR con el WhatsApp Personal del teléfono. Mientras no esté «open», los mensajes que te escriban al número personal NO llegan al CRM.`,
+    });
+  } else {
+    hallazgos.push({
+      paso: "Evolution (WhatsApp Personal)",
+      estado: "ok",
+      detalle: `Instancia «${evo.instancia}» conectada (state=open).`,
+    });
+  }
+
+  // ------------------------- 2) Chatwoot (listado + bandejas) ----------------
+  const conversacionesCw: any[] = [];
+  let chatwootConectado = false;
+  for (const estado of ["open", "pending"]) {
+    const listado = await cwGet(`/conversations?status=${estado}&assignee_type=all&per_page=100&page=1`, 15000);
+    if (estado === "open") chatwootConectado = listado.ok;
+    if (!listado.ok) continue;
+    for (const conv of extraerConversacionesCw(listado.json)) {
+      if (!conversacionesCw.some((c) => String(c.id) === String(conv.id))) conversacionesCw.push(conv);
+    }
+  }
+  if (!chatwootConectado) {
+    hallazgos.push({
+      paso: "Chatwoot",
+      estado: "error",
+      detalle: "Chatwoot no respondió el listado de conversaciones (URL o token caídos).",
+      solucion: "Revisa que el servidor Contabo esté arriba (docker compose ps) y que CHATWOOT_URL / CHATWOOT_API_TOKEN sigan válidos en Vercel.",
+    });
+  }
+
+  const inboxes = new Map<
+    string,
+    {
+      id: number | string | null;
+      nombre: string;
+      canal: string;
+      es_personal: boolean;
+      conversaciones: number;
+      ultimaMs: number;
+    }
+  >();
+  let ultimaActividadMs = 0;
+  for (const conv of conversacionesCw) {
+    const inboxId = conv?.inbox?.id ?? conv?.inbox_id ?? null;
+    const clave = String(inboxId ?? conv?.inbox?.name ?? "?");
+    const nombre = String(conv?.inbox?.name || `Inbox ${inboxId ?? "?"}`);
+    const canal = String(conv?.meta?.channel || conv?.inbox?.channel_type || "");
+    const actMs = actividadCwMs(conv);
+    ultimaActividadMs = Math.max(ultimaActividadMs, actMs);
+    const fila = inboxes.get(clave);
+    if (fila) {
+      fila.conversaciones += 1;
+      fila.ultimaMs = Math.max(fila.ultimaMs, actMs);
+    } else {
+      inboxes.set(clave, {
+        id: inboxId,
+        nombre,
+        canal,
+        es_personal: fuenteDeConversacion(conv) === "evolution",
+        conversaciones: 1,
+        ultimaMs: actMs,
+      });
+    }
+  }
+  const inboxesLista = Array.from(inboxes.values())
+    .map((f) => ({
+      id: f.id,
+      nombre: f.nombre,
+      canal: f.canal,
+      es_personal: f.es_personal,
+      conversaciones: f.conversaciones,
+      ultima_actividad: f.ultimaMs ? new Date(f.ultimaMs).toISOString() : null,
+      ultima_actividad_hace_s: f.ultimaMs ? Math.round((ahora - f.ultimaMs) / 1000) : null,
+    }))
+    .sort((a, b) => (b.ultima_actividad_hace_s ?? Infinity) - (a.ultima_actividad_hace_s ?? Infinity));
+
+  if (chatwootConectado) {
+    const inboxPersonal = inboxesLista.find((i) => i.es_personal);
+    const actHace = inboxesLista.find((i) => i.es_personal)?.ultima_actividad_hace_s ?? null;
+    if (!inboxPersonal) {
+      hallazgos.push({
+        paso: "Bandeja WhatsApp Personal en Chatwoot",
+        estado: "aviso",
+        detalle: "Chatwoot responde pero no hay ninguna conversación de la bandeja Personal/Evolution en la primera página.",
+        solucion: "Si el WhatsApp Personal debería tener chats, la integración Evolution→Chatwoot quedó desconfigurada (revisa el token de la bandeja en Chatwoot y que la instancia «personal» siga registrada).",
+      });
+    } else if (actHace != null && actHace > 3600 && evo.conectado) {
+      hallazgos.push({
+        paso: "Bandeja WhatsApp Personal en Chatwoot",
+        estado: "aviso",
+        detalle: `La bandeja «${inboxPersonal.nombre}» no registra mensajes nuevos hace ${Math.round(actHace / 60)} min aunque Evolution dice estar conectada.`,
+        solucion: "Escribe un mensaje de prueba desde otro teléfono al número personal: si en Chatwoot tampoco aparece, reconecta la sesión (QR) en Evolution aunque diga «open».",
+      });
+    } else if (evo.conectado) {
+      hallazgos.push({
+        paso: "Bandeja WhatsApp Personal en Chatwoot",
+        estado: "ok",
+        detalle: `Bandeja «${inboxPersonal.nombre}» con ${inboxPersonal.conversaciones} conversaciones; última actividad ${inboxPersonal.ultima_actividad ? `hace ${Math.round((inboxPersonal.ultima_actividad_hace_s ?? 0) / 60)} min` : "sin datos"}.`,
+      });
+    }
+  }
+
+  // ------------------------- 3) Supabase (frescura) --------------------------
+  const [ultimoMsg, ultimaConv, recientes] = await Promise.all([
+    sbFetch("/mensajes?select=creado_en&order=creado_en.desc&limit=1"),
+    sbFetch("/conversaciones?select=ultimo_mensaje_en&order=ultimo_mensaje_en.desc&limit=1"),
+    sbFetch(`/mensajes?select=id&creado_en=gte.${encodeURIComponent(new Date(ahora - 2 * 3600_000).toISOString())}&limit=501`),
+  ]);
+  const sbUltimoMsgIso = Array.isArray(ultimoMsg.json) && ultimoMsg.json[0]?.creado_en ? ultimoMsg.json[0].creado_en : null;
+  const sbUltimaConvIso =
+    Array.isArray(ultimaConv.json) && ultimaConv.json[0]?.ultimo_mensaje_en ? ultimaConv.json[0].ultimo_mensaje_en : null;
+  const sbRecientes = Array.isArray(recientes.json) ? recientes.json.length : null;
+  const supabaseConectado = ultimoMsg.ok || ultimaConv.ok;
+  if (!supabaseConectado) {
+    hallazgos.push({
+      paso: "Supabase",
+      estado: "error",
+      detalle: "Supabase no respondió las consultas de frescura (llave o caída del servicio).",
+      solucion: "Revisa SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY en Vercel y el estado del proyecto en supabase.com.",
+    });
+  }
+
+  // ------------------------- 4) ¿La sync va a la zaga? -----------------------
+  const cwUltimaIso = ultimaActividadMs ? new Date(ultimaActividadMs).toISOString() : null;
+  if (chatwootConectado && supabaseConectado && cwUltimaIso && sbUltimoMsgIso) {
+    const retrasoS = Math.round((Date.parse(cwUltimaIso) - Date.parse(sbUltimoMsgIso)) / 1000);
+    if (retrasoS > 180) {
+      hallazgos.push({
+        paso: "Sincronización Chatwoot → Supabase",
+        estado: "error",
+        detalle: `Chatwoot tiene actividad ${Math.round(retrasoS / 60)} min más nueva que el último mensaje guardado en Supabase: el sondeo o el webhook no están guardando lo que entra.`,
+        solucion: "Pulsa 🔄 Chatwoot en el CRM (reparación completa) y revisa los logs de la función /api/chatwoot/sync en Vercel. Si hay errores de columnas, aplica las migraciones pendientes de supabase/migrations.",
+      });
+    } else {
+      hallazgos.push({
+        paso: "Sincronización Chatwoot → Supabase",
+        estado: "ok",
+        detalle: `Al día: el último mensaje de Supabase va ${retrasoS >= 0 ? `${retrasoS} s por detrás` : `${-retrasoS} s por delante`} de la actividad de Chatwoot.`,
+      });
+    }
+  }
+
+  // ------------------------- 5) Reloj del servidor ---------------------------
+  let relojAdelantadoS: number | null = null;
+  if (cwUltimaIso) {
+    const futuroS = Math.round((Date.parse(cwUltimaIso) - ahora) / 1000);
+    if (futuroS > 120) {
+      relojAdelantadoS = futuroS;
+      hallazgos.push({
+        paso: "Reloj del servidor",
+        estado: "aviso",
+        detalle: `La actividad más reciente de Chatwoot está ${futuroS} s EN EL FUTURO: el reloj del VPS va adelantado.`,
+        solucion: "Ajusta la hora del servidor (timedatectl set-ntp true). Un reloj adelantado no pierde mensajes, pero conviene corregirlo.",
+      });
+    }
+  }
+
+  // ------------------------- Veredicto ---------------------------------------
+  const peor = hallazgos.reduce<string>((acum, h) => {
+    if (acum === "error") return acum;
+    if (h.estado === "error") return "error";
+    if (acum === "aviso") return acum;
+    if (h.estado === "aviso" || h.estado === "desconocido") return "aviso";
+    return acum;
+  }, "ok");
+
+  let veredicto: string;
+  if (!evo.conectado && evo.estado) {
+    veredicto = "El WhatsApp Personal está desconectado de Evolution: reconecta el QR y los chats volverán a llegar.";
+  } else if (!evo.conectado && evoSinLlave) {
+    veredicto = "No se pudo verificar el WhatsApp Personal: falta EVOLUTION_API_KEY en Vercel (sin ella tampoco se puede enviar por el Personal desde el CRM).";
+  } else if (!evo.conectado && evo.error) {
+    veredicto = `No se pudo consultar Evolution: ${evo.error}`;
+  } else if (!chatwootConectado) {
+    veredicto = "Chatwoot no responde: revisa el servidor Contabo y las variables CHATWOOT_* de Vercel.";
+  } else if (!supabaseConectado) {
+    veredicto = "Supabase no responde: revisa las llaves del proyecto en Vercel.";
+  } else if (hallazgos.some((h) => h.paso === "Sincronización Chatwoot → Supabase" && h.estado === "error")) {
+    veredicto = "La sincronización Chatwoot → Supabase está quedándose atrás: pulsa 🔄 Chatwoot para reparar y revisa los logs en Vercel.";
+  } else if (peor === "aviso") {
+    veredicto = "La cadena funciona, pero hay avisos que conviene revisar (ver hallazgos).";
+  } else {
+    const hace = haceSegundos(sbUltimoMsgIso ?? cwUltimaIso, ahora);
+    veredicto = `Cadena sana: WhatsApp Personal → Evolution → Chatwoot → Supabase al día${hace != null ? ` (último mensaje hace ${hace < 90 ? `${hace} s` : `${Math.round(hace / 60)} min`})` : ""}.`;
+  }
+
+  return {
+    estado: peor as ResultadoDiagnostico["estado"],
+    veredicto,
+    generado_en: new Date(ahora).toISOString(),
+    evolution: { url: evo.url, instancia: evo.instancia, estado: evo.estado, conectado: evo.conectado },
+    chatwoot: {
+      conectado: chatwootConectado,
+      conversaciones: conversacionesCw.length,
+      ultima_actividad: cwUltimaIso,
+      ultima_actividad_hace_s: cwUltimaIso ? Math.round((ahora - Date.parse(cwUltimaIso)) / 1000) : null,
+      inboxes: inboxesLista,
+    },
+    supabase: {
+      conectado: supabaseConectado,
+      ultimo_mensaje_en: sbUltimoMsgIso,
+      ultimo_mensaje_hace_s: haceSegundos(sbUltimoMsgIso, ahora),
+      ultima_conversacion_en: sbUltimaConvIso,
+      mensajes_ultimas_2h: sbRecientes,
+    },
+    reloj_chatwoot_adelantado_s: relojAdelantadoS,
+    hallazgos,
+  };
 }

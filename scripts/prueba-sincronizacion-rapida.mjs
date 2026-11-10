@@ -66,6 +66,9 @@ const estado = {
   mensajesCw78: [
     { id: 801, message_type: 0, content: "viejo", created_at: nowSec - 86400, private: false, attachments: null },
   ],
+  // Conversación 80: el MISMO cliente (Ana) pero en el inbox de WhatsApp
+  // Personal (Evolution). El CRM une las dos en una sola fila por cliente.
+  mensajesCw80: [],
   // Supabase
   clientes: [{ id: "cli-1", telefono: "+573001112233", nombre: "Ana", foto_url: null }],
   conversaciones: [
@@ -135,8 +138,12 @@ globalThis.fetch = async (urlRaw, init = {}) => {
         return Resp(201, null);
       }
       if (method === "PATCH") return Resp(204, null);
-      const convId = (url.searchParams.get("conversacion_id") || "").replace("eq.", "");
-      let rows = estado.mensajes.filter((m) => m.conversacion_id === convId);
+      const convIdParam = url.searchParams.get("conversacion_id");
+      let rows = convIdParam
+        ? estado.mensajes.filter((m) => m.conversacion_id === convIdParam.replace("eq.", ""))
+        : estado.mensajes.slice();
+      const orden = url.searchParams.get("order");
+      if (orden === "creado_en.desc") rows.sort((a, b) => Date.parse(b.creado_en) - Date.parse(a.creado_en));
       const desde = url.searchParams.get("creado_en");
       if (desde) rows = rows.filter((m) => Date.parse(m.creado_en) >= Date.parse(desde.replace("gte.", "")));
       const idsQ = url.searchParams.get("chatwoot_message_id");
@@ -161,9 +168,8 @@ globalThis.fetch = async (urlRaw, init = {}) => {
   }
   const msgs = url.pathname.match(/\/conversations\/(\d+)\/messages$/);
   if (msgs) {
-    const conv = estado.conversacionesCw.find((c) => String(c.id) === msgs[1]);
-    const lista = conv?.id === 77 ? estado.mensajesCw77 : estado.mensajesCw78;
-    return Resp(200, { payload: lista });
+    const pool = { 77: estado.mensajesCw77, 78: estado.mensajesCw78, 80: estado.mensajesCw80 };
+    return Resp(200, { payload: pool[msgs[1]] || [] });
   }
   return Resp(404, {});
 };
@@ -199,9 +205,14 @@ r = await mod.sincronizarTodo({ rapido: true }); // dedupe confirma, marca cach�
 check("2ª pasada: 0 escrituras en Supabase", sbWrites().length === 0, JSON.stringify(sbWrites()));
 estado.llamadas.length = 0;
 r = await mod.sincronizarTodo({ rapido: true }); // caliente: nada que hacer
-check("3ª pasada (idle): 1 sola consulta a Chatwoot", estado.llamadas.filter((l) => !l.host.includes("sb.test")).length === 1, JSON.stringify(estado.llamadas));
-check("3ª pasada (idle): 1 sola lectura a Supabase (el mapa)", estado.llamadas.filter((l) => l.host.includes("sb.test")).length === 1, JSON.stringify(estado.llamadas));
+check("3ª pasada (idle): 1 sola consulta a Chatwoot (status=all)", estado.llamadas.filter((l) => !l.host.includes("sb.test")).length === 1, JSON.stringify(estado.llamadas));
+// El mapa de conversaciones vive 10 s en memoria: 0 lecturas si aún está
+// caliente, 1 (el mapa) si ya expiró. Nunca más.
+check("3ª pasada (idle): ≤1 lectura a Supabase (el mapa)", estado.llamadas.filter((l) => l.host.includes("sb.test")).length <= 1, JSON.stringify(estado.llamadas));
 check("3ª pasada (idle): 0 escrituras", sbWrites().length === 0);
+// La actividad vista se reporta aunque no haya nada nuevo (señal para el
+// dashboard: "Chatwoot va adelantado a lo que estás pintando").
+check("3ª pasada (idle): reporta la actividad máxima de Chatwoot", r.actividad_maxima_ms === (nowSec + 60) * 1000 || r.actividad_maxima_ms === (nowSec + 120) * 1000, JSON.stringify(r));
 // llega un mensaje nuevo del cliente → la caché se invalida sola (actividad distinta)
 estado.mensajesCw77.push({ id: 905, message_type: 0, content: "¿Sigue disponible?", created_at: nowSec + 120, private: false, attachments: null });
 estado.conversacionesCw[0].last_non_activity_message_at = nowSec + 120;
@@ -224,7 +235,11 @@ r = await mod.procesarEventoWebhook({
 check("webhook: inserta 904", Boolean(estado.mensajes.find((m) => m.chatwoot_message_id === "904")) && r.mensajes_nuevos === 1, JSON.stringify(r));
 check("webhook: sin PATCH a clientes", !sbWrites().some((l) => l.path.includes("/clientes")));
 const roundTrips = estado.llamadas.length;
-check("webhook: pocos round-trips (≤6)", roundTrips <= 6, `${roundTrips} llamadas: ${JSON.stringify(estado.llamadas.map((l) => l.method + " " + l.path.split("?")[0]))}`);
+// 1 búsqueda de la conversación + 3 lecturas ligeras de la ventana (ligeros /
+// urls cortas / base64 — evita descargar adjuntos enormes para deduplicar) +
+// 1 lectura por id exacto + PATCH del resumen + POST del mensaje + RPC de no
+// leídos = 8. Antes eran 10 (la verificación por id hacía las 3 lecturas).
+check("webhook: pocos round-trips (≤8)", roundTrips <= 8, `${roundTrips} llamadas: ${JSON.stringify(estado.llamadas.map((l) => l.method + " " + l.path.split("?")[0]))}`);
 
 // ============ 4) Reintento del MISMO evento: idempotente ============
 estado.llamadas.length = 0;
@@ -267,6 +282,70 @@ r = await mod.procesarEventoWebhook({
   sender: { phone_number: "+573009998877", name: "Cinthia" },
 });
 check("webhook conv nueva: no revienta, reporta o crea", typeof r.ok === "boolean" && r.tardo_ms >= 0, JSON.stringify(r));
+
+// ============ 7) Chat unificado: sondeo de VARIAS conversaciones de Chatwoot ============
+// Ana tiene la 77 (inbox WhatsApp API) y aparece la 80 (inbox WhatsApp
+// Personal/Evolution) con un mensaje nuevo. El sondeo del chat abierto del CRM
+// pasa "77,80": debe traer el mensaje de la Personal, que antes se perdía
+// porque sólo se miraba la conversación principal.
+estado.conversacionesCw.push({
+  id: 80,
+  inbox_id: 3,
+  inbox: { id: 3, name: "WhatsApp Personal" },
+  status: "open",
+  last_non_activity_message_at: nowSec + 200,
+  last_activity_at: nowSec + 200,
+  custom_attributes: {},
+  meta: { sender: { name: "Ana", phone_number: "+573001112233", identifier: "3001112233", avatar_url: null } },
+});
+estado.mensajesCw80.push({ id: 950, message_type: 0, content: "Hola desde el Personal", created_at: nowSec + 200, private: false, attachments: null });
+estado.llamadas.length = 0;
+r = await mod.sincronizarTodo({ chatwootConversationId: "77,80" });
+const msg950 = estado.mensajes.find((m) => m.chatwoot_message_id === "950");
+const conv1Tras = estado.conversaciones.find((c) => c.id === "conv-1");
+check("multi-id: inserta el mensaje de la conversación del Personal (80)", Boolean(msg950) && r.mensajes_nuevos === 1, JSON.stringify(r));
+check("multi-id: recorre las 2 conversaciones", r.conversaciones_recorridas === 2, JSON.stringify(r));
+check(
+  "multi-id: la fila unifica los ids de Chatwoot (77 y 80)",
+  Array.isArray(conv1Tras.chatwoot_conversation_ids) && conv1Tras.chatwoot_conversation_ids.includes("80"),
+  JSON.stringify(conv1Tras.chatwoot_conversation_ids)
+);
+check(
+  "multi-id: el mensaje del Personal queda en la conversación del cliente (unificada)",
+  Boolean(msg950) && msg950.conversacion_id === "conv-1",
+  JSON.stringify(msg950)
+);
+check("multi-id: reporta la actividad más nueva vista", r.actividad_maxima_ms === (nowSec + 200) * 1000, JSON.stringify(r.actividad_maxima_ms));
+
+// ============ 8) Diagnóstico de la cadena (Evolution → Chatwoot → Supabase) ============
+// Sin EVOLUTION_API_KEY en el entorno, el paso de Evolution queda "desconocido"
+// (con su solución), pero el resto de la cadena sí se verifica.
+const diag = await mod.diagnosticoCadena();
+check(
+  "diagnóstico: estructura completa (veredicto + hallazgos + estado)",
+  typeof diag.veredicto === "string" && diag.veredicto.length > 0 && Array.isArray(diag.hallazgos) && diag.hallazgos.length > 0 && typeof diag.estado === "string",
+  JSON.stringify(diag).slice(0, 300)
+);
+check(
+  "diagnóstico: verifica Evolution (WhatsApp Personal) y dice cómo arreglarlo",
+  diag.hallazgos.some((h) => h.paso.includes("Evolution") && h.detalle && h.solucion),
+  JSON.stringify(diag.hallazgos)
+);
+check(
+  "diagnóstico: Chatwoot conectado y con las 3 conversaciones vistas",
+  diag.chatwoot.conectado === true && diag.chatwoot.conversaciones === 3,
+  JSON.stringify(diag.chatwoot)
+);
+check(
+  "diagnóstico: distingue la bandeja del WhatsApp Personal de la del API",
+  diag.chatwoot.inboxes.some((i) => i.es_personal) && diag.chatwoot.inboxes.some((i) => !i.es_personal),
+  JSON.stringify(diag.chatwoot.inboxes)
+);
+check(
+  "diagnóstico: la sync Chatwoot → Supabase queda verificada (al día)",
+  diag.hallazgos.some((h) => h.paso.includes("Sincronizaci\u00f3n") && h.estado === "ok"),
+  JSON.stringify(diag.hallazgos)
+);
 
 console.log(fallos === 0 ? "\n🎉 TODO OK" : `\n💥 ${fallos} fallo(s)`);
 process.exit(fallos === 0 ? 0 : 1);

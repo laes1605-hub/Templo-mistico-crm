@@ -1534,15 +1534,40 @@ export default function CRMApp() {
   // ===================== SINCRONIZACIÓN DIRECTA CON CHATWOOT =====================
   // El dashboard ya no depende del workflow de n8n para enterarse de los
   // mensajes: pregunta directamente a Chatwoot (la fuente de la verdad) vía
-  // /api/chatwoot/sync y repara Supabase. Se ejecuta al abrir la app (completa),
-  // en modo RÁPIDO cada pocos segundos (bandeja 5 s, chat abierto 2.5 s), al
-  // abrir un chat y con el botón 🔄. Con el webhook directo de Chatwoot
-  // configurado, el mensaje llega empujado por el propio Chatwoot en <1 s y
-  // Supabase Realtime lo refleja en el dashboard al instante.
+  // /api/chatwoot/sync y repara Supabase. Se ejecuta al abrir la app, en modo
+  // RÁPIDO cada pocos segundos (bandeja 12 s, chat abierto 6 s), al abrir un
+  // chat y con el botón 🔄. Con el webhook directo de Chatwoot configurado, el
+  // mensaje llega empujado por el propio Chatwoot en <1 s y Supabase Realtime
+  // lo refleja en el dashboard al instante.
   const [sincronizandoCW, setSincronizandoCW] = useState(false);
+  // Aviso visible tras pulsar 🔄 (resultado de la sincronización + diagnóstico)
+  const [avisoSync, setAvisoSync] = useState<string | null>(null);
   const sincronizandoCWRef = useRef(false);      // pasadas completas / manuales
   const sincronizandoRapidoRef = useRef(false);  // delta de bandeja (5 s)
   const sincronizandoChatRef = useRef(false);    // chat abierto (2.5 s), lock propio
+  const ultimoRefrescoAdelantoRef = useRef(0);   // cooldown del refresco por "Chatwoot va adelantado"
+
+  /**
+   * TODAS las conversaciones de Chatwoot que pertenecen a este chat del CRM.
+   * Un cliente puede tener una en el inbox del WhatsApp API y OTRA en el del
+   * WhatsApp Personal (Evolution): el CRM las une en una sola fila, así que
+   * el sondeo del chat abierto tiene que vigilarlas TODAS. Si sólo se mira la
+   * principal, los mensajes que entran por la otra bandeja no aparecían nunca.
+   */
+  function idsChatwootDeConv(conv: any): string {
+    if (!conv) return "";
+    const ids = Array.from(
+      new Set(
+        [
+          ...(Array.isArray(conv.chatwoot_conversation_ids) ? conv.chatwoot_conversation_ids : []),
+          conv.chatwoot_conversation_id,
+        ]
+          .map((x: any) => (x == null ? "" : String(x).trim()))
+          .filter(Boolean)
+      )
+    );
+    return ids.join(",");
+  }
 
   async function sincronizarConChatwoot(
     opciones: { conversacionId?: string | number; completa?: boolean; silencioso?: boolean; rapido?: boolean } = {}
@@ -1564,11 +1589,31 @@ export default function CRMApp() {
       if (opciones.rapido) params.set("rapido", "1");
       const res = await fetch(`/api/chatwoot/sync?${params.toString()}`, { method: "POST" });
       const data = await res.json().catch(() => null);
-      if (data && (data.mensajes_nuevos > 0 || data.mensajes_actualizados > 0 || data.conversaciones_nuevas > 0 || !opciones.silencioso)) {
+      // Chatwoot reporta su actividad más reciente (aunque el sondeo no haya
+      // traído nada nuevo porque el webhook ya lo guardó). Si va ADELANTADO a
+      // lo que la bandeja está pintando, hay datos nuevos en Supabase que el
+      // realtime no nos trajo (típico en la APK) → refrescar.
+      const actMax = Number(data?.actividad_maxima_ms) || 0;
+      const localMax = conversacionesRef.current.reduce(
+        (max: number, c: any) => Math.max(max, Date.parse(c?.ultimo_mensaje_en || "") || 0),
+        0
+      );
+      const chatwootAdelanta =
+        actMax > 0 && localMax > 0 && actMax > localMax + 3000 && Date.now() - ultimoRefrescoAdelantoRef.current > 30_000;
+      if (data && (data.mensajes_nuevos > 0 || data.mensajes_actualizados > 0 || data.conversaciones_nuevas > 0 || chatwootAdelanta || !opciones.silencioso)) {
+        if (chatwootAdelanta) ultimoRefrescoAdelantoRef.current = Date.now();
         fetchConversaciones(false);
         // Si hay un chat abierto, refrescar sus mensajes con lo nuevo.
         const convAbierta = selectedConvRef.current;
-        if (convAbierta && (!opciones.conversacionId || String(opciones.conversacionId) === String(convAbierta.chatwoot_conversation_id))) {
+        const idsConvAbierta = opciones.conversacionId
+          ? String(opciones.conversacionId).split(",").map((s) => s.trim())
+          : [];
+        const esDelChatAbierto = (c: any) => {
+          if (!idsConvAbierta.length) return true;
+          const propios = String(idsChatwootDeConv(c)).split(",").filter(Boolean);
+          return idsConvAbierta.some((id) => propios.includes(id));
+        };
+        if (convAbierta && esDelChatAbierto(convAbierta)) {
           // AHORRO DE EGRESS: antes se re-descargaba la conversación completa
           // (con audios/imágenes en base64) en cada tic con novedades. Ahora
           // solo se piden los mensajes desde ~5 min antes del último conocido
@@ -1607,6 +1652,69 @@ export default function CRMApp() {
     }
   }
 
+  /**
+   * Botón 🔄 Chatwoot: reparación completa (acotada a las 30 conversaciones
+   * más recientes para no agotar el minuto de Vercel) + diagnóstico de la
+   * cadena WhatsApp Personal → Evolution → Chatwoot → Supabase con veredicto
+   * visible. Antes el botón no decía NADA: si algo estaba roto (QR caducado,
+   * Chatwoot caído, sync fallando) el usuario sólo veía que "no se actualiza".
+   */
+  async function sincronizarManualChatwoot() {
+    if (sincronizandoCWRef.current) return;
+    sincronizandoCWRef.current = true;
+    setSincronizandoCW(true);
+    setAvisoSync(null);
+    let data: any = null;
+    try {
+      const res = await fetch("/api/chatwoot/sync?completa=1&max=30", { method: "POST" });
+      data = await res.json().catch(() => null);
+    } catch (e: any) {
+      alert(`No se pudo sincronizar con Chatwoot: ${e?.message || e}`);
+      sincronizandoCWRef.current = false;
+      setSincronizandoCW(false);
+      return;
+    }
+    // Refrescar la bandeja con lo que haya traído la reparación.
+    fetchConversaciones(false);
+    // Diagnóstico de la cadena: dice QUÉ eslabón está roto si algo no llega.
+    let diagnostico: any = null;
+    try {
+      const res = await fetch("/api/chatwoot/sync?diagnostico=1");
+      diagnostico = await res.json().catch(() => null);
+    } catch {
+      /* el diagnóstico es opcional */
+    } finally {
+      sincronizandoCWRef.current = false;
+      setSincronizandoCW(false);
+    }
+    const partes: string[] = [];
+    const hayErrores = Array.isArray(data?.errores) && data.errores.length > 0;
+    if (data?.conversaciones_nuevas > 0) partes.push(`${data.conversaciones_nuevas} chat(s) nuevo(s)`);
+    if (data?.mensajes_nuevos > 0) partes.push(`${data.mensajes_nuevos} mensaje(s)`);
+    if (data?.mensajes_actualizados > 0) partes.push(`${data.mensajes_actualizados} completado(s)`);
+    if (hayErrores) partes.push(`${data.errores.length} error(es): ${String(data.errores[0]).slice(0, 120)}`);
+    if (diagnostico && diagnostico.estado && diagnostico.estado !== "ok") {
+      const hallazgos = (Array.isArray(diagnostico.hallazgos) ? diagnostico.hallazgos : [])
+        .filter((h: any) => h && h.estado !== "ok")
+        .slice(0, 3)
+        .map((h: any) => `• ${h.paso}: ${h.detalle}${h.solucion ? `\n➡️ ${h.solucion}` : ""}`)
+        .join("\n\n");
+      alert(`Diagnóstico de los chats:\n\n${diagnostico.veredicto || ""}\n\n${hallazgos || ""}`.trim());
+      setAvisoSync(`⚠️ ${diagnostico.veredicto || "Revisa el diagnóstico"}`);
+    } else {
+      const icono = hayErrores ? "⚠️" : "✅";
+      const resumen = partes.length > 0 ? `${icono} ${partes.join(" · ")}` : `${icono} Todo estaba al día`;
+      setAvisoSync(diagnostico?.veredicto ? `${resumen} — ${diagnostico.veredicto}` : resumen);
+    }
+  }
+
+  // El aviso del 🔄 se borra solo a los 12 s (o al 8 si es largo).
+  useEffect(() => {
+    if (!avisoSync) return;
+    const t = setTimeout(() => setAvisoSync(null), avisoSync.length > 140 ? 8000 : 12000);
+    return () => clearTimeout(t);
+  }, [avisoSync]);
+
   // Sondeos adaptativos con la app visible (la APK/web no siempre recibe el
   // realtime de Supabase; con esto los mensajes aparecen igual, en ~2-3 s sin
   // webhook y en <1 s con él). Con la app oculta se pausa todo.
@@ -1614,6 +1722,7 @@ export default function CRMApp() {
     const visible = () => typeof document === "undefined" || document.visibilityState === "visible";
     const enLinea = () => typeof navigator === "undefined" || navigator.onLine !== false;
     let ultimaActividad = Date.now();
+    let ticsDesdeRefresco = 0;
     const registrarActividad = () => { ultimaActividad = Date.now(); };
     window.addEventListener("mousemove", registrarActividad, { passive: true });
     window.addEventListener("keydown", registrarActividad, { passive: true });
@@ -1625,15 +1734,28 @@ export default function CRMApp() {
       const inactivo = Date.now() - ultimaActividad > 120_000;
       if (inactivo && Math.random() > 0.2) return;
       void sincronizarConChatwoot({ silencioso: true, rapido: true });
+      // Red de seguridad anti-realtime-muerto: si el websocket de Supabase no
+      // llegó (típico en la APK), la bandeja se repinta sola cada ~60 s aunque
+      // el sondeo no haya reportado nada nuevo. Sin esto, un mensaje guardado
+      // por el webhook podía quedar invisible hasta reabrir la app.
+      ticsDesdeRefresco += 1;
+      if (ticsDesdeRefresco >= 5) {
+        ticsDesdeRefresco = 0;
+        fetchConversaciones(false);
+      }
     };
     const ticChatAbierto = () => {
       if (!visible() || !enLinea()) return;
       const conv = selectedConvRef.current;
-      if (!conv?.chatwoot_conversation_id) return;
+      // TODAS las conversaciones de Chatwoot del chat unificado (API + Personal):
+      // si sólo se mira la principal, los mensajes del WhatsApp Personal que
+      // entran por la otra conversación no aparecían nunca.
+      const idsConv = idsChatwootDeConv(conv);
+      if (!idsConv) return;
       const inactivo = Date.now() - ultimaActividad > 120_000;
       if (inactivo && Math.random() > 0.2) return;
       void sincronizarConChatwoot({
-        conversacionId: conv.chatwoot_conversation_id,
+        conversacionId: idsConv,
         silencioso: true,
         rapido: true,
       });
@@ -1695,11 +1817,15 @@ export default function CRMApp() {
           });
         } else {
           // Combinar datos en una sola fila representativa
-          const cwId = existente.chatwoot_conversation_id || c.chatwoot_conversation_id;
           const tExistente = new Date(existente.ultimo_mensaje_en || 0).getTime();
           const tNuevo = new Date(c.ultimo_mensaje_en || 0).getTime();
           const principal = tNuevo > tExistente ? c : existente;
           const secundaria = tNuevo > tExistente ? existente : c;
+          // El id "principal" de Chatwoot es el de la fila más reciente (por eso
+          // se calcula después de saber cuál es): antes heredaba el de la fila
+          // vieja aunque la conversación nueva (p. ej. la del WhatsApp Personal)
+          // fuera la que estaba activa.
+          const cwId = principal.chatwoot_conversation_id || secundaria.chatwoot_conversation_id;
           // La ventana de 24 h se toma del chat unificado más reciente: si el
           // cliente escribió en cualquiera de las dos conversaciones, cuenta.
           const entrantes = [existente.ultimo_entrante_en, c.ultimo_entrante_en].filter(Boolean);
@@ -3216,9 +3342,13 @@ export default function CRMApp() {
       conversacionIds: conv.all_conv_ids && conv.all_conv_ids.length ? conv.all_conv_ids : [conv.id],
       limite: 4,
     });
-    // Traer el historial fresco directo de Chatwoot para ESTE chat
-    if (conv.chatwoot_conversation_id) {
-      void sincronizarConChatwoot({ conversacionId: conv.chatwoot_conversation_id, silencioso: true });
+    // Traer el historial fresco directo de Chatwoot para ESTE chat (todas sus
+    // conversaciones de Chatwoot: la del WhatsApp API y la del Personal)
+    {
+      const idsConv = idsChatwootDeConv(conv);
+      if (idsConv) {
+        void sincronizarConChatwoot({ conversacionId: idsConv, silencioso: true });
+      }
     }
   }
 
@@ -4706,15 +4836,23 @@ export default function CRMApp() {
                   </div>
                   {/* 🔄 Sincronizar directo con Chatwoot (repara Supabase aunque n8n esté caído) */}
                   <button
-                    onClick={() => sincronizarConChatwoot({})}
+                    onClick={() => void sincronizarManualChatwoot()}
                     disabled={sincronizandoCW}
                     className="flex-shrink-0 flex items-center gap-1.5 px-2.5 py-2 rounded-lg border border-border text-gray-400 hover:text-purple-400 hover:border-purple-500/40 hover:bg-surfaceHover transition-colors disabled:opacity-50"
-                    title="Sincronizar chats con Chatwoot ahora (trae los mensajes que falten)"
+                    title="Sincronizar chats con Chatwoot ahora (trae los mensajes que falten y diagnostica por qué no llegan)"
                   >
                     <RefreshCw className={`w-4 h-4 ${sincronizandoCW ? "animate-spin" : ""}`} />
                     <span className="hidden sm:inline text-[10px] font-medium">{sincronizandoCW ? "Sincronizando..." : "Chatwoot"}</span>
                   </button>
                 </div>
+
+                {/* Resultado visible del 🔄: qué trajo y, si algo está roto en la
+                    cadena WhatsApp Personal → Evolution → Chatwoot → Supabase, qué eslabón */}
+                {avisoSync && (
+                  <div className="text-[10px] leading-snug px-2.5 py-1.5 rounded-lg bg-surface border border-border text-gray-300 break-words">
+                    {avisoSync}
+                  </div>
+                )}
 
                 {/* SUBPESTAÑAS DE CATEGORÍA UNIFICADAS (CARRUSEL FLUIDO) */}
                 {tab === "chats" && (

@@ -5,6 +5,8 @@ import { sendVoiceNoteViaMeta, obtenerCredencialesMeta } from "../../../lib/meta
 import { sendEvolutionVoiceNote } from "../../../lib/evolution-audio";
 import { buscarOCrearConversacionChatwoot, chatwootAuthHeaders, chatwootConfig } from "../../../lib/chatwoot";
 import { esDataUri, dataUriAStorage, descargarAdjuntoDeStorage } from "../../../lib/media-storage";
+import { mensajeErrorCuenta } from "../../../lib/whatsapp-cuentas";
+import { cargarConfigWhatsAppPersonal, resolverCuentaPersonal } from "../../../lib/whatsapp-cuentas-servidor";
 
 const cleanBase64 = (value: unknown) => {
   if (!value) return null;
@@ -37,7 +39,7 @@ const isWebmBuffer = (bytes: Buffer | null) =>
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const { conversacionId, clienteId, numeroWhatsApp, texto, fileBase64, fileMime, fileName, fileUrl, cuentaResponsable } = body;
+    const { conversacionId, clienteId, numeroWhatsApp, texto, fileBase64, fileMime, fileName, fileUrl, cuentaResponsable, cuentaWhatsApp } = body;
 
     if (!numeroWhatsApp || (!texto?.trim() && !fileBase64 && !fileUrl)) {
       return NextResponse.json({ error: "Faltan parámetros requeridos" }, { status: 400 });
@@ -97,6 +99,8 @@ export async function POST(req: Request) {
     let chatwootConvId: string | number | null = null;
     let chatwootIds: string[] = [];
     let targetClienteId = clienteId || null;
+    /** Cuenta personal guardada en la conversación (la que atiende el chat). */
+    let cuentaConversacion: string | null = null;
 
     if (conversacionId) {
       let convData: any = null;
@@ -104,11 +108,21 @@ export async function POST(req: Request) {
       {
         const r = await supabase
           .from("conversaciones")
-          .select("cliente_id, fuente, chatwoot_conversation_id, chatwoot_conversation_ids")
+          .select("cliente_id, fuente, chatwoot_conversation_id, chatwoot_conversation_ids, cuenta_whatsapp")
           .eq("id", conversacionId)
           .single();
         convData = r.data;
         conversationError = r.error;
+      }
+      // Migración pendiente: reintentar sin las columnas nuevas.
+      if (conversationError) {
+        const r3 = await supabase
+          .from("conversaciones")
+          .select("cliente_id, fuente, chatwoot_conversation_id, chatwoot_conversation_ids")
+          .eq("id", conversacionId)
+          .single();
+        convData = r3.data;
+        conversationError = r3.error;
       }
       if (conversationError) {
         const r2 = await supabase
@@ -134,6 +148,7 @@ export async function POST(req: Request) {
       if (!targetClienteId && convData?.cliente_id) {
         targetClienteId = convData.cliente_id;
       }
+      cuentaConversacion = convData?.cuenta_whatsapp || null;
     }
 
     // Determinar la cuenta encargada según la etapa del cliente o el parámetro recibido
@@ -175,6 +190,31 @@ export async function POST(req: Request) {
       }
     } else {
       cuentaDestino = fuente === "evolution" ? "evolution" : "meta_business";
+    }
+
+    // SEGUNDO WHATSAPP PERSONAL: cuando la etapa la atiende una cuenta personal,
+    // el operador decide con cuál responde. Orden:
+    //   1) la cuenta pedida para este envío  2) la cuenta del chat
+    //   3) la cuenta activa elegida en Ajustes/Bandeja.
+    let cuentaPersonal: "personal" | "personal_2" | null = null;
+    let instanciaPersonal = "personal";
+    let etiquetasCuenta: { personal?: string; personal_2?: string } = {};
+    if (cuentaDestino === "evolution") {
+      try {
+        const cfg = await cargarConfigWhatsAppPersonal();
+        const resuelta = await resolverCuentaPersonal({
+          solicitada: cuentaWhatsApp,
+          cuentaConversacion,
+          cfg,
+        });
+        cuentaPersonal = resuelta.cuenta;
+        instanciaPersonal = resuelta.instancia;
+        etiquetasCuenta = cfg.etiquetas;
+      } catch (e) {
+        console.warn("[send-message] No se pudo leer la cuenta personal, se usa la principal:", e);
+        cuentaPersonal = "personal";
+        instanciaPersonal = "personal";
+      }
     }
 
     let envioAudioVia: "meta_direct" | "chatwoot" | "evolution" | null = null;
@@ -346,7 +386,7 @@ export async function POST(req: Request) {
         const sent = await sendEvolutionVoiceNote({
           evoUrl,
           evoKey,
-          instance: "personal",
+          instance: instanciaPersonal,
           number: cleanNumber,
           bytes,
           mime: audioMime,
@@ -354,7 +394,7 @@ export async function POST(req: Request) {
         });
         if (sent.ok === false) {
           return NextResponse.json({
-            error: `WhatsApp Personal no aceptó el audio (${sent.status}). ${sent.detail}`,
+            error: mensajeErrorCuenta(cuentaPersonal || "personal", sent.status, sent.detail, etiquetasCuenta),
           }, { status: 502 });
         }
         envioAudioVia = "evolution";
@@ -367,7 +407,7 @@ export async function POST(req: Request) {
         let mediatype = "document";
         if (tipoGuardado === "imagen") { mediatype = "image"; }
         else if (tipoGuardado === "video") { mediatype = "video"; }
-        const response = await fetch(`${evoUrl}/message/sendMedia/personal`, {
+        const response = await fetch(`${evoUrl}/message/sendMedia/${encodeURIComponent(instanciaPersonal)}`, {
           method: "POST",
           headers: { "Content-Type": "application/json", apikey: evoKey },
           body: JSON.stringify({
@@ -382,10 +422,10 @@ export async function POST(req: Request) {
         if (!response.ok) {
           const detail = (await response.text()).slice(0, 500);
           console.error("Evolution rejected outgoing media:", response.status, detail);
-          return NextResponse.json({ error: `WhatsApp Personal no aceptó el mensaje (${response.status}). ${detail}` }, { status: 502 });
+          return NextResponse.json({ error: mensajeErrorCuenta(cuentaPersonal || "personal", response.status, detail, etiquetasCuenta) }, { status: 502 });
         }
       } else {
-        const response = await fetch(`${evoUrl}/message/sendText/personal`, {
+        const response = await fetch(`${evoUrl}/message/sendText/${encodeURIComponent(instanciaPersonal)}`, {
           method: "POST",
           headers: { "Content-Type": "application/json", apikey: evoKey },
           body: JSON.stringify({ number: cleanNumber, text: texto || "" }),
@@ -393,7 +433,7 @@ export async function POST(req: Request) {
         if (!response.ok) {
           const detail = (await response.text()).slice(0, 500);
           console.error("Evolution rejected outgoing message:", response.status, detail);
-          return NextResponse.json({ error: `WhatsApp Personal no aceptó el mensaje (${response.status}). ${detail}` }, { status: 502 });
+          return NextResponse.json({ error: mensajeErrorCuenta(cuentaPersonal || "personal", response.status, detail, etiquetasCuenta) }, { status: 502 });
         }
       }
     }
@@ -431,10 +471,25 @@ export async function POST(req: Request) {
         : tipoGuardado === "archivo" ? (texto?.trim() || "📎 Archivo adjunto")
         : contenidoFinal;
 
-      await supabase.from("conversaciones").update({
+      // El chat recuerda por qué cuenta personal se respondió: los siguientes
+      // mensajes salen por la misma salvo que el operador la cambie.
+      const actualizacionConv: Record<string, any> = {
         ultimo_mensaje: resumenUltimo,
         ultimo_mensaje_en: new Date().toISOString()
-      }).eq("id", conversacionId);
+      };
+      if (cuentaPersonal) actualizacionConv.cuenta_whatsapp = cuentaPersonal;
+
+      const { error: errorConv } = await supabase
+        .from("conversaciones")
+        .update(actualizacionConv)
+        .eq("id", conversacionId);
+      if (errorConv && cuentaPersonal) {
+        // Migración pendiente: guardar el mensaje aunque no exista la columna.
+        await supabase.from("conversaciones").update({
+          ultimo_mensaje: resumenUltimo,
+          ultimo_mensaje_en: new Date().toISOString()
+        }).eq("id", conversacionId);
+      }
     }
 
     // Al responder, si el cliente estaba en seguimiento, queda marcado como revisado hoy
@@ -451,7 +506,20 @@ export async function POST(req: Request) {
 
     const voiceNote = envioAudioVia === "meta_direct" || (envioAudioVia === "evolution" && evolutionIsPtt);
 
-    return NextResponse.json({ success: true, voiceNote, via: envioAudioVia, cuenta: cuentaDestino, audioReason: voiceNote ? null : audioReason });
+    return NextResponse.json({
+      success: true,
+      voiceNote,
+      via: envioAudioVia,
+      // `cuenta` conserva el valor histórico (meta_business | evolution) y
+      // `cuentaPersonal` dice exactamente con cuál WhatsApp personal salió.
+      cuenta: cuentaDestino,
+      cuentaPersonal,
+      instancia: cuentaPersonal ? instanciaPersonal : null,
+      etiquetaCuenta: cuentaPersonal
+        ? (cuentaPersonal === "personal_2" ? etiquetasCuenta.personal_2 : etiquetasCuenta.personal) || null
+        : null,
+      audioReason: voiceNote ? null : audioReason,
+    });
   } catch (error: any) {
     console.error("Error en send-message:", error);
     return NextResponse.json({ error: error.message || "No se pudo enviar el mensaje." }, { status: 500 });

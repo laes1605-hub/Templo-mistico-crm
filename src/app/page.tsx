@@ -38,6 +38,7 @@ import {
   ultimoEntranteDeMensajes,
 } from "../lib/tiempo-chat";
 import { abrirLlamadaWhatsAppPersonal, llamadasWhatsAppPersonalDisponibles } from "../lib/whatsapp-personal";
+import type { CuentaPersonal } from "../lib/whatsapp-cuentas";
 import { initTheme } from "../lib/theme";
 import { DETALLE_FUENTE_COPY, etiquetaCortaFuenteCopy, limpiarCopy } from "../lib/copy-post";
 import {
@@ -250,6 +251,19 @@ export default function CRMApp() {
   const [personalLabel, setPersonalLabel] = useState("Personal");
   const [temploLabel, setTemploLabel] = useState("Templo");
   const [isEditingGroupLabels, setIsEditingGroupLabels] = useState(false);
+
+  // SEGUNDO WHATSAPP PERSONAL (respaldo manual)
+  // El operador elige con qué número personal responde; cada chat recuerda el
+  // suyo para que un bloqueo temporal del principal no detenga la operación.
+  const [cuentaPersonalActiva, setCuentaPersonalActiva] = useState<CuentaPersonal>("personal");
+  const [cuentasWhatsApp, setCuentasWhatsApp] = useState<any[]>([]);
+  const [whatsapp2Configurada, setWhatsapp2Configurada] = useState(false);
+  const [etiquetasWhatsApp, setEtiquetasWhatsApp] = useState<{ personal: string; personal_2: string }>({
+    personal: "WhatsApp 1",
+    personal_2: "WhatsApp 2",
+  });
+  const [cambiandoCuentaWhatsApp, setCambiandoCuentaWhatsApp] = useState(false);
+  const [avisoCuentaWhatsApp, setAvisoCuentaWhatsApp] = useState("");
 
   // KILL SWITCH GLOBAL LUNA
   const [lunaGlobalActiva, setLunaGlobalActiva] = useState(true);
@@ -884,6 +898,7 @@ export default function CRMApp() {
     try {
       const { data } = await supabase.from("config_general").select("*");
       if (data) {
+        let whatsapp2Lista = false;
         data.forEach((row: any) => {
           if (row.clave === "luna_global_activa") setLunaGlobalActiva(row.valor !== "false");
           if (row.clave === "grupo_activo" && (row.valor === "personal" || row.valor === "templo")) {
@@ -892,10 +907,175 @@ export default function CRMApp() {
           if (row.clave === "personal_label" && row.valor) setPersonalLabel(row.valor);
           if (row.clave === "templo_label" && row.valor) setTemploLabel(row.valor);
           if (row.clave === "vencidos_auto") setVencidosAuto(row.valor !== "false");
+          if (row.clave === "whatsapp_personal_activo") {
+            setCuentaPersonalActiva(String(row.valor || "").trim().toLowerCase() === "personal_2" ? "personal_2" : "personal");
+          }
+          if (row.clave === "whatsapp_personal_etiqueta" && String(row.valor || "").trim()) {
+            setEtiquetasWhatsApp((prev) => ({ ...prev, personal: String(row.valor).trim() }));
+          }
+          if (row.clave === "whatsapp_personal2_etiqueta" && String(row.valor || "").trim()) {
+            setEtiquetasWhatsApp((prev) => ({ ...prev, personal_2: String(row.valor).trim() }));
+          }
+          if (
+            (row.clave === "whatsapp_personal2_numero" || row.clave === "whatsapp_personal2_inbox_id") &&
+            String(row.valor || "").trim()
+          ) {
+            whatsapp2Lista = true;
+          }
         });
+        if (whatsapp2Lista) setWhatsapp2Configurada(true);
       }
     } catch (e) {
       console.log("config_general no disponible:", e);
+    }
+  }
+
+  // ===================== SEGUNDO WHATSAPP PERSONAL =====================
+  // Estado real de las dos cuentas (Evolution) y cuenta activa. Si la API no
+  // responde (build estático sin servidor), la app sigue funcionando con lo que
+  // haya en config_general y con la cuenta principal.
+  async function cargarCuentasWhatsApp() {
+    try {
+      const res = await fetch("/api/whatsapp-cuentas", { cache: "no-store" });
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.ok) return;
+      setCuentasWhatsApp(Array.isArray(json.cuentas) ? json.cuentas : []);
+      if (json.config?.activa) {
+        setCuentaPersonalActiva(json.config.activa === "personal_2" ? "personal_2" : "personal");
+      }
+      setWhatsapp2Configurada(Boolean(json.config?.personal2?.configurada));
+      const e1 = String(json.config?.personal?.etiqueta || "").trim();
+      const e2 = String(json.config?.personal2?.etiqueta || "").trim();
+      if (e1 || e2) {
+        setEtiquetasWhatsApp((prev) => ({
+          personal: e1 || prev.personal,
+          personal_2: e2 || prev.personal_2,
+        }));
+      }
+    } catch {
+      /* sin servidor: se queda con la configuración local */
+    }
+  }
+
+  useEffect(() => {
+    void cargarCuentasWhatsApp();
+    // Ajustes avisa cuando se cambia de cuenta o se guardan los datos.
+    const alCambiar = () => { void cargarCuentasWhatsApp(); };
+    window.addEventListener("tm-whatsapp-cuentas-changed", alCambiar);
+    return () => window.removeEventListener("tm-whatsapp-cuentas-changed", alCambiar);
+  }, []);
+
+  /** Estado de conexión de una cuenta personal (null = sin verificar). */
+  function estadoCuentaPersonal(cuenta: CuentaPersonal): { conectado: boolean | null; detalle: string } {
+    const fila = cuentasWhatsApp.find((c: any) => c?.cuenta === cuenta);
+    if (!fila) return { conectado: null, detalle: "Sin verificar" };
+    return {
+      conectado: typeof fila.conectado === "boolean" ? fila.conectado : null,
+      detalle: String(fila.detalle || "").trim(),
+    };
+  }
+
+  /** Cuenta personal con la que se responde en un chat (por defecto la activa). */
+  function cuentaDeChat(conv: any): CuentaPersonal {
+    const guardada = String(conv?.cuenta_whatsapp || "").trim().toLowerCase();
+    if (guardada === "personal_2") return "personal_2";
+    if (guardada === "personal") return "personal";
+    return cuentaPersonalActiva;
+  }
+
+  /** Cambia la cuenta personal de ESTE chat (no toca los demás). */
+  async function moverChatACuenta(cuenta: CuentaPersonal) {
+    if (!selectedConv) return;
+    const { error } = await supabase
+      .from("conversaciones")
+      .update({ cuenta_whatsapp: cuenta })
+      .eq("id", selectedConv.id);
+    if (error) {
+      alert(
+        "No se pudo guardar la cuenta del chat. Si acabas de actualizar el CRM, " +
+          "falta ejecutar la migración 20261113000001_segundo_whatsapp_personal.sql en Supabase.",
+      );
+      return;
+    }
+    setConversaciones((prev) =>
+      prev.map((c: any) => (c.id === selectedConv.id ? { ...c, cuenta_whatsapp: cuenta } : c)),
+    );
+    setSelectedConv({ ...(selectedConv as any), cuenta_whatsapp: cuenta });
+    setAvisoCuentaWhatsApp(
+      `Este chat responderá por ${cuenta === "personal_2" ? etiquetasWhatsApp.personal_2 : etiquetasWhatsApp.personal}.`,
+    );
+  }
+
+  /**
+   * Aplica la cuenta a TODOS los chats personales no archivados. Sirve cuando
+   * el número principal queda bloqueado y el operador quiere contestar todo
+   * desde el respaldo sin chat por chat.
+   */
+  async function aplicarCuentaATodosLosChats(cuenta: CuentaPersonal) {
+    if (!confirm(
+      `¿Responder TODOS los chats de WhatsApp Personal con ${
+        cuenta === "personal_2" ? etiquetasWhatsApp.personal_2 : etiquetasWhatsApp.personal
+      }?\n\nLos chats archivados no cambian y puedes deshacerlo eligiendo la otra cuenta.`,
+    )) return;
+    const { error } = await supabase
+      .from("conversaciones")
+      .update({ cuenta_whatsapp: cuenta })
+      .eq("fuente", "evolution")
+      .eq("archivada", false);
+    if (error) {
+      alert(
+        "No se pudieron actualizar los chats. Si acabas de actualizar el CRM, falta ejecutar la " +
+          "migración 20261113000001_segundo_whatsapp_personal.sql en Supabase.",
+      );
+      return;
+    }
+    setConversaciones((prev) =>
+      prev.map((c: any) => (c.fuente === "evolution" && !c.archivada ? { ...c, cuenta_whatsapp: cuenta } : c)),
+    );
+    setSelectedConv((prev: any) =>
+      prev && prev.fuente === "evolution" && !prev.archivada ? { ...prev, cuenta_whatsapp: cuenta } : prev,
+    );
+    setAvisoCuentaWhatsApp(
+      `Todos los chats personales responderán por ${
+        cuenta === "personal_2" ? etiquetasWhatsApp.personal_2 : etiquetasWhatsApp.personal
+      }.`,
+    );
+  }
+
+  /**
+   * Elige la cuenta personal ACTIVA (manual). Si hay un chat personal abierto,
+   * ese chat también pasa a la cuenta elegida: es exactamente lo que se hace
+   * cuando WhatsApp bloquea temporalmente el número principal.
+   */
+  async function cambiarCuentaPersonal(cuenta: CuentaPersonal) {
+    if (cambiandoCuentaWhatsApp) return;
+    if (cuenta === "personal_2" && !whatsapp2Configurada) {
+      setAvisoCuentaWhatsApp("Configura el WhatsApp 2 en Ajustes → WhatsApp Personal.");
+      return;
+    }
+    setCambiandoCuentaWhatsApp(true);
+    setAvisoCuentaWhatsApp("");
+    try {
+      const res = await fetch("/api/whatsapp-cuentas", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accion: "activar", cuenta }),
+      });
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.ok) throw new Error(json?.error || "No se pudo cambiar la cuenta.");
+      setCuentaPersonalActiva(cuenta);
+      if (Array.isArray(json.cuentas)) setCuentasWhatsApp(json.cuentas);
+      if (selectedConv && esConversacionWhatsAppPersonal(selectedConv)) {
+        await moverChatACuenta(cuenta);
+      } else {
+        setAvisoCuentaWhatsApp(
+          `${cuenta === "personal_2" ? etiquetasWhatsApp.personal_2 : etiquetasWhatsApp.personal} queda como cuenta activa.`,
+        );
+      }
+    } catch (e: any) {
+      setAvisoCuentaWhatsApp(e?.message || "No se pudo cambiar la cuenta.");
+    } finally {
+      setCambiandoCuentaWhatsApp(false);
     }
   }
 
@@ -1191,12 +1371,18 @@ export default function CRMApp() {
       return;
     }
 
+    // La llamada se abre en la app de la cuenta que atiende el chat (WhatsApp 1
+    // o la segunda app configurada para el WhatsApp 2).
+    const cuentaLlamada = cuentaDeChat(selectedConv);
     setLlamandoWhatsApp(true);
     try {
-      await abrirLlamadaWhatsAppPersonal(telefono);
+      await abrirLlamadaWhatsAppPersonal(telefono, { cuenta: cuentaLlamada });
     } catch (e: any) {
       if (e?.code === "CONTACT_NOT_SAVED" || e?.code === "CONTACT_PERMISSION_REQUIRED") {
         setContactoEnTelefono(false);
+      }
+      if (e?.code === "APP_WHATSAPP_2_REQUIRED") {
+        setShowAjustes(true);
       }
       alert(e?.message || "No se pudo abrir WhatsApp Personal para la llamada.");
     } finally {
@@ -3583,7 +3769,15 @@ export default function CRMApp() {
   }
 
   // ===================== ENVIAR MENSAJE =====================
-  async function sendToApi(texto: string, fileBase64: string | null = null, fileMime: string | null = null, fileName: string | null = null, fileUrl: string | null = null) {
+  async function sendToApi(
+    texto: string,
+    fileBase64: string | null = null,
+    fileMime: string | null = null,
+    fileName: string | null = null,
+    fileUrl: string | null = null,
+    /** Reintento manual en la otra cuenta personal (evita bucles). */
+    opciones: { cuentaForzada?: CuentaPersonal; reintento?: boolean } = {},
+  ) {
     if (!selectedConv) return;
     setIsSending(true);
     setSendError("");
@@ -3591,6 +3785,13 @@ export default function CRMApp() {
 
     const etapaActual = getEtapa(clienteActual?.estado);
     const cuentaResponsable = etapaActual?.cuenta_responsable || "meta_business";
+    // Cuenta personal de ESTE envío: la que tenga el chat o la activa elegida.
+    // Sólo se manda cuando el chat se atiende por WhatsApp Personal; en el API
+    // el servidor sigue mandando por Chatwoot/Meta.
+    const esChatPersonal = esConversacionWhatsAppPersonal(selectedConv) || cuentaResponsable === "evolution";
+    const cuentaWhatsApp = esChatPersonal
+      ? (opciones.cuentaForzada || cuentaDeChat(selectedConv))
+      : undefined;
 
     try {
       const response = await fetch("/api/send-message", {
@@ -3601,11 +3802,19 @@ export default function CRMApp() {
           clienteId: selectedConv.cliente_id || clienteActual?.id,
           numeroWhatsApp: selectedConv.numero_whatsapp,
           cuentaResponsable,
+          ...(cuentaWhatsApp ? { cuentaWhatsApp } : {}),
           texto, fileBase64, fileMime, fileName, fileUrl
         }),
       });
       const result = await response.json().catch(() => ({}));
       if (!response.ok || !result.success) throw new Error(result.error || "No se pudo enviar el mensaje.");
+      if (result.cuentaPersonal === "personal" || result.cuentaPersonal === "personal_2") {
+        const usada: CuentaPersonal = result.cuentaPersonal;
+        setConversaciones((prev) =>
+          prev.map((c: any) => (c.id === selectedConv.id ? { ...c, cuenta_whatsapp: usada } : c)),
+        );
+        setSelectedConv({ ...(selectedConv as any), cuenta_whatsapp: usada });
+      }
       const esNotaDeVoz = Boolean((fileBase64 || fileUrl) && ((fileMime || "").startsWith("audio/") || String(fileName || "").toLowerCase().includes("nota_de_voz")));
       if (esNotaDeVoz && result.voiceNote === false) {
         const motivo = typeof result.audioReason === "string" && result.audioReason.trim()
@@ -3624,6 +3833,30 @@ export default function CRMApp() {
     } catch (error: any) {
       const message = error.message || "No se pudo enviar el mensaje.";
       setSendError(message);
+
+      // Si el fallo huele a cuenta bloqueada/desconectada, se ofrece la salida
+      // MANUAL: seguir por la otra cuenta personal. Nunca se cambia solo.
+      const esChatPersonal = esConversacionWhatsAppPersonal(selectedConv) || cuentaResponsable === "evolution";
+      const cuentaUsada = opciones.cuentaForzada || (esChatPersonal ? cuentaDeChat(selectedConv) : null);
+      const otraCuenta: CuentaPersonal | null = cuentaUsada === "personal" ? "personal_2" : cuentaUsada === "personal_2" ? "personal" : null;
+      const puedeCambiar =
+        !opciones.reintento &&
+        Boolean(otraCuenta) &&
+        (otraCuenta === "personal" || whatsapp2Configurada) &&
+        /bloque|bloquead|desconect|limitad|banned|blocked|session|conexi[oó]n/i.test(message);
+
+      if (puedeCambiar && otraCuenta) {
+        const nombreOtra = etiquetasWhatsApp[otraCuenta];
+        const nombreUsada = cuentaUsada ? etiquetasWhatsApp[cuentaUsada] : "esta cuenta";
+        if (confirm(`${nombreUsada} no pudo enviar el mensaje.\n\n¿Reintentar el envío por ${nombreOtra}?`)) {
+          await moverChatACuenta(otraCuenta);
+          setSendError("");
+          return await sendToApi(texto, fileBase64, fileMime, fileName, fileUrl, {
+            cuentaForzada: otraCuenta,
+            reintento: true,
+          });
+        }
+      }
       throw error;
     } finally {
       setIsSending(false);
@@ -4956,6 +5189,74 @@ export default function CRMApp() {
                   {togglingLunaGlobal ? "Cambiando..." : lunaGlobalActiva ? "🌙 Luna Encendida (Click para Apagarla TODO)" : "⚠️ Luna APAGADA Globalmente (Click para Encender)"}
                 </button>
 
+                {/* SEGUNDO WHATSAPP PERSONAL: con cuál número se responde.
+                    Es manual a propósito: cuando WhatsApp bloquea el principal,
+                    el operador cambia a la cuenta de respaldo en un toque. */}
+                <div className="rounded-xl border border-border bg-background/60 p-2 flex flex-col gap-1.5">
+                  <div className="flex items-center justify-between px-1">
+                    <span className="text-[10px] uppercase tracking-wide font-bold text-gray-500">WhatsApp Personal</span>
+                    {cuentaPersonalActiva === "personal_2" && (
+                      <span className="text-[9px] text-amber-300 font-semibold">respaldo activo</span>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {(["personal", "personal_2"] as CuentaPersonal[]).map((cuenta) => {
+                      const activa = cuentaPersonalActiva === cuenta;
+                      const configurada = cuenta === "personal" || whatsapp2Configurada;
+                      const { conectado, detalle } = estadoCuentaPersonal(cuenta);
+                      const punto = conectado === true ? "bg-emerald-400" : conectado === false ? "bg-red-500" : "bg-gray-500";
+                      const estadoTexto = conectado === true ? "conectado" : conectado === false ? "desconectado" : "sin verificar";
+                      return (
+                        <button
+                          key={cuenta}
+                          type="button"
+                          disabled={cambiandoCuentaWhatsApp}
+                          onClick={() => {
+                            if (!configurada) { setShowAjustes(true); return; }
+                            void cambiarCuentaPersonal(cuenta);
+                          }}
+                          title={
+                            !configurada
+                              ? "Toca para configurar el segundo WhatsApp en Ajustes"
+                              : `${etiquetasWhatsApp[cuenta]} · ${estadoTexto}${detalle ? ` · ${detalle}` : ""}`
+                          }
+                          className={`flex flex-col items-start gap-0.5 px-2 py-1.5 rounded-lg border text-left transition-all disabled:opacity-60 ${
+                            activa
+                              ? "bg-emerald-950/40 border-emerald-600/70 text-emerald-200 shadow-sm"
+                              : "bg-surface border-border text-gray-400 hover:text-gray-100 hover:border-gray-500"
+                          } ${!configurada ? "border-dashed" : ""}`}
+                        >
+                          <span className="flex items-center gap-1 w-full min-w-0">
+                            <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${configurada ? punto : "bg-amber-500"}`} />
+                            <span className="truncate text-[11px] font-bold">{etiquetasWhatsApp[cuenta]}</span>
+                          </span>
+                          <span className="text-[9px] font-medium opacity-70 truncate w-full">
+                            {configurada ? estadoTexto : "toca para configurar"}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {estadoCuentaPersonal(cuentaPersonalActiva).conectado === false && (
+                    <p className="text-[9px] leading-snug px-1 text-red-400">
+                      La cuenta activa está desconectada: activa la otra o reconéctala en Ajustes.
+                    </p>
+                  )}
+                  {cuentaPersonalActiva === "personal_2" && whatsapp2Configurada && (
+                    <button
+                      type="button"
+                      onClick={() => void aplicarCuentaATodosLosChats("personal_2")}
+                      className="text-[9px] text-right px-1 text-amber-300/80 hover:text-amber-200 underline decoration-dotted"
+                      title="Responder todos los chats personales con el WhatsApp 2"
+                    >
+                      Aplicar el WhatsApp 2 a todos los chats
+                    </button>
+                  )}
+                  {avisoCuentaWhatsApp && (
+                    <p className="text-[9px] leading-snug px-1 text-gray-400 break-words">{avisoCuentaWhatsApp}</p>
+                  )}
+                </div>
+
                 <div className="flex items-center justify-between">
                   <h1 className="text-lg font-bold text-gray-100">Bandeja</h1>
                   <div className="flex items-center gap-2">
@@ -5392,7 +5693,11 @@ export default function CRMApp() {
                                 ? "Verificando que el número esté guardado en el teléfono..."
                                 : contactoEnTelefono === false
                                   ? "Guarda el contacto en el teléfono antes de llamar"
-                                  : "Intentar llamada de voz con WhatsApp Personal"
+                                  : `Intentar llamada de voz con ${
+                                      cuentaDeChat(selectedConv) === "personal_2"
+                                        ? etiquetasWhatsApp.personal_2
+                                        : etiquetasWhatsApp.personal
+                                    }`
                           }
                           className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-all disabled:opacity-50 ${
                             contactoEnTelefono === true && llamadasPersonalDisponibles
@@ -5414,19 +5719,44 @@ export default function CRMApp() {
                         </button>
                       ))}
 
-                      {/* Cuenta encargada activa */}
+                      {/* Cuenta encargada activa. En WhatsApp Personal es un
+                          botón: cambia ESTE chat a la otra cuenta (respaldo). */}
                       {(() => {
                         const et = getEtapa(clienteActual?.estado);
                         const esApi = et?.cuenta_responsable === "meta_business";
+                        if (esApi) {
+                          return (
+                            <span
+                              className="hidden md:flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-bold border bg-indigo-950/40 border-indigo-700/50 text-indigo-300"
+                              title="Cuenta responsable de esta etapa: WhatsApp API"
+                            >
+                              <span>🌐 API</span>
+                            </span>
+                          );
+                        }
+                        const cuenta = cuentaDeChat(selectedConv);
+                        const objetivo: CuentaPersonal = cuenta === "personal_2" ? "personal" : "personal_2";
+                        const etiqueta = etiquetasWhatsApp[cuenta];
                         return (
-                          <span
-                            className={`hidden md:flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-bold border ${
-                              esApi ? "bg-indigo-950/40 border-indigo-700/50 text-indigo-300" : "bg-blue-950/40 border-blue-700/50 text-blue-300"
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (objetivo === "personal_2" && !whatsapp2Configurada) {
+                                setShowAjustes(true);
+                                return;
+                              }
+                              void moverChatACuenta(objetivo);
+                            }}
+                            title={`Este chat responde por ${etiqueta}. Toca para cambiarlo a ${etiquetasWhatsApp[objetivo]}.`}
+                            className={`flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-bold border transition-colors max-w-[9.5rem] ${
+                              cuenta === "personal_2"
+                                ? "bg-amber-950/40 border-amber-700/50 text-amber-300 hover:bg-amber-900/50"
+                                : "bg-blue-950/40 border-blue-700/50 text-blue-300 hover:bg-blue-900/50"
                             }`}
-                            title={`Cuenta responsable de esta etapa: ${esApi ? "WhatsApp API" : "WhatsApp Personal"}`}
                           >
-                            <span>{esApi ? "🌐 API" : "👤 Personal"}</span>
-                          </span>
+                            <span className="truncate">👤 {etiqueta}</span>
+                            <RefreshCw className="w-2.5 h-2.5 opacity-70 flex-shrink-0" />
+                          </button>
                         );
                       })()}
 
@@ -5780,7 +6110,13 @@ export default function CRMApp() {
                             }`}
                           >
                             <PhoneCall className={`w-3.5 h-3.5 ${llamandoWhatsApp ? "animate-pulse" : ""}`} />
-                            {llamandoWhatsApp ? "Abriendo WhatsApp..." : contactoEnTelefono === null ? "Verificando contacto..." : contactoEnTelefono ? "Llamar por WhatsApp" : "Guarda el contacto para llamar"}
+                            {llamandoWhatsApp
+                              ? "Abriendo WhatsApp..."
+                              : contactoEnTelefono === null
+                                ? "Verificando contacto..."
+                                : contactoEnTelefono
+                                  ? `Llamar por ${cuentaDeChat(selectedConv) === "personal_2" ? etiquetasWhatsApp.personal_2 : etiquetasWhatsApp.personal}`
+                                  : "Guarda el contacto para llamar"}
                           </button>
                           <p className="text-[10px] text-gray-500 mt-1.5 leading-relaxed">
                             {llamadasPersonalDisponibles

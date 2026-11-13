@@ -2,8 +2,16 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!-- Android 11+: declara que la APK puede abrir WhatsApp Personal. -->
+    <!-- Incluye WhatsApp Business y variantes de app dual: el CRM permite una
+         segunda cuenta personal para cuando bloquean temporalmente el número
+         principal. -->
     <queries>
         <package android:name="com.whatsapp" />
+        <package android:name="com.whatsapp.w4b" />
+        <package android:name="com.gbwhatsapp" />
+        <package android:name="com.whatsapp.clone" />
+        <package android:name="com.whatsapp.dual" />
+        <package android:name="com.whatsapp2" />
         <intent>
             <action android:name="android.intent.action.VIEW" />
             <data android:scheme="https" />

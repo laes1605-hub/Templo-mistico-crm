@@ -65,6 +65,7 @@ Para compilar esta actualización desde cero:
 - **Atrás en Android:** el primer gesto o pulsación vuelve siempre a **Chats**. Pulsa o desliza Atrás una segunda vez, dentro de dos segundos, para salir de la app.
 
 - **Llamar por WhatsApp Personal:** desde un chat Personal, la APK comprueba que el número exista en Contactos e intenta abrir la llamada de voz en `com.whatsapp` (nunca WhatsApp Business). Si la agenda/versión de WhatsApp no expone la acción directa, abre el chat Personal como respaldo para tocar el ícono de teléfono.
+- **Segundo WhatsApp Personal (respaldo):** cuando WhatsApp bloquea el número principal, el CRM puede responder con un segundo número personal. En la bandeja aparece el selector **WhatsApp 1 / WhatsApp 2** y cada chat recuerda su cuenta. Para las llamadas, elige en **Ajustes → WhatsApp Personal → App del teléfono para llamar con WhatsApp 2** la app de ese número (WhatsApp Business sin API, o la app dual si el teléfono expone un paquete propio). Guía completa: `SEGUNDO-WHATSAPP-PERSONAL.md`.
 - **En seguimiento:** ejecuta `supabase/migrations/20260907_llamadas_seguimiento_contactos.sql`. El chip aparece junto a **Por leer** en Personal y genera un aviso local diario a las **9:00 a. m.** mientras haya clientes en esa etapa y los avisos estén activados.
 - **Nombres duplicados:** al guardar un contacto desde la APK se revisa la agenda real; si ya existe `Pedro y María`, se guarda como `Pedro y María 2`, luego `Pedro y María 3`, etc.
 

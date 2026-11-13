@@ -25,6 +25,7 @@
     "test:tiempo": "node scripts/prueba-tiempo-chat.mjs",
     "test:buscador": "node scripts/prueba-buscador-global.mjs",
     "test:contactos": "sucrase-node scripts/prueba-contacto-telefono.ts",
+    "test:whatsapp2": "sucrase-node scripts/prueba-segundo-whatsapp.ts",
     "test:contactos-web": "sucrase-node scripts/prueba-contacto-web.ts",
     "test:eliminar": "sucrase-node scripts/prueba-eliminar-cliente.ts",
     "test:eliminar:sql": "node scripts/prueba-eliminar-cliente-sql.mjs",

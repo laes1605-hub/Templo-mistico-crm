@@ -25,6 +25,7 @@
  */
 
 import { chatwootAuthHeaders, chatwootConfig } from "./chatwoot";
+import { CuentaPersonal, cuentaDeInboxChatwoot } from "./whatsapp-cuentas";
 
 // ---------------------------------------------------------------------------
 // Supabase por REST (mismo patrón que el workflow de n8n)
@@ -218,6 +219,55 @@ function fuenteDeConversacion(convCw: any, fallback?: string | null): string {
   return fallback || "evolution";
 }
 
+// ---------------------------------------------------------------------------
+// SEGUNDO WHATSAPP PERSONAL: qué bandeja corresponde a cada cuenta
+// ---------------------------------------------------------------------------
+// El ID de la bandeja del WhatsApp 2 se lee de config_general (Ajustes) y, como
+// respaldo, de CHATWOOT_INBOX_PERSONAL2_ID. Se cachea 60 s porque la
+// sincronización recorre muchas conversaciones por pasada.
+let cachePistasPersonal: { expira: number; inboxId: string; instancia2: string; numero2: string } | null = null;
+
+async function pistasCuentasPersonales(): Promise<{ inboxId: string; instancia2: string; numero2: string }> {
+  const ahora = Date.now();
+  if (cachePistasPersonal && cachePistasPersonal.expira > ahora) {
+    return {
+      inboxId: cachePistasPersonal.inboxId,
+      instancia2: cachePistasPersonal.instancia2,
+      numero2: cachePistasPersonal.numero2,
+    };
+  }
+  let inboxId = String(process.env.CHATWOOT_INBOX_PERSONAL2_ID || "").trim();
+  let instancia2 = String(process.env.EVOLUTION_INSTANCE_PERSONAL2 || "").trim();
+  let numero2 = String(process.env.WHATSAPP_PERSONAL2_NUMERO || "").trim();
+  try {
+    const r = await sbFetch(
+      "/config_general?clave=in.(whatsapp_personal2_inbox_id,whatsapp_personal2_instancia,whatsapp_personal2_numero)&select=clave,valor&limit=10"
+    );
+    if (r.ok && Array.isArray(r.json)) {
+      for (const fila of r.json) {
+        const valor = String(fila?.valor || "").trim();
+        if (!valor) continue;
+        if (fila.clave === "whatsapp_personal2_inbox_id" && !inboxId) inboxId = valor;
+        if (fila.clave === "whatsapp_personal2_instancia") instancia2 = valor;
+        if (fila.clave === "whatsapp_personal2_numero" && !numero2) numero2 = valor;
+      }
+    }
+  } catch {
+    /* configuración no disponible: se usan los nombres de las bandejas */
+  }
+  cachePistasPersonal = { expira: ahora + 60_000, inboxId, instancia2, numero2 };
+  return { inboxId, instancia2, numero2 };
+}
+
+/** Cuenta personal (WhatsApp 1 / WhatsApp 2) a la que llegó la conversación. */
+async function cuentaPersonalDeConversacion(convCw: any): Promise<CuentaPersonal | null> {
+  if (fuenteDeConversacion(convCw) !== "evolution") return null;
+  const pistas = await pistasCuentasPersonales();
+  const inboxId = convCw?.inbox_id ?? convCw?.inbox?.id ?? null;
+  const nombre = convCw?.inbox?.name || convCw?.meta?.channel || "";
+  return cuentaDeInboxChatwoot(inboxId, nombre, { inboxIdPersonal2: pistas.inboxId });
+}
+
 function extraerConversacionesCw(json: any): any[] {
   const candidatos = [json?.data?.payload, json?.payload, json?.data?.conversations, json?.conversations, json?.data];
   for (const c of candidatos) {
@@ -377,19 +427,22 @@ type ConvExistente = {
   chatwoot_conversation_ids?: string[] | null;
   /** Último mensaje del cliente POR EL WHATSAPP API (ventana de 24 h). */
   ultimo_entrante_api_en?: string | null;
+  /** Cuenta personal que atiende el chat: 'personal' | 'personal_2'. */
+  cuenta_whatsapp?: string | null;
 };
 
 const SELECT_CONV =
-  "id,chatwoot_conversation_id,chatwoot_conversation_ids,ultimo_mensaje_en,no_leidos,ultimo_leido_en,cliente_id,ultimo_mensaje,numero_whatsapp,fuente,ultimo_entrante_api_en";
+  "id,chatwoot_conversation_id,chatwoot_conversation_ids,ultimo_mensaje_en,no_leidos,ultimo_leido_en,cliente_id,ultimo_mensaje,numero_whatsapp,fuente,ultimo_entrante_api_en,cuenta_whatsapp";
 
 async function fetchConversacionesSb(rutaBase: string): Promise<any[] | null> {
   const r = await sbFetch(rutaBase);
   if (r.ok && Array.isArray(r.json)) return r.json;
   // Columna ausente (migración pendiente): reintentar sin el array de ids.
-  if (/chatwoot_conversation_ids|ultimo_entrante_api_en|pgrst204|does not exist/i.test(r.texto || "")) {
+  if (/chatwoot_conversation_ids|ultimo_entrante_api_en|cuenta_whatsapp|pgrst204|does not exist/i.test(r.texto || "")) {
     const sinArray = rutaBase
       .replace("chatwoot_conversation_ids,", "")
-      .replace(",ultimo_entrante_api_en", "");
+      .replace(",ultimo_entrante_api_en", "")
+      .replace(",cuenta_whatsapp", "");
     const rAlt = await sbFetch(sinArray);
     if (rAlt.ok && Array.isArray(rAlt.json)) return rAlt.json;
   }
@@ -482,6 +535,10 @@ async function upsertConversacion(
   // No pisar la fuente del chat unificado: el envío sigue la etapa, no el inbox de este mensaje.
   const fuenteNueva = fuenteDeConversacion(convCw, existente?.fuente);
   const fuente = existente?.fuente || fuenteNueva;
+  // Segunda cuenta personal: se guarda al nacer el chat y, sólo si el chat
+  // todavía no la tiene, cuando llega un mensaje de esa bandeja. Una vez que el
+  // operador elige la cuenta para ese chat, la sincronización NO la pisa.
+  const cuentaPersonalNueva = await cuentaPersonalDeConversacion(convCw);
   const cwId = convCw?.id != null ? String(convCw.id) : "";
   const idsUnidos = cwId ? Array.from(new Set([...idsChatwootDe(existente), cwId])) : idsChatwootDe(existente);
 
@@ -500,12 +557,15 @@ async function upsertConversacion(
     const idsIguales =
       idsUnidos.length === idsChatwootDe(existente).length &&
       idsUnidos.every((id) => idsChatwootDe(existente).includes(id));
+    const faltaCuentaPersonal =
+      Boolean(cuentaPersonalNueva) && !existente.cuenta_whatsapp && idsChatwootDe(existente).length <= 1;
     const sinCambios =
       existente.ultimo_mensaje === ultimoMensaje &&
       existente.ultimo_mensaje_en === ultimoMensajeEn &&
       existente.numero_whatsapp === telefonoFinal &&
       idsIguales &&
-      !subirEntranteApi;
+      !subirEntranteApi &&
+      !faltaCuentaPersonal;
     if (sinCambios) return existente;
 
     const cambios = await depurar("conversaciones", {
@@ -516,13 +576,28 @@ async function upsertConversacion(
       ...(subirEntranteApi ? { ultimo_entrante_api_en: entranteApiNuevo } : {}),
       // Sólo rellena el id principal si aún no había ninguno.
       ...(!existente.chatwoot_conversation_id && cwId ? { chatwoot_conversation_id: cwId } : {}),
+      // Relleno inicial de la cuenta personal (nunca sobrescribe una elección
+      // manual). Con varios chats unificados no se adivina: queda en null.
+      ...(cuentaPersonalNueva && !existente.cuenta_whatsapp && idsChatwootDe(existente).length <= 1
+        ? { cuenta_whatsapp: cuentaPersonalNueva }
+        : {}),
       actualizado_en: new Date().toISOString(),
     });
-    const respuestaPatch = await sbFetch(`/conversaciones?id=eq.${existente.id}`, {
+    let respuestaPatch = await sbFetch(`/conversaciones?id=eq.${existente.id}`, {
       method: "PATCH",
       headers: { Prefer: "return=minimal" },
       body: JSON.stringify(cambios),
     });
+    // Si la migración de la segunda cuenta aún no está aplicada, la columna
+    // desconocida NO debe impedir guardar el último mensaje del chat.
+    if (!respuestaPatch.ok && "cuenta_whatsapp" in cambios && /cuenta_whatsapp|pgrst204/i.test(respuestaPatch.texto || "")) {
+      delete (cambios as any).cuenta_whatsapp;
+      respuestaPatch = await sbFetch(`/conversaciones?id=eq.${existente.id}`, {
+        method: "PATCH",
+        headers: { Prefer: "return=minimal" },
+        body: JSON.stringify(cambios),
+      });
+    }
     if (respuestaPatch.ok) {
       // Mantener vivo el mapa en memoria (vale 10 s): sin esto, la segunda
       // pasada de un sondeo volvía a PATCHear lo mismo porque el mapa seguía
@@ -532,6 +607,9 @@ async function upsertConversacion(
       existente.ultimo_mensaje_en = ultimoMensajeEn;
       existente.numero_whatsapp = telefonoFinal;
       if (subirEntranteApi && entranteApiNuevo) existente.ultimo_entrante_api_en = entranteApiNuevo;
+      if (cuentaPersonalNueva && !existente.cuenta_whatsapp && idsChatwootDe(existente).length <= 1) {
+        existente.cuenta_whatsapp = cuentaPersonalNueva;
+      }
       if (cacheMapaConversaciones && cacheMapaConversaciones.expira > Date.now()) {
         for (const id of idsUnidos) cacheMapaConversaciones.mapa.set(id, existente);
       }
@@ -553,6 +631,7 @@ async function upsertConversacion(
     ultimo_mensaje: ultimoMensaje,
     ultimo_mensaje_en: ultimoMensajeEn,
     ...(entranteApiNuevo ? { ultimo_entrante_api_en: entranteApiNuevo } : {}),
+    ...(cuentaPersonalNueva ? { cuenta_whatsapp: cuentaPersonalNueva } : {}),
     actualizado_en: new Date().toISOString(),
   });
 
@@ -1523,7 +1602,7 @@ function haceSegundos(iso: string | null | undefined, ahora = Date.now()): numbe
   return Math.round((ahora - t) / 1000);
 }
 
-async function estadoEvolution(): Promise<{
+async function estadoEvolution(nombreInstancia?: string): Promise<{
   url: string;
   instancia: string;
   estado: string | null;
@@ -1531,7 +1610,7 @@ async function estadoEvolution(): Promise<{
   error: string | null;
 }> {
   const url = (process.env.EVOLUTION_API_URL || "https://evo-crmesteban.duckdns.org").replace(/\/$/, "");
-  const instancia = (process.env.EVOLUTION_INSTANCE || "personal").trim();
+  const instancia = (nombreInstancia || process.env.EVOLUTION_INSTANCE || "personal").trim();
   const llave = (process.env.EVOLUTION_API_KEY || "").trim();
   if (!llave) {
     return { url, instancia, estado: null, conectado: false, error: "sin EVOLUTION_API_KEY en el servidor" };
@@ -1592,7 +1671,7 @@ export async function diagnosticoCadena(): Promise<ResultadoDiagnostico> {
       detalle,
       solucion: evoSinLlave
         ? "Define EVOLUTION_API_KEY en Vercel (la misma de /opt/templo/.env del servidor). Sin ella tampoco se puede enviar desde el CRM por el WhatsApp Personal."
-        : `Abre ${evo.url}/manager (o GET ${evo.url}/instance/connect/${evo.instancia} con la cabecera apikey) y escanea el QR con el WhatsApp Personal del teléfono. Mientras no esté «open», los mensajes que te escriban al número personal NO llegan al CRM.`,
+        : `Abre ${evo.url}/manager (o GET ${evo.url}/instance/connect/${evo.instancia} con la cabecera apikey) y escanea el QR con el WhatsApp Personal del teléfono. Mientras no esté «open», los mensajes que te escriban al número personal NO llegan al CRM. Si WhatsApp bloqueó temporalmente el número principal, cambia a la cuenta de respaldo desde la bandeja (selector WhatsApp Personal) o en Ajustes → WhatsApp Personal.`,
     });
   } else {
     hallazgos.push({
@@ -1600,6 +1679,32 @@ export async function diagnosticoCadena(): Promise<ResultadoDiagnostico> {
       estado: "ok",
       detalle: `Instancia «${evo.instancia}» conectada (state=open).`,
     });
+  }
+
+  // --------------------- 1b) Evolution (WhatsApp 2, si existe) ---------------
+  // Sólo se informa cuando el operador ya configuró la cuenta de respaldo: así
+  // el diagnóstico dice de una si puede cambiar de número cuando bloquean el
+  // principal.
+  const pistasPersonales = await pistasCuentasPersonales();
+  if (pistasPersonales.instancia2 && (pistasPersonales.numero2 || pistasPersonales.inboxId)) {
+    const evo2 = await estadoEvolution(pistasPersonales.instancia2);
+    const etiqueta2 = pistasPersonales.numero2 ? `WhatsApp 2 (${pistasPersonales.numero2})` : "WhatsApp 2";
+    if (evo2.conectado) {
+      hallazgos.push({
+        paso: "Evolution (WhatsApp 2)",
+        estado: "ok",
+        detalle: `Instancia «${evo2.instancia}» de ${etiqueta2} conectada (state=open).`,
+      });
+    } else {
+      hallazgos.push({
+        paso: "Evolution (WhatsApp 2)",
+        estado: evo2.error && evo2.error.includes("EVOLUTION_API_KEY") ? "desconocido" : "error",
+        detalle: evo2.error
+          ? `No se pudo consultar la instancia «${evo2.instancia}»: ${evo2.error}`
+          : `La instancia «${evo2.instancia}» de ${etiqueta2} está en estado «${evo2.estado || "desconocido"}» (debe ser «open»).`,
+        solucion: `Reconecta ${etiqueta2}: abre ${evo2.url}/manager (o GET ${evo2.url}/instance/connect/${evo2.instancia} con la cabecera apikey) y escanea el QR con ese número.`,
+      });
+    }
   }
 
   // ------------------------- 2) Chatwoot (listado + bandejas) ----------------

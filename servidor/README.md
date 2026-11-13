@@ -41,12 +41,17 @@ docker compose pull && docker compose up -d   # actualizar todo
 2. **Snapshot de Contabo** (1 incluido en el plan) → crear desde my.contabo.com tras cada cambio grande.
 3. Opcional: subir `/root/backups` a Google Drive (ver `../BACKUPS-GOOGLE.md`).
 
-## WhatsApp — dos canales
+## WhatsApp — tres canales (dos personales)
 
 | Canal | Cómo corre | Reconexión |
 |---|---|---|
-| **WhatsApp Personal** (Baileys) | Evolution API en este servidor | QR o pairing code: `GET /instance/connect/<nombre>` con header `apikey` (o panel `/manager`) |
+| **WhatsApp Personal 1** (Baileys, instancia `personal`) | Evolution API en este servidor | QR o pairing code: `GET /instance/connect/<nombre>` con header `apikey` (o panel `/manager`) |
+| **WhatsApp Personal 2** (Baileys, instancia `personal2`) | Evolution API en este servidor | Igual, con `personal2`. Sirve de respaldo cuando WhatsApp bloquea temporalmente el número principal. Ver `../SEGUNDO-WHATSAPP-PERSONAL.md` |
 | **WhatsApp Cloud API** (Meta) | Nube de Meta → webhook `https://crmesteban.duckdns.org/webhooks/whatsapp` | Re-verificar webhook en developers.facebook.com si cambia dominio |
+
+Cada cuenta personal tiene su propia bandeja en Chatwoot. El CRM decide el envío
+por la cuenta elegida (manual) y Luna responde por la bandeja por la que entró el
+mensaje.
 
 ## Restauración desde cero (si el servidor muere)
 

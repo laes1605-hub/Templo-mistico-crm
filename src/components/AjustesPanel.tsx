@@ -16,6 +16,13 @@ import {
   notify,
   isNative,
 } from "../lib/notifications";
+import {
+  listarAppsWhatsApp,
+  llamadasWhatsAppPersonalDisponibles,
+  getAppWhatsApp2,
+  setAppWhatsApp2,
+  type AppWhatsApp,
+} from "../lib/whatsapp-personal";
 
 export default function AjustesPanel({ onClose }: { onClose: () => void }) {
   const [mode, setMode] = useState<ThemeMode>("dark");
@@ -44,6 +51,21 @@ export default function AjustesPanel({ onClose }: { onClose: () => void }) {
   // Traspaso automático del WhatsApp API a la etapa Vencidos (WhatsApp Personal).
   const [vencidosAuto, setVencidosAuto] = useState(true);
   const [vencidosMsg, setVencidosMsg] = useState("");
+  // SEGUNDO WHATSAPP PERSONAL (respaldo manual)
+  const [waActiva, setWaActiva] = useState<"personal" | "personal_2">("personal");
+  const [waEtiqueta1, setWaEtiqueta1] = useState("WhatsApp 1");
+  const [waEtiqueta2, setWaEtiqueta2] = useState("WhatsApp 2");
+  const [waNumero1, setWaNumero1] = useState("");
+  const [waNumero2, setWaNumero2] = useState("");
+  const [waInstancia1, setWaInstancia1] = useState("personal");
+  const [waInstancia2, setWaInstancia2] = useState("personal2");
+  const [waInbox2, setWaInbox2] = useState("");
+  const [waCuentas, setWaCuentas] = useState<any[]>([]);
+  const [waGuardando, setWaGuardando] = useState(false);
+  const [waMsg, setWaMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [waApps, setWaApps] = useState<AppWhatsApp[]>([]);
+  const [waApp2, setWaApp2] = useState("");
+  const [waVerDetalles, setWaVerDetalles] = useState(false);
 
   useEffect(() => {
     setMode(getSavedMode());
@@ -72,6 +94,14 @@ export default function AjustesPanel({ onClose }: { onClose: () => void }) {
         });
       } catch {
         /* config_general no disponible: se puede escribir igual al guardar */
+      }
+      // En paralelo: la consulta a Evolution no debe retrasar el resto de Ajustes.
+      void cargarCuentasWhatsApp();
+      setWaApp2(getAppWhatsApp2());
+      if (llamadasWhatsAppPersonalDisponibles()) {
+        void listarAppsWhatsApp()
+          .then((apps) => setWaApps(apps))
+          .catch(() => {});
       }
       try {
         const res = await fetch("/api/admin/migrar-media-storage");
@@ -249,6 +279,91 @@ export default function AjustesPanel({ onClose }: { onClose: () => void }) {
     }
   }
 
+  // ===================== SEGUNDO WHATSAPP PERSONAL =====================
+  async function cargarCuentasWhatsApp() {
+    try {
+      const res = await fetch("/api/whatsapp-cuentas", { cache: "no-store" });
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.ok) return;
+      const cfg = json.config || {};
+      setWaActiva(cfg.activa === "personal_2" ? "personal_2" : "personal");
+      setWaEtiqueta1(String(cfg.personal?.etiqueta || "WhatsApp 1"));
+      setWaEtiqueta2(String(cfg.personal2?.etiqueta || "WhatsApp 2"));
+      setWaNumero1(String(cfg.personal?.numero || ""));
+      setWaNumero2(String(cfg.personal2?.numero || ""));
+      setWaInstancia1(String(cfg.personal?.instancia || "personal"));
+      setWaInstancia2(String(cfg.personal2?.instancia || "personal2"));
+      setWaInbox2(String(cfg.personal2?.inboxId || ""));
+      setWaCuentas(Array.isArray(json.cuentas) ? json.cuentas : []);
+    } catch {
+      /* sin servidor: la sección muestra los valores por defecto */
+    }
+  }
+
+  async function guardarCuentasWhatsApp() {
+    setWaGuardando(true);
+    setWaMsg(null);
+    try {
+      const res = await fetch("/api/whatsapp-cuentas", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          accion: "guardar",
+          etiqueta1: waEtiqueta1,
+          etiqueta2: waEtiqueta2,
+          numero1: waNumero1,
+          numero2: waNumero2,
+          instancia1: waInstancia1,
+          instancia2: waInstancia2,
+          inbox2: waInbox2,
+        }),
+      });
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.ok) throw new Error(json?.error || "No se pudo guardar.");
+      await cargarCuentasWhatsApp();
+      window.dispatchEvent(new CustomEvent("tm-whatsapp-cuentas-changed"));
+      setWaMsg({
+        ok: true,
+        text: waNumero2 || waInbox2
+          ? "Guardado. Ahora puedes elegir el WhatsApp 2 desde la cabecera del chat o en la bandeja."
+          : "Guardado. Añade el número del WhatsApp 2 para poder usarlo como respaldo.",
+      });
+    } catch (e: any) {
+      setWaMsg({ ok: false, text: "No se pudo guardar: " + (e?.message || "error desconocido") });
+    } finally {
+      setWaGuardando(false);
+    }
+  }
+
+  async function activarCuentaWhatsApp(cuenta: "personal" | "personal_2") {
+    setWaMsg(null);
+    try {
+      const res = await fetch("/api/whatsapp-cuentas", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accion: "activar", cuenta }),
+      });
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.ok) throw new Error(json?.error || "No se pudo activar.");
+      setWaActiva(cuenta);
+      setWaCuentas(Array.isArray(json.cuentas) ? json.cuentas : []);
+      window.dispatchEvent(new CustomEvent("tm-whatsapp-cuentas-changed"));
+    } catch (e: any) {
+      setWaMsg({ ok: false, text: "No se pudo cambiar la cuenta: " + (e?.message || "error desconocido") });
+    }
+  }
+
+  async function probarCuentasWhatsApp() {
+    setWaMsg({ ok: true, text: "Consultando Evolution…" });
+    await cargarCuentasWhatsApp();
+    setWaMsg({ ok: true, text: "Estado actualizado." });
+  }
+
+  function elegirAppWhatsApp2(paquete: string) {
+    setWaApp2(paquete);
+    setAppWhatsApp2(paquete);
+  }
+
   function cambiarModo(m: ThemeMode) {
     setMode(m);
     saveTheme(m, accent);
@@ -408,6 +523,226 @@ export default function AjustesPanel({ onClose }: { onClose: () => void }) {
           traspasa también el historial que ya estaba vencido.
         </p>
         {vencidosMsg && <p className="text-[11px] text-emerald-400 mt-2">{vencidosMsg}</p>}
+
+        {/* SEGUNDO WHATSAPP PERSONAL (respaldo) */}
+        <p className="text-[11px] uppercase tracking-wider text-gray-500 font-bold mb-2 mt-5">
+          WhatsApp Personal · Segunda cuenta
+        </p>
+        <div className="space-y-2">
+          <div className="flex items-center gap-1 bg-background p-1 rounded-lg border border-border">
+            {(["personal", "personal_2"] as const).map((cuenta) => {
+              const activa = waActiva === cuenta;
+              const fila = waCuentas.find((c: any) => c?.cuenta === cuenta);
+              const conectado = fila && typeof fila.conectado === "boolean" ? fila.conectado : null;
+              const punto = conectado === true ? "bg-emerald-400" : conectado === false ? "bg-red-500" : "bg-gray-500";
+              const nombre = cuenta === "personal_2" ? waEtiqueta2 || "WhatsApp 2" : waEtiqueta1 || "WhatsApp 1";
+              return (
+                <button
+                  key={cuenta}
+                  type="button"
+                  onClick={() => void activarCuentaWhatsApp(cuenta)}
+                  className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-md text-[11px] font-bold transition-all ${
+                    activa ? "bg-emerald-700 text-white shadow" : "text-gray-400 hover:text-white"
+                  }`}
+                  title={`Usar ${nombre} para responder por WhatsApp Personal`}
+                >
+                  <span className={`w-1.5 h-1.5 rounded-full ${punto}`} />
+                  <span className="truncate">{nombre}</span>
+                </button>
+              );
+            })}
+          </div>
+          <p className="text-[10px] text-gray-500 leading-relaxed">
+            Cuando WhatsApp bloquea temporalmente el número principal por exceso de llamadas,
+            activa la segunda cuenta y sigue atendiendo con el mismo CRM (mensajes, notas de voz,
+            adjuntos, llamadas y seguimientos de Luna). La elección es manual y cada chat recuerda
+            la cuenta con la que se responde.
+          </p>
+
+          <div>
+            <label className="block text-[10px] text-gray-500 mb-1">
+              Número del {waEtiqueta2 || "WhatsApp 2"} (con código de país)
+            </label>
+            <input
+              type="tel"
+              inputMode="numeric"
+              value={waNumero2}
+              onChange={(e) => setWaNumero2(e.target.value.replace(/[^\d+\s-]/g, ""))}
+              placeholder="573001234567"
+              autoComplete="off"
+              className="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs text-gray-200 placeholder-gray-600 focus:outline-none focus:border-purple-500 font-mono"
+            />
+          </div>
+          <div>
+            <label className="block text-[10px] text-gray-500 mb-1">Nombre visible de la segunda cuenta</label>
+            <input
+              type="text"
+              value={waEtiqueta2}
+              onChange={(e) => setWaEtiqueta2(e.target.value)}
+              placeholder="WhatsApp 2"
+              maxLength={40}
+              className="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs text-gray-200 placeholder-gray-600 focus:outline-none focus:border-purple-500"
+            />
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setWaVerDetalles((v) => !v)}
+            className="w-full text-[10px] font-semibold text-purple-300 hover:text-purple-200 text-left px-1"
+          >
+            {waVerDetalles ? "Ocultar datos técnicos" : "Datos técnicos (instancia y bandeja de Chatwoot)"}
+          </button>
+
+          {waVerDetalles && (
+            <div className="space-y-2 border border-border rounded-xl p-2.5 bg-background/60">
+              <div>
+                <label className="block text-[10px] text-gray-500 mb-1">
+                  Instancia de Evolution · {waEtiqueta1 || "WhatsApp 1"}
+                </label>
+                <input
+                  type="text"
+                  value={waInstancia1}
+                  onChange={(e) => setWaInstancia1(e.target.value)}
+                  placeholder="personal"
+                  className="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs text-gray-200 placeholder-gray-600 focus:outline-none focus:border-purple-500 font-mono"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] text-gray-500 mb-1">
+                  Instancia de Evolution · {waEtiqueta2 || "WhatsApp 2"}
+                </label>
+                <input
+                  type="text"
+                  value={waInstancia2}
+                  onChange={(e) => setWaInstancia2(e.target.value)}
+                  placeholder="personal2"
+                  className="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs text-gray-200 placeholder-gray-600 focus:outline-none focus:border-purple-500 font-mono"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] text-gray-500 mb-1">
+                  ID de la bandeja de Chatwoot · {waEtiqueta2 || "WhatsApp 2"}
+                </label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={waInbox2}
+                  onChange={(e) => setWaInbox2(e.target.value.replace(/\D/g, ""))}
+                  placeholder="7"
+                  className="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs text-gray-200 placeholder-gray-600 focus:outline-none focus:border-purple-500 font-mono"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] text-gray-500 mb-1">
+Etiqueta de la cuenta principal
+                </label>
+                <input
+                  type="text"
+                  value={waEtiqueta1}
+                  onChange={(e) => setWaEtiqueta1(e.target.value)}
+                  placeholder="WhatsApp 1"
+                  maxLength={40}
+                  className="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs text-gray-200 placeholder-gray-600 focus:outline-none focus:border-purple-500"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] text-gray-500 mb-1">Número de la cuenta principal (opcional)</label>
+                <input
+                  type="tel"
+                  inputMode="numeric"
+                  value={waNumero1}
+                  onChange={(e) => setWaNumero1(e.target.value.replace(/[^\d+\s-]/g, ""))}
+                  placeholder="573001112233"
+                  className="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs text-gray-200 placeholder-gray-600 focus:outline-none focus:border-purple-500 font-mono"
+                />
+              </div>
+            </div>
+          )}
+
+          {isNative() && (
+            <div>
+              <label className="block text-[10px] text-gray-500 mb-1">
+                App del teléfono para llamar con {waEtiqueta2 || "WhatsApp 2"}
+              </label>
+              {waApps.length > 1 ? (
+                <select
+                  value={waApp2}
+                  onChange={(e) => elegirAppWhatsApp2(e.target.value)}
+                  className="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-purple-500"
+                >
+                  <option value="">Elegir app…</option>
+                  {waApps.map((app) => (
+                    <option key={app.package} value={app.package}>
+                      {app.label} ({app.package})
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <p className="text-[10px] text-gray-500 leading-relaxed">
+                  {waApps.length === 1
+                    ? `Solo se detectó ${waApps[0].label}. Instala la segunda app (app dual o WhatsApp Business del segundo número) y vuelve a abrir Ajustes.`
+                    : "Actualiza la APK para que el CRM pueda detectar las apps de WhatsApp instaladas."}
+                </p>
+              )}
+              <p className="text-[10px] text-gray-500 mt-1 leading-relaxed">
+                Se usa solo para las llamadas. Con Dual Messenger / Segundo espacio Android no deja
+                abrir la app clonada desde otra app: en ese caso el CRM abre el chat y la llamada se
+                hace tocando el teléfono dentro de WhatsApp. La forma más estable es tener la segunda
+                cuenta en <strong>WhatsApp Business</strong> (sin API) en el mismo teléfono.
+              </p>
+            </div>
+          )}
+
+          {waNumero2 && !waInbox2 && (
+            <p className="text-[10px] text-amber-400 leading-relaxed">
+              Falta el ID de la bandeja de Chatwoot del WhatsApp 2: podrás enviar por ese número, pero
+              sus mensajes entrantes no llegarán al CRM hasta que la vincules.
+            </p>
+          )}
+
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => void guardarCuentasWhatsApp()}
+              disabled={waGuardando}
+              className="flex-1 flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white text-xs font-bold transition-colors"
+            >
+              <Save className="w-4 h-4" />
+              {waGuardando ? "Guardando..." : "Guardar cuentas"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void probarCuentasWhatsApp()}
+              className="flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl bg-surfaceHover border border-border text-gray-300 hover:text-white text-xs font-bold transition-colors"
+              title="Consultar si cada instancia de Evolution está conectada"
+            >
+              Probar
+            </button>
+          </div>
+          <div className="space-y-1">
+            {["personal", "personal_2"].map((cuenta) => {
+              const fila = waCuentas.find((c: any) => c?.cuenta === cuenta);
+              if (!fila) return null;
+              const nombre = cuenta === "personal_2" ? waEtiqueta2 || "WhatsApp 2" : waEtiqueta1 || "WhatsApp 1";
+              const conectado = typeof fila.conectado === "boolean" ? fila.conectado : null;
+              return (
+                <p
+                  key={cuenta}
+                  className={`text-[10px] leading-snug ${
+                    conectado === true ? "text-emerald-400" : conectado === false ? "text-red-400" : "text-gray-500"
+                  }`}
+                >
+                  <strong>{nombre}</strong> ({fila.instancia}):{" "}
+                  {conectado === true ? "conectado" : conectado === false ? "desconectado" : "sin verificar"}
+                  {fila.detalle ? ` · ${fila.detalle}` : ""}
+                </p>
+              );
+            })}
+          </div>
+          {waMsg && (
+            <p className={`text-[11px] ${waMsg.ok ? "text-emerald-400" : "text-red-400"}`}>{waMsg.text}</p>
+          )}
+        </div>
 
         {/* NOTAS DE VOZ NATIVAS (WhatsApp API) */}
         <p className="text-[11px] uppercase tracking-wider text-gray-500 font-bold mb-2 mt-5">
